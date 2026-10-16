@@ -116,6 +116,12 @@ Rust handles everything that is security-critical and cross-platform. The Swift 
 | Data stays local | ✅ | ❌ (cloud) | ❌ unless self-hosted | ✅ |
 | Browser autofill | Later | ✅ | ✅ | Via plugins |
 
+## Branches
+
+- `main` is the stable branch. Never commit to it directly.
+- `dev` is for development. Commit there, or on feature branches made from `dev`.
+- To ship, open a pull request from `dev` into `main` and merge it.
+
 ## License
 
 MIT
