@@ -1,0 +1,24 @@
+# Rust
+target/
+**/*.rs.bk
+
+# Swift
+.build/
+.swiftpm/
+DerivedData/
+*.xcuserstate
+xcuserdata/
+
+# macOS
+.DS_Store
+
+# Editors
+.vscode/
+.idea/
+
+# Secrets — never commit vaults or env files
+*.vault
+vault.db
+.env
+.env.*
+!.env.example
