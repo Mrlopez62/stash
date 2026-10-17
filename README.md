@@ -150,7 +150,8 @@ stash generate --length 32 --no-symbols  # just a password
 These work everywhere references do: `stash get github#username`, `.env` files for `stash run`, `stash inject` templates, and the MCP server.
 
 Passwords, 2FA secrets, and notes are only ever read from a hidden prompt or stdin, never from flags, so they stay out of your shell history.
-- **`--set` is for visible fields only.** It refuses password, 2FA, and notes fields, plus labels that look like secrets (`token`, `api key`, `client secret`, `pin`, …). Store those as their own secret item and reference it.
+- **`--set` is for visible fields only.** It refuses password, 2FA, and notes fields, plus common secret-sounding labels like `token`, `api key`, `client secret`, and `pin`. That label check is a safety net, not a guarantee: never put a secret value on the command line. Store it as its own item and reference it.
+- **`--set` on a secret keeps it a secret.** An API key with a `scope` field is still an API key. Only `--username`, `--url`, and `--otp` turn an item into a login.
 - **The note prompt reads one line.** Pipe multi-line notes in instead: `stash add notes/x --note < notes.txt`.
 - **Generated passwords** use the OS random number generator with uniform sampling and always include each enabled character type. Symbols like `$` and `#` mean something in shells and some `.env` parsers, so quote them, or use `--no-symbols`.
 - **Older vaults need one upgrade.** A vault made before v0.6 can store logins and notes once you've unlocked it with your master password once. Until then, stash asks you to.

@@ -54,6 +54,7 @@ cargo test
 
 - **Add tests.** Bug fixes need a test that fails without the fix. New behavior needs tests that cover it.
 - **Keep it focused.** One logical change per pull request.
+- **Update the changelog.** Add a line to `CHANGELOG.md` for anything users would notice.
 - **Write clear commit messages.** Use an imperative subject line of 72 characters or fewer, like "Add `stash rm` confirmation".
 
 ## Rules for security-sensitive code
