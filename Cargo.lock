@@ -801,6 +801,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "sha1"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "aacc4cc499359472b4abe1bf11d0b12e688af9a805fa5e3016f9a386dc2d0214"
+dependencies = [
+ "cfg-if",
+ "cpufeatures",
+ "digest",
+]
+
+[[package]]
 name = "sha2"
 version = "0.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -837,7 +848,7 @@ dependencies = [
 
 [[package]]
 name = "stash-cli"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "assert_cmd",
@@ -849,6 +860,7 @@ dependencies = [
  "secrecy",
  "serde",
  "serde_json",
+ "sha2",
  "stash-core",
  "tempfile",
  "zeroize",
@@ -856,7 +868,7 @@ dependencies = [
 
 [[package]]
 name = "stash-core"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "argon2",
  "chacha20poly1305",
@@ -864,6 +876,7 @@ dependencies = [
  "hmac",
  "rusqlite",
  "secrecy",
+ "sha1",
  "sha2",
  "tempfile",
  "thiserror",

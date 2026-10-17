@@ -14,7 +14,7 @@
 
 A free, developer-first secrets manager for macOS. Unlock with Touch ID, pass API tokens into commands safely, and let AI agents use your secrets without ever seeing them.
 
-> **Status: early development (v0.4).** The encrypted vault, the CLI, Touch ID unlock, sessions scoped to your shell, `stash://` references, `stash run`, `stash inject`, and the MCP server for AI agents work today. See the [Roadmap](#roadmap) for what's next. Don't trust it with production secrets until it has been reviewed.
+> **Status: early development (v0.5).** The encrypted vault, the CLI, Touch ID unlock, sessions scoped to your shell, `stash://` references, `stash run`, `stash inject`, the MCP server for AI agents, clipboard copy, and 2FA codes work today. A native Mac app is next. See the [Roadmap](#roadmap) for what's next. Don't trust it with production secrets until it has been reviewed.
 
 ## Getting started
 
@@ -31,6 +31,8 @@ stash add github/token                # prompts for the value without echoing it
 echo "$OPENAI_KEY" | stash add openai/api-key   # or pipe it in
 stash ls                              # names only
 stash get github/token                # prints the value
+stash get github/token --copy         # copies it instead; cleared after 30s
+stash otp github/2fa                  # current 2FA code (from an otpauth:// URI or base32 secret)
 stash rm github/token
 stash lock                            # end the unlocked session now
 ```
@@ -65,6 +67,7 @@ How unlocking works:
 - Secret references (`stash://...`) you can put in `.env` and config files
 - `stash run`, which injects secrets into one command's environment
 - An MCP server for AI agents, with per-use approval and an audit log
+- A native Mac app, like 1Password's: menu bar, Quick Access search, and a vault browser, with the CLI included
 
 **Non-goals for v1**
 - Browser autofill
@@ -117,6 +120,15 @@ stash inject < config.tpl.yml                  # or print to stdout
 If any reference is missing, nothing is written. Existing files are only overwritten with `--force`.
 
 `stash get` also accepts a reference: `stash get stash://github/token`.
+
+### Clipboard and 2FA codes
+
+- **`stash get <name> --copy`** puts a secret on the clipboard instead of printing it.
+  - It's cleared after 30 seconds, but only if the clipboard still holds that secret, so something you've copied since is left alone.
+  - `STASH_CLIPBOARD_TIMEOUT` changes the delay, and `0` keeps the value.
+- **`stash otp <name>`** prints the current 2FA code. Add `--copy` to copy it instead.
+  - **Adding a 2FA item:** store either the `otpauth://totp/...` URI from the 2FA setup QR code or the base32 secret shown under "can't scan it?", with `stash add github/2fa`.
+  - **Code formats:** 6–8 digits, any period, and SHA-1, SHA-256, or SHA-512, checked against the RFC 6238 test vectors.
 
 ## AI and MCP integration
 
@@ -180,8 +192,11 @@ Rust handles everything that is security-critical and cross-platform. The Swift 
 | v0.2 ✅ | Touch ID unlock + agent sessions |
 | v0.3 ✅ | `stash://` references, `run`, `inject` |
 | v0.4 ✅ | MCP server with Touch ID approvals, allowlists, and an audit log; sessions scoped to your shell |
-| v0.5 | SSH agent, TOTP codes, git commit signing, `stash get --copy` with auto-clearing clipboard |
-| Later | Encrypted sync (iCloud Drive or Git), menu bar app, browser extension, Linux support |
+| v0.5 ✅ | `stash get --copy` with a self-clearing clipboard, 2FA (TOTP) codes |
+| v0.6 | 1Password-style items: logins with username, password, URL, 2FA, and notes; password generator |
+| v0.7 | **The stash Mac app:** menu bar, Quick Access search, vault browser and editor, Touch ID. Ships the CLI and helpers inside `stash.app` |
+| v0.8 | SSH agent, git commit signing |
+| Later | Encrypted sync (iCloud Drive or Git), browser extension, Linux support |
 
 ## How it compares
 

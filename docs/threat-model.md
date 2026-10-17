@@ -1,6 +1,6 @@
 # Threat model
 
-This document covers what stash protects against, how it does it, and what it doesn't protect against. It describes **v0.4**: an encrypted vault file, a CLI, Touch ID unlock, sessions scoped to your shell, `stash run` / `stash inject`, and the MCP server for AI agents.
+This document covers what stash protects against, how it does it, and what it doesn't protect against. It describes **v0.5**: an encrypted vault file, a CLI, Touch ID unlock, sessions scoped to your shell, `stash run` / `stash inject`, and the MCP server for AI agents.
 
 ## What we protect
 
@@ -93,6 +93,17 @@ After an unlock, `stash` starts `stash agent` in the background. The agent keeps
 | Other processes reading the child's environment | Partial | Other users can't. Processes running as *you* can read it (for example, with `ps eww` on some systems). That's inherent to environment variables. |
 | The child itself misusing the secrets it was given | ❌ | You're choosing to give that program those secrets. It can't reach *other* secrets without a prompt (see sessions above). Only `stash run` programs you trust. |
 | Rendered `stash inject` files left on disk | Partial | They're `0600`, but they hold plaintext. Prefer `stash run` where possible, and keep rendered files out of git. |
+
+## Clipboard copy (`--copy`)
+
+- **No secrets in arguments:** the value reaches `pbcopy` (or `wl-copy` / `xclip`) through a pipe, never as an argument.
+- **Clearing is hash-based:** a detached `stash clipboard-clear` process gets only a SHA-256 hash of the value. After 30 seconds it clears the clipboard only if it still matches, so it never wipes something you copied since.
+
+| Threat | Protected? | How |
+|---|---|---|
+| A secret left on the clipboard | ✅ | Cleared after 30 seconds (`STASH_CLIPBOARD_TIMEOUT`). |
+| Clipboard history managers and Universal Clipboard (Handoff) | ❌ for now | They can record the value before it's cleared. Marking copies as "concealed" so well-behaved managers skip them needs native pasteboard access, which is planned with the Mac app. |
+| Apps that read the clipboard while it holds the secret | ❌ | Any app can read the clipboard. Prefer `stash run` where you can. |
 
 ## The MCP server (`stash mcp`)
 
