@@ -1,97 +1,162 @@
 import SwiftUI
 
-struct ItemDetailView: View {
+/// The selected item, in a panel beside the table.
+struct InspectorView: View {
     @EnvironmentObject var model: AppModel
     let detail: ItemDetail
     let onEdit: () -> Void
     @ViewState private var confirmDelete = false
-    @ViewState private var notes: String?
+
+    private var title: String { detail.name.split(separator: "/").last.map(String.init) ?? detail.name }
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 22) {
-                HStack(spacing: 14) {
-                    ItemIcon(kind: detail.kind, size: 48)
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(detail.name.split(separator: "/").last.map(String.init) ?? detail.name)
-                            .font(.system(size: 22, weight: .semibold))
-                            .foregroundStyle(Color.plaintext)
-                        Text(detail.name.contains("/") ? "\(detail.kind.title) · \(detail.name)" : detail.kind.title)
-                            .font(.mono(12))
-                            .foregroundStyle(Color.redacted)
+            VStack(alignment: .leading, spacing: 20) {
+                HStack(alignment: .top, spacing: 12) {
+                    ItemIcon(kind: detail.kind, size: 42)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(title)
+                            .font(.mono(17, weight: .bold))
+                            .foregroundStyle(Color.ink)
+                            .lineLimit(2)
+                        if let folder {
+                            Label(folder, systemImage: "folder")
+                                .font(.plex(12))
+                                .foregroundStyle(Color.inkTertiary)
+                        }
                     }
-                    Spacer()
-                    Button("Edit", action: onEdit)
-                        .keyboardShortcut("e", modifiers: .command)
-                        .disabled(detail.binary)
+                    Spacer(minLength: 4)
+                    HStack(spacing: 0) {
+                        IconButton("pencil", help: "Edit (⌘E)", action: onEdit)
+                            .keyboardShortcut("e", modifiers: .command)
+                            .disabled(detail.binary)
+                        Menu {
+                            Button("Copy reference") { model.copyPlain("stash://\(detail.name)", label: "reference") }
+                            Divider()
+                            Button("Delete Item…", role: .destructive) { confirmDelete = true }
+                        } label: {
+                            Image(systemName: "ellipsis")
+                                .font(.system(size: 12, weight: .medium))
+                                .frame(width: 28, height: 28)
+                        }
+                        .menuStyle(.borderlessButton)
+                        .menuIndicator(.hidden)
+                        .fixedSize()
+                        // Borderless menus take the accent color unless tinted.
+                        .tint(Color.inkTertiary)
+                        .foregroundStyle(Color.inkTertiary)
+                        .help("More")
+                        IconButton("xmark", help: "Close") { Task { await model.select(nil) } }
+                    }
                 }
+                .padding(.top, 36)
 
                 if detail.binary {
                     Text("This secret holds binary data. Use `stash get \(detail.name)` in the terminal.")
-                        .font(.callout)
-                        .foregroundStyle(Color.secondaryText)
+                        .font(.plex(13))
+                        .foregroundStyle(Color.inkSecondary)
                 }
 
-                VStack(spacing: 0) {
-                    ForEach(Array(detail.fields.enumerated()), id: \.element.id) { index, field in
-                        if index > 0 { Divider().overlay(Color.border) }
-                        FieldRow(field: field)
-                    }
-                }
-                .background(Color.enclave, in: RoundedRectangle(cornerRadius: 12))
-                .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Color.border))
-
-                if detail.hasNotes {
-                    VStack(alignment: .leading, spacing: 8) {
-                        HStack {
-                            Text("notes").font(.mono(11)).foregroundStyle(Color.redacted)
-                            Spacer()
-                            Button(notes == nil ? "Show" : "Hide") {
-                                if notes == nil {
-                                    Task { notes = await model.reveal("notes") }
-                                } else {
-                                    notes = nil
-                                }
+                if !detail.fields.isEmpty || detail.hasNotes {
+                    Card(fill: true) {
+                        VStack(spacing: 0) {
+                            ForEach(Array(detail.fields.enumerated()), id: \.element.id) { index, field in
+                                if index > 0 { Rectangle().fill(Color.line).frame(height: 1) }
+                                FieldRow(field: field)
                             }
-                            .buttonStyle(.link)
+                            if detail.hasNotes {
+                                if !detail.fields.isEmpty { Rectangle().fill(Color.line).frame(height: 1) }
+                                NotesRow()
+                            }
                         }
-                        Text(notes ?? "••••••••")
-                            .font(.system(size: 13))
-                            .foregroundStyle(Color.plaintext)
+                    }
+                }
+
+                VStack(alignment: .leading, spacing: 8) {
+                    Eyebrow(text: "Use in code")
+                    HStack {
+                        Text("stash://\(detail.name)")
+                            .font(.mono(12))
+                            .foregroundStyle(Color.inkSecondary)
                             .textSelection(.enabled)
-                            .frame(maxWidth: .infinity, alignment: .leading)
+                        Spacer()
+                        IconButton("doc.on.doc", help: "Copy reference") {
+                            model.copyPlain("stash://\(detail.name)", label: "reference")
+                        }
                     }
-                    .padding(14)
-                    .background(Color.enclave, in: RoundedRectangle(cornerRadius: 12))
-                    .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Color.border))
+                    .padding(.leading, 12)
+                    .padding(.trailing, 2)
+                    .padding(.vertical, 2)
+                    .background(Color.surfaceRaised, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(Color.line))
+                    (Text("Use it in .env files with ").font(.plex(11.5))
+                        + Text("stash run").font(.mono(11.5)))
+                        .foregroundStyle(Color.inkTertiary)
                 }
 
-                HStack {
+                HStack(spacing: 14) {
                     if detail.updated > 0 {
-                        Text("Updated \(Date(timeIntervalSince1970: TimeInterval(detail.updated)).formatted(date: .abbreviated, time: .shortened))")
+                        Text("Updated \(relative(detail.updated))")
                     }
-                    Spacer()
-                    Text("stash://\(detail.name)")
-                        .textSelection(.enabled)
-                        .help("Use this reference in .env files, stash run, and stash inject")
+                    if detail.created > 0 && abs(detail.created - detail.updated) > 60 {
+                        Text("Created \(relative(detail.created))")
+                    }
                 }
-                .font(.mono(11))
-                .foregroundStyle(Color.redacted)
-
-                Button("Delete…", role: .destructive) { confirmDelete = true }
-                    .buttonStyle(.link)
-                    .foregroundStyle(.red)
+                .font(.plex(12))
+                .foregroundStyle(Color.inkTertiary)
             }
-            .padding(28)
-            .frame(maxWidth: 640, alignment: .leading)
-            .frame(maxWidth: .infinity)
+            .padding(.horizontal, 20)
+            .padding(.bottom, 24)
         }
-        .background(Color.vaultInk)
+        .background(Color.canvas)
         .confirmationDialog("Delete \(detail.name)?", isPresented: $confirmDelete) {
             Button("Delete", role: .destructive) { Task { await model.delete(detail.name) } }
         } message: {
             Text("This can't be undone.")
         }
+    }
+
+    /// The icon already shows the kind, so only the folder needs saying.
+    private var folder: String? {
+        let folder = detail.name.split(separator: "/").dropLast().joined(separator: "/")
+        return folder.isEmpty ? nil : folder
+    }
+}
+
+/// Notes, hidden until revealed, in the same style as a concealed field.
+struct NotesRow: View {
+    @EnvironmentObject var model: AppModel
+    @ViewState private var notes: String?
+    @ViewState private var hovering = false
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            VStack(alignment: .leading, spacing: 5) {
+                Text("Notes").font(.plex(11.5, weight: .medium)).foregroundStyle(Color.inkTertiary)
+                Text(notes ?? concealedMask)
+                    .font(notes == nil ? .mono(13.5) : .plex(13.5))
+                    .foregroundStyle(Color.ink)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            HStack(spacing: 0) {
+                IconButton(notes == nil ? "eye" : "eye.slash", help: notes == nil ? "Show notes" : "Hide notes") {
+                    if notes == nil {
+                        Task { notes = await model.reveal("notes") }
+                    } else {
+                        notes = nil
+                    }
+                }
+                IconButton("doc.on.doc", help: "Copy notes") {
+                    Task { await model.copySecret("notes", label: "notes") }
+                }
+            }
+            .opacity(hovering ? 1 : 0.55)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 11)
+        .background(hovering ? Color.hover : Color.clear)
+        .onHover { hovering = $0 }
     }
 }
 
@@ -101,21 +166,24 @@ struct FieldRow: View {
     @ViewState private var revealed: String?
     @ViewState private var code: OTPCode?
     @ViewState private var fetchedAt = Date()
+    @ViewState private var hovering = false
 
     var body: some View {
-        HStack(alignment: .center, spacing: 12) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(field.label)
-                    .font(.mono(11))
-                    .foregroundStyle(Color.redacted)
+        HStack(alignment: .center, spacing: 10) {
+            VStack(alignment: .leading, spacing: 5) {
+                Text(displayLabel(field.label))
+                    .font(.plex(11.5, weight: .medium))
+                    .foregroundStyle(Color.inkTertiary)
                 value
             }
-            Spacer()
-            actions
+            Spacer(minLength: 4)
+            actions.opacity(hovering || field.kind == .otp ? 1 : 0.55)
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 11)
+        .background(hovering ? Color.hover : Color.clear)
         .contentShape(Rectangle())
+        .onHover { hovering = $0 }
         .task(id: field.id) {
             guard field.kind == .otp else { return }
             await refreshCode()
@@ -130,39 +198,43 @@ struct FieldRow: View {
                     let left = max(0, code.remaining - Int(context.date.timeIntervalSince(fetchedAt)))
                     HStack(spacing: 10) {
                         Text(grouped(code.code))
-                            .font(.mono(20, weight: .semibold))
-                            .foregroundStyle(Color.plaintext)
+                            .font(.mono(19, weight: .semibold))
+                            .foregroundStyle(Color.ink)
                         CountdownRing(fraction: Double(left) / Double(code.period))
-                        Text("\(left)s").font(.mono(11)).foregroundStyle(Color.redacted)
+                        Text("\(left)s").font(.mono(11)).foregroundStyle(Color.inkTertiary)
                     }
                     .task(id: left == 0) {
                         if left == 0 { await refreshCode() }
                     }
                 }
             } else {
-                Text("••• •••").font(.mono(20)).foregroundStyle(Color.redacted)
+                Text("••• •••").font(.mono(19)).foregroundStyle(Color.inkTertiary)
             }
         case .concealed:
-            Text(revealed ?? "••••••••••••")
-                .font(.mono(14))
-                .foregroundStyle(Color.plaintext)
+            Text(revealed ?? concealedMask)
+                .font(.mono(13.5, weight: revealed == nil ? .regular : .medium))
+                .foregroundStyle(Color.ink)
                 .textSelection(.enabled)
+                .lineLimit(revealed == nil ? 1 : nil)
         case .url:
             if let v = field.value, let url = URL(string: v), url.scheme != nil {
-                Link(v, destination: url).font(.system(size: 14))
+                Link(destination: url) {
+                    Text(v).font(.plex(13.5)).foregroundStyle(Color.ink).underline(hovering)
+                }
+                .help("Open in your browser")
             } else {
-                Text(field.value ?? "").font(.system(size: 14)).foregroundStyle(Color.plaintext)
+                Text(field.value ?? "").font(.plex(13.5)).foregroundStyle(Color.ink)
             }
         case .text, .email:
             Text(field.value ?? "")
-                .font(.system(size: 14))
-                .foregroundStyle(Color.plaintext)
+                .font(.plex(13.5))
+                .foregroundStyle(Color.ink)
                 .textSelection(.enabled)
         }
     }
 
     @ViewBuilder private var actions: some View {
-        HStack(spacing: 6) {
+        HStack(spacing: 0) {
             if field.kind == .concealed {
                 IconButton(revealed == nil ? "eye" : "eye.slash", help: revealed == nil ? "Reveal" : "Hide") {
                     if revealed == nil {
@@ -177,7 +249,7 @@ struct FieldRow: View {
                     }
                 }
             }
-            IconButton("doc.on.doc", help: "Copy") {
+            IconButton("doc.on.doc", help: "Copy \(displayLabel(field.label).lowercased())") {
                 Task {
                     switch field.kind {
                     case .otp: await model.copyOTP()
@@ -205,38 +277,14 @@ struct CountdownRing: View {
 
     var body: some View {
         ZStack {
-            Circle().stroke(Color.border, lineWidth: 3)
+            Circle().stroke(Color.line, lineWidth: 2.5)
             Circle()
                 .trim(from: 0, to: fraction)
-                .stroke(fraction < 0.2 ? Color.red : Color.keyholeAmber, style: StrokeStyle(lineWidth: 3, lineCap: .round))
+                .stroke(fraction < 0.2 ? Color.danger : Color.keyholeAmber,
+                        style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
                 .rotationEffect(.degrees(-90))
                 .animation(.linear(duration: 1), value: fraction)
         }
-        .frame(width: 16, height: 16)
-    }
-}
-
-struct IconButton: View {
-    let symbol: String
-    let help: String
-    let action: () -> Void
-
-    init(_ symbol: String, help: String, action: @escaping () -> Void) {
-        self.symbol = symbol
-        self.help = help
-        self.action = action
-    }
-
-    var body: some View {
-        Button(action: action) {
-            Image(systemName: symbol)
-                .font(.system(size: 13))
-                .frame(width: 28, height: 28)
-                .background(Color.vaultInk, in: RoundedRectangle(cornerRadius: 6))
-                .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color.border))
-        }
-        .buttonStyle(.plain)
-        .foregroundStyle(Color.secondaryText)
-        .help(help)
+        .frame(width: 15, height: 15)
     }
 }

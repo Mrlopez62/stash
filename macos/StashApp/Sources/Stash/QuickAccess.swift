@@ -62,9 +62,16 @@ struct QuickAccessView: View {
                 StashMark(size: 22)
                 TextField("Search stash", text: $query)
                     .textFieldStyle(.plain)
-                    .font(.system(size: 18))
+                    .font(.plex(19))
+                    .foregroundStyle(Color.ink)
                     .focused($focused)
                     .onSubmit { Task { await copyHighlighted() } }
+                    .onKeyPress(.return, phases: .down) { press in
+                        guard press.modifiers.contains(.option),
+                              let item = results[safe: highlighted], item.hasOtp else { return .ignored }
+                        Task { if await model.copyOTP(for: item) { finish("2FA code") } }
+                        return .handled
+                    }
                     .onKeyPress(.downArrow) { highlighted = min(highlighted + 1, max(results.count - 1, 0)); return .handled }
                     .onKeyPress(.upArrow) { highlighted = max(highlighted - 1, 0); return .handled }
                     .onKeyPress(.escape) { close(); return .handled }
@@ -73,8 +80,14 @@ struct QuickAccessView: View {
             .padding(14)
 
             if case .unlocked = model.screen {
-                if !results.isEmpty {
-                    Divider().overlay(Color.border)
+                if results.isEmpty {
+                    Rectangle().fill(Color.line).frame(height: 1)
+                    Text(query.isEmpty ? "Your vault is empty." : "No matches for “\(query)”")
+                        .font(.plex(13))
+                        .foregroundStyle(Color.inkTertiary)
+                        .frame(maxWidth: .infinity, minHeight: 44)
+                } else {
+                    Rectangle().fill(Color.line).frame(height: 1)
                     VStack(spacing: 2) {
                         ForEach(Array(results.enumerated()), id: \.element.id) { index, item in
                             QuickRow(item: item, highlighted: index == highlighted)
@@ -83,38 +96,40 @@ struct QuickAccessView: View {
                     }
                     .padding(6)
                 }
-                HStack {
-                    Text(copied.map { "Copied \($0) · clears in \(Int(Clipboard.clearAfter))s" } ?? "↩ copy password   esc close")
-                        .foregroundStyle(copied == nil ? Color.redacted : Color.success)
-                    Spacer()
-                    if let item = results[safe: highlighted], item.hasOtp {
-                        Button("Copy 2FA code") {
-                            Task {
-                                if await model.copyOTP(for: item) { finish("2FA code") }
-                            }
+                Rectangle().fill(Color.line).frame(height: 1)
+                HStack(spacing: 14) {
+                    if let copied {
+                        Label("Copied \(copied) · clears in \(Int(Clipboard.clearAfter))s", systemImage: "checkmark.circle.fill")
+                            .font(.plex(11.5, weight: .medium))
+                            .foregroundStyle(Color.success)
+                    } else {
+                        KeyHint(keys: "↩", label: "copy password")
+                        if results[safe: highlighted]?.hasOtp == true {
+                            KeyHint(keys: "⌥↩", label: "copy 2FA code")
                         }
-                        .buttonStyle(.link)
+                        KeyHint(keys: "↑↓", label: "move")
                     }
+                    Spacer()
+                    KeyHint(keys: "esc", label: "close")
                 }
-                .font(.mono(11))
                 .padding(.horizontal, 14)
-                .padding(.vertical, 8)
+                .padding(.vertical, 9)
+                .background(Color.surfaceRaised)
             } else {
-                Divider().overlay(Color.border)
+                Rectangle().fill(Color.line).frame(height: 1)
                 Button {
                     Task { await model.unlockWithTouchID() }
                 } label: {
                     Label("Unlock stash", systemImage: "touchid").frame(maxWidth: .infinity)
                 }
-                .buttonStyle(AmberButtonStyle())
+                .buttonStyle(PrimaryButtonStyle(wide: true))
                 .padding(14)
             }
         }
         .frame(width: 560)
-        .background(Color.vaultInk)
+        .background(Color.surface)
         .clipShape(RoundedRectangle(cornerRadius: 14))
-        .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(Color.border))
-        .preferredColorScheme(.dark)
+        .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(Color.line))
         .onAppear {
             query = ""
             copied = nil
@@ -140,18 +155,21 @@ struct QuickRow: View {
     var body: some View {
         HStack(spacing: 10) {
             ItemIcon(kind: item.kind, size: 26)
-            Text(item.name).font(.system(size: 14, weight: .medium)).foregroundStyle(Color.plaintext)
+            (Text(item.folder.map { "\($0)/" } ?? "").foregroundStyle(Color.inkTertiary)
+                + Text(item.title).foregroundStyle(Color.ink))
+                .font(.mono(13.5, weight: .semibold))
+                .lineLimit(1)
             if let user = item.username {
-                Text(user).font(.system(size: 12)).foregroundStyle(Color.redacted)
+                Text(user).font(.plex(12.5)).foregroundStyle(Color.inkTertiary)
             }
             Spacer()
             if highlighted {
-                Text("↩").font(.mono(12)).foregroundStyle(Color.keyholeAmber)
+                Keycap(keys: "↩")
             }
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 6)
-        .background(highlighted ? Color.enclave : .clear, in: RoundedRectangle(cornerRadius: 8))
+        .background(highlighted ? Color.amberTint : .clear, in: RoundedRectangle(cornerRadius: 8))
         .contentShape(Rectangle())
     }
 }

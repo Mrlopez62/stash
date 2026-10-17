@@ -15,6 +15,8 @@ final class AppModel: ObservableObject {
     @Published var busy = false
     /// A value briefly shown after "Copy", for the toast.
     @Published var toast: String?
+    /// The open editor sheet, if any.
+    @Published var editor: EditorTarget?
 
     let backend: VaultBackend?
 
@@ -22,15 +24,65 @@ final class AppModel: ObservableObject {
         self.backend = backend
     }
 
+    enum Filter: Hashable {
+        case all
+        case kind(ItemKind)
+        case twoFactor
+        case folder(String)
+
+        var title: String {
+            switch self {
+            case .all: "All Items"
+            case .kind(let k): k == .note ? "Secure Notes" : "\(k.title)s"
+            case .twoFactor: "Two-Factor"
+            case .folder(let f): f
+            }
+        }
+    }
+
+    enum Sort { case name, updated }
+
+    @Published var filter: Filter = .all
+    @Published var sort: Sort = .name
+
+    func matches(_ item: ItemSummary, _ filter: Filter) -> Bool {
+        switch filter {
+        case .all: true
+        case .kind(let k): item.kind == k
+        case .twoFactor: item.hasOtp
+        case .folder(let f): item.folder?.split(separator: "/").first.map(String.init) == f
+        }
+    }
+
+    func count(_ filter: Filter) -> Int { items.filter { matches($0, filter) }.count }
+
+    /// Top-level folders, from names like `work/github`.
+    var folders: [String] {
+        Array(Set(items.compactMap { $0.folder?.split(separator: "/").first.map(String.init) })).sorted()
+    }
+
     var filtered: [ItemSummary] {
         let q = search.trimmingCharacters(in: .whitespaces).lowercased()
-        guard !q.isEmpty else { return items }
-        return items.filter {
-            $0.name.lowercased().contains(q)
+        let shown = items.filter { matches($0, filter) }.filter {
+            q.isEmpty
+                || $0.name.lowercased().contains(q)
                 || ($0.username?.lowercased().contains(q) ?? false)
                 || ($0.url?.lowercased().contains(q) ?? false)
         }
+        switch sort {
+        // By the name shown in the table (the last segment), then by folder.
+        case .name: return shown.sorted {
+            let order = $0.title.localizedCaseInsensitiveCompare($1.title)
+            return order == .orderedSame
+                ? ($0.folder ?? "").localizedCaseInsensitiveCompare($1.folder ?? "") == .orderedAscending
+                : order == .orderedAscending
+        }
+        case .updated: return shown.sorted { $0.updated > $1.updated }
+        }
     }
+
+    /// In this filter's scope, before searching: for "3 of 12 items".
+    var scopeCount: Int { count(filter) }
 
     // MARK: - Lifecycle
 
@@ -201,13 +253,22 @@ final class AppModel: ObservableObject {
 /// Sample data for snapshots and SwiftUI previews. Nothing here is real.
 final class MockBackend: VaultBackend {
     var locked: Bool
-    var items: [ItemSummary] = [
-        .init(name: "github", kind: .login, username: "octocat", url: "https://github.com", hasOtp: true, updated: 1_792_240_000),
-        .init(name: "openai/api-key", kind: .secret, username: nil, url: nil, hasOtp: false, updated: 1_792_200_000),
-        .init(name: "stripe/secret", kind: .secret, username: nil, url: nil, hasOtp: false, updated: 1_792_100_000),
-        .init(name: "aws/console", kind: .login, username: "me@example.com", url: "https://console.aws.amazon.com", hasOtp: true, updated: 1_792_000_000),
-        .init(name: "notes/wifi", kind: .note, username: nil, url: nil, hasOtp: false, updated: 1_791_900_000),
-    ]
+    var items: [ItemSummary] = {
+        let now = Int(Date().timeIntervalSince1970)
+        return [
+            .init(name: "github", kind: .login, username: "octocat", url: "https://github.com", hasOtp: true, updated: now - 7_200),
+            .init(name: "openai/api-key", kind: .secret, username: nil, url: nil, hasOtp: false, updated: now - 86_400),
+            .init(name: "stripe/secret-key", kind: .secret, username: nil, url: nil, hasOtp: false, updated: now - 3 * 86_400),
+            .init(name: "stripe/dashboard", kind: .login, username: "billing@acme.dev", url: "https://dashboard.stripe.com", hasOtp: true, updated: now - 5 * 86_400),
+            .init(name: "work/aws-console", kind: .login, username: "j.lopez@acme.dev", url: "https://console.aws.amazon.com", hasOtp: true, updated: now - 9 * 86_400),
+            .init(name: "work/vercel", kind: .login, username: "joshua", url: "https://vercel.com", hasOtp: false, updated: now - 12 * 86_400),
+            .init(name: "work/database-url", kind: .secret, username: nil, url: nil, hasOtp: false, updated: now - 20 * 86_400),
+            .init(name: "cloudflare/api-token", kind: .secret, username: nil, url: nil, hasOtp: false, updated: now - 26 * 86_400),
+            .init(name: "linear", kind: .login, username: "joshua@acme.dev", url: "https://linear.app", hasOtp: false, updated: now - 40 * 86_400),
+            .init(name: "notes/home-wifi", kind: .note, username: nil, url: nil, hasOtp: false, updated: now - 60 * 86_400),
+            .init(name: "notes/recovery-codes", kind: .note, username: nil, url: nil, hasOtp: false, updated: now - 90 * 86_400),
+        ]
+    }()
 
     /// Snapshots of the lock screen stay locked (Touch ID "cancelled").
     let stayLocked: Bool

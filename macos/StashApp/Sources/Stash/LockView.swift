@@ -1,5 +1,32 @@
 import SwiftUI
 
+/// A centered card on the canvas, shared by the lock and create screens.
+private struct GateCard<Content: View>: View {
+    @ViewBuilder var content: Content
+
+    var body: some View {
+        VStack {
+            Spacer()
+            Card(padding: 36) {
+                VStack(spacing: 22) { content }
+                    .frame(width: 340)
+            }
+            Spacer()
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color.canvas)
+    }
+}
+
+private struct Brand: View {
+    var body: some View {
+        VStack(spacing: 14) {
+            StashMark(size: 64)
+            Wordmark(size: 34)
+        }
+    }
+}
+
 struct LockView: View {
     @EnvironmentObject var model: AppModel
     @ViewState private var password = ""
@@ -10,64 +37,51 @@ struct LockView: View {
     }
 
     var body: some View {
-        VStack(spacing: 28) {
-            Spacer()
-            HStack(spacing: 16) {
-                StashMark(size: 72)
-                Wordmark(size: 56)
-            }
+        GateCard {
+            Brand()
             Text("Your secrets, one fingerprint away.")
-                .font(.system(size: 15))
-                .foregroundStyle(Color.secondaryText)
+                .font(.plex(14))
+                .foregroundStyle(Color.inkSecondary)
 
-            VStack(spacing: 12) {
+            VStack(spacing: 14) {
                 if touchID {
                     Button {
                         Task { await model.unlockWithTouchID() }
                     } label: {
                         Label("Unlock with Touch ID", systemImage: "touchid")
-                            .frame(maxWidth: .infinity)
                     }
-                    .buttonStyle(AmberButtonStyle())
+                    .buttonStyle(PrimaryButtonStyle(wide: true))
                     .keyboardShortcut(.defaultAction)
 
-                    Text("or enter your master password")
-                        .font(.caption)
-                        .foregroundStyle(Color.redacted)
-                }
-                HStack(spacing: 8) {
-                    SecureField("Master password", text: $password)
-                        .textFieldStyle(.plain)
-                        .font(.mono(14))
-                        .padding(10)
-                        .background(Color.enclave, in: RoundedRectangle(cornerRadius: 8))
-                        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Color.border))
-                        .focused($focused)
-                        .onSubmit(submitPassword)
-                    if !touchID {
-                        Button("Unlock", action: submitPassword)
-                            .buttonStyle(AmberButtonStyle())
-                            .disabled(password.isEmpty)
+                    HStack(spacing: 10) {
+                        Rectangle().fill(Color.line).frame(height: 1)
+                        Text("or").font(.plex(12)).foregroundStyle(Color.inkTertiary)
+                        Rectangle().fill(Color.line).frame(height: 1)
                     }
                 }
+                FieldBox(icon: "lock", mono: false) {
+                    SecureField("", text: $password, prompt: Text("Master password").font(.plex(13.5)).foregroundStyle(Color.inkTertiary))
+                        .focused($focused)
+                        .onSubmit(submitPassword)
+                }
+                if !touchID {
+                    Button("Unlock", action: submitPassword)
+                        .buttonStyle(PrimaryButtonStyle(wide: true))
+                        .disabled(password.isEmpty)
+                }
             }
-            .frame(width: 340)
 
             if let error = model.error {
-                Text(error)
-                    .font(.callout)
-                    .foregroundStyle(.red)
+                Label(error, systemImage: "exclamationmark.circle")
+                    .font(.plex(12.5))
+                    .foregroundStyle(Color.danger)
                     .multilineTextAlignment(.center)
-                    .frame(width: 340)
             }
-            Spacer()
+
             Text(model.status?.vaultPath ?? "")
                 .font(.mono(11))
-                .foregroundStyle(Color.redacted)
-                .padding(.bottom, 16)
+                .foregroundStyle(Color.inkTertiary)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color.vaultInk)
         .disabled(model.busy)
         .task {
             if touchID {
@@ -92,62 +106,43 @@ struct CreateVaultView: View {
     @ViewState private var confirm = ""
 
     private var problem: String? {
-        if password.count < 8 { return "Use at least 8 characters — a long passphrase is best." }
+        if password.count < 8 { return "Use at least 8 characters. A long passphrase is best." }
         if password != confirm { return "The passwords don't match." }
         return nil
     }
 
     var body: some View {
-        VStack(spacing: 24) {
-            Spacer()
-            HStack(spacing: 16) {
-                StashMark(size: 64)
-                Wordmark(size: 48)
+        GateCard {
+            Brand()
+            VStack(spacing: 6) {
+                Text("Create your vault")
+                    .font(.plex(18, weight: .semibold))
+                    .foregroundStyle(Color.ink)
+                Text("Your master password is the one thing stash can't recover, so make it long and memorable.")
+                    .font(.plex(13))
+                    .foregroundStyle(Color.inkSecondary)
+                    .multilineTextAlignment(.center)
             }
-            Text("Create your vault")
-                .font(.system(size: 22, weight: .semibold))
-                .foregroundStyle(Color.plaintext)
-            Text("Choose a master password. It's the one thing stash can't recover for you, so make it memorable and long.")
-                .font(.callout)
-                .foregroundStyle(Color.secondaryText)
-                .multilineTextAlignment(.center)
-                .frame(width: 360)
             VStack(spacing: 10) {
-                SecureField("Master password", text: $password)
-                SecureField("Confirm master password", text: $confirm)
+                FieldBox(icon: "lock", mono: false) {
+                    SecureField("", text: $password, prompt: Text("Master password").font(.plex(13.5)).foregroundStyle(Color.inkTertiary))
+                }
+                FieldBox(icon: "lock", mono: false) {
+                    SecureField("", text: $confirm, prompt: Text("Confirm master password").font(.plex(13.5)).foregroundStyle(Color.inkTertiary))
+                }
             }
-            .textFieldStyle(.roundedBorder)
-            .frame(width: 340)
             Button("Create Vault") {
                 let pw = password
                 password = ""
                 confirm = ""
                 Task { await model.createVault(password: pw) }
             }
-            .buttonStyle(AmberButtonStyle())
+            .buttonStyle(PrimaryButtonStyle(wide: true))
             .disabled(problem != nil)
-            Text(problem ?? model.error ?? " ")
-                .font(.caption)
-                .foregroundStyle(model.error != nil ? .red : Color.redacted)
-            Spacer()
+            Text(model.error ?? problem ?? " ")
+                .font(.plex(12))
+                .foregroundStyle(model.error != nil ? Color.danger : Color.inkTertiary)
+                .multilineTextAlignment(.center)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color.vaultInk)
-    }
-}
-
-/// The primary action: amber, used sparingly.
-struct AmberButtonStyle: ButtonStyle {
-    @Environment(\.isEnabled) private var enabled
-
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .font(.system(size: 14, weight: .semibold))
-            .padding(.horizontal, 16)
-            .padding(.vertical, 10)
-            .foregroundStyle(Color.vaultInk)
-            .background(
-                Color.keyholeAmber.opacity(enabled ? (configuration.isPressed ? 0.8 : 1) : 0.4),
-                in: RoundedRectangle(cornerRadius: 8))
     }
 }
