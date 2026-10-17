@@ -1,9 +1,18 @@
-# stash
+<h1 align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/brand/logo-dark.svg">
+    <img src="docs/brand/logo-light.svg" alt="stash" width="340">
+  </picture>
+</h1>
 
-**A free, developer-first secrets manager for macOS. Unlock with Touch ID, pass API tokens into commands safely, and let AI agents use your secrets without ever seeing them.**
+<p align="center"><strong>Your secrets, one fingerprint away.</strong></p>
 
-[![CI](https://github.com/Mrlopez62/stash/actions/workflows/ci.yml/badge.svg)](https://github.com/Mrlopez62/stash/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+<p align="center">
+  <a href="https://github.com/Mrlopez62/stash/actions/workflows/ci.yml"><img src="https://github.com/Mrlopez62/stash/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-F5B544.svg?labelColor=0E1116" alt="License: MIT"></a>
+</p>
+
+A free, developer-first secrets manager for macOS. Unlock with Touch ID, pass API tokens into commands safely, and let AI agents use your secrets without ever seeing them.
 
 > **Status: early development (v0.2).** The encrypted vault, the CLI, Touch ID unlock, and unlocked sessions work today. `stash run` and MCP support are next (see [Roadmap](#roadmap)). Don't trust it with production secrets until it has been reviewed.
 
@@ -151,6 +160,10 @@ This compares stash's planned v1 with the other tools.
 | MCP / AI-agent support | ✅ built in | Limited | ❌ | ❌ |
 | Data stays local | ✅ | ❌ (cloud) | ❌ unless self-hosted | ✅ |
 | Browser autofill | Later | ✅ | ✅ | Via plugins |
+
+## Brand
+
+The logo, colors, and type are documented in [docs/brand](docs/brand/README.md).
 
 ## Contributing
 
