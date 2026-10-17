@@ -135,3 +135,16 @@ pub fn unlock(helper: &Path, vault: &Path, reason: &str) -> Result<SecretKey, Un
         _ => Err(UnlockError::Failed(out.stderr)),
     }
 }
+
+/// Ask for a fingerprint to approve an action, without unwrapping anything.
+/// `reason` finishes the sentence "stash-touchid is trying to …".
+pub fn confirm(helper: &Path, reason: &str) -> Result<(), UnlockError> {
+    let out = run(helper, &["confirm", reason], "")
+        .map_err(|e| UnlockError::Unavailable(format!("{e:#}")))?;
+    match out.code {
+        Some(0) => Ok(()),
+        Some(2) => Err(UnlockError::Cancelled),
+        Some(3) => Err(UnlockError::Unavailable(out.stderr)),
+        _ => Err(UnlockError::Failed(out.stderr)),
+    }
+}
