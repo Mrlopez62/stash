@@ -249,3 +249,194 @@ fn touch_id_enable_requires_the_helper() {
         .assert()
         .failure();
 }
+
+// ---- stash run / stash inject ----
+
+fn init_with_secrets() -> TempDir {
+    let dir = init();
+    for (name, value) in [
+        ("github/token", "ghp_abc123"),
+        ("db/url", "postgres://u:p@h/db"),
+    ] {
+        stash(&dir)
+            .args(["add", name])
+            .write_stdin(value)
+            .assert()
+            .success();
+    }
+    dir
+}
+
+#[test]
+fn run_injects_references_from_env_files_and_masks_output() {
+    let dir = init_with_secrets();
+    let env = dir.path().join(".env");
+    std::fs::write(&env, "TOKEN=stash://github/token\nPLAIN=hello\n").unwrap();
+
+    stash(&dir)
+        .args(["run", "--env-file"])
+        .arg(&env)
+        .args([
+            "--",
+            "sh",
+            "-c",
+            r#"echo "$PLAIN $TOKEN"; echo "err $TOKEN" >&2"#,
+        ])
+        .assert()
+        .success()
+        .stdout("hello <concealed by stash>\n")
+        .stderr("err <concealed by stash>\n");
+}
+
+#[test]
+fn run_without_masking_passes_values_through() {
+    let dir = init_with_secrets();
+    stash(&dir)
+        .env("TOKEN", "stash://github/token")
+        .args([
+            "run",
+            "--no-masking",
+            "--",
+            "sh",
+            "-c",
+            r#"printf %s "$TOKEN""#,
+        ])
+        .assert()
+        .success()
+        .stdout("ghp_abc123");
+}
+
+#[test]
+fn run_resolves_references_in_the_inherited_environment() {
+    let dir = init_with_secrets();
+    // The child proves it got the real value without printing it.
+    stash(&dir)
+        .env("DATABASE_URL", "stash://db/url")
+        .args([
+            "run",
+            "--",
+            "sh",
+            "-c",
+            r#"test "$DATABASE_URL" = "postgres://u:p@h/db""#,
+        ])
+        .assert()
+        .success();
+}
+
+#[test]
+fn run_passes_through_exit_codes_and_never_leaks_the_master_password() {
+    let dir = init_with_secrets();
+    stash(&dir)
+        .args(["run", "--", "sh", "-c", "exit 7"])
+        .assert()
+        .code(7);
+    stash(&dir)
+        .args([
+            "run",
+            "--",
+            "sh",
+            "-c",
+            r#"printf %s "${STASH_PASSWORD-unset}""#,
+        ])
+        .assert()
+        .success()
+        .stdout("unset");
+}
+
+#[test]
+fn run_needs_no_unlock_without_references() {
+    let dir = init_with_secrets();
+    // A wrong password would fail any unlock; with no references none happens.
+    stash(&dir)
+        .env("STASH_PASSWORD", "wrong-password")
+        .args(["run", "--", "true"])
+        .assert()
+        .success();
+}
+
+#[test]
+fn run_reports_missing_secrets_and_commands() {
+    let dir = init_with_secrets();
+    stash(&dir)
+        .env("TOKEN", "stash://nope")
+        .args(["run", "--", "true"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("resolving TOKEN"))
+        .stderr(predicate::str::contains("no secret named `nope`"));
+    stash(&dir)
+        .args(["run", "--", "definitely-not-a-command-xyz"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "command not found: definitely-not-a-command-xyz",
+        ));
+}
+
+#[test]
+fn get_accepts_a_reference() {
+    let dir = init_with_secrets();
+    stash(&dir)
+        .args(["get", "stash://github/token"])
+        .assert()
+        .success()
+        .stdout("ghp_abc123");
+}
+
+#[test]
+fn inject_fills_templates_into_a_private_file() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = init_with_secrets();
+    let tpl = dir.path().join("config.tpl.yml");
+    let out = dir.path().join("config.yml");
+    std::fs::write(
+        &tpl,
+        "db: {{ stash://db/url }}\ntoken: {{stash://github/token}}\nkeep: {{ other }}\n",
+    )
+    .unwrap();
+
+    stash(&dir)
+        .args(["inject", "-i"])
+        .arg(&tpl)
+        .arg("-o")
+        .arg(&out)
+        .assert()
+        .success();
+    assert_eq!(
+        std::fs::read_to_string(&out).unwrap(),
+        "db: postgres://u:p@h/db\ntoken: ghp_abc123\nkeep: {{ other }}\n"
+    );
+    let mode = std::fs::metadata(&out).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o600);
+
+    // Refuses to overwrite without --force.
+    stash(&dir)
+        .args(["inject", "-i"])
+        .arg(&tpl)
+        .arg("-o")
+        .arg(&out)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("already exists"));
+}
+
+#[test]
+fn inject_writes_nothing_when_a_reference_is_missing() {
+    let dir = init_with_secrets();
+    let out = dir.path().join("out.txt");
+    stash(&dir)
+        .args(["inject", "-o"])
+        .arg(&out)
+        .write_stdin("ok: {{ stash://db/url }}\nbad: {{ stash://missing }}\n")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("no secret named `missing`"));
+    assert!(!out.exists());
+
+    stash(&dir)
+        .arg("inject")
+        .write_stdin("x={{ stash://github/token }}")
+        .assert()
+        .success()
+        .stdout("x=ghp_abc123");
+}
