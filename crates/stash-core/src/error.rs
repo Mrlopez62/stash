@@ -4,6 +4,8 @@ use std::path::PathBuf;
 pub enum Error {
     #[error("wrong master password")]
     WrongPassword,
+    #[error("this key does not unlock the vault")]
+    WrongKey,
     #[error("no secret named `{0}`")]
     NotFound(String),
     #[error("a secret named `{0}` already exists (use --force to overwrite)")]

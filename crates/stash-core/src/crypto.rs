@@ -114,6 +114,35 @@ pub fn hmac(key: &[u8], data: &[u8]) -> [u8; 32] {
     mac.finalize().into_bytes().into()
 }
 
+/// Constant-time equality, so comparisons don't leak how many bytes matched.
+pub fn ct_eq(a: &[u8], b: &[u8]) -> bool {
+    a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+}
+
+/// Lowercase hex encoding, for passing keys between processes.
+pub fn to_hex(bytes: &[u8]) -> Zeroizing<String> {
+    let mut out = Zeroizing::new(String::with_capacity(bytes.len() * 2));
+    for b in bytes {
+        out.push(char::from(b"0123456789abcdef"[usize::from(b >> 4)]));
+        out.push(char::from(b"0123456789abcdef"[usize::from(b & 0xf)]));
+    }
+    out
+}
+
+/// Decode a 32-byte key from hex. Returns `None` on any malformed input.
+pub fn key_from_hex(hex: &str) -> Option<SecretKey> {
+    let hex = hex.trim().as_bytes();
+    if hex.len() != KEY_LEN * 2 {
+        return None;
+    }
+    let nibble = |c: u8| (c as char).to_digit(16).map(|d| d as u8);
+    let mut key = Zeroizing::new([0u8; KEY_LEN]);
+    for (i, pair) in hex.as_chunks::<2>().0.iter().enumerate() {
+        key[i] = nibble(pair[0])? << 4 | nibble(pair[1])?;
+    }
+    Some(key)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -138,5 +167,21 @@ mod tests {
     fn open_rejects_truncated_blob() {
         let key = random_key().unwrap();
         assert!(matches!(open(&key, b"", &[0u8; 10]), Err(Error::Decrypt)));
+    }
+
+    #[test]
+    fn hex_round_trips_and_rejects_garbage() {
+        let key = random_key().unwrap();
+        let hex = to_hex(key.as_ref());
+        assert_eq!(*key_from_hex(&hex).unwrap(), *key);
+        assert!(key_from_hex("abc").is_none());
+        assert!(key_from_hex(&"zz".repeat(KEY_LEN)).is_none());
+    }
+
+    #[test]
+    fn ct_eq_compares_contents() {
+        assert!(ct_eq(b"abc", b"abc"));
+        assert!(!ct_eq(b"abc", b"abd"));
+        assert!(!ct_eq(b"abc", b"ab"));
     }
 }
