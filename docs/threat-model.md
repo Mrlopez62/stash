@@ -1,12 +1,12 @@
 # Threat model
 
-This document covers what stash protects against, how it does it, and what it doesn't protect against. It describes **v0.5**: an encrypted vault file, a CLI, Touch ID unlock, sessions scoped to your shell, `stash run` / `stash inject`, and the MCP server for AI agents.
+This document covers what stash protects against, how it does it, and what it doesn't protect against. It describes **v0.6**: an encrypted vault file, a CLI, Touch ID unlock, sessions scoped to your shell, `stash run` / `stash inject`, and the MCP server for AI agents.
 
 ## What we protect
 
 The names and values of the secrets in your vault.
 
-## Vault format (version 1)
+## Vault format (version 2)
 
 The vault is a single SQLite file, `~/.stash/vault.db` by default.
 
@@ -14,10 +14,13 @@ The vault is a single SQLite file, `~/.stash/vault.db` by default.
 |---|---|
 | Master password | Never stored. It goes through **Argon2id** (64 MiB, 3 passes, 1 lane) with a random 16-byte salt to produce a key-encryption key (KEK). |
 | Vault key | 32 random bytes from the operating system's random number generator, encrypted with the KEK using **XChaCha20-Poly1305**. The encryption is bound to the format version, the KDF parameters, and the salt, so none of them can be changed without being detected. |
-| Secret names | Never stored in plaintext. Each row's id is `HMAC-SHA256(index_key, name)`, where `index_key` is derived from the vault key. The name is also encrypted along with the value. |
-| Secret values | Encrypted together with the name using XChaCha20-Poly1305 and the vault key. Each one gets a fresh random 24-byte nonce, and the row id is bound into the encryption, so an encrypted value can't be moved to a different row. |
+| Item names | Never stored in plaintext. Each row's id is `HMAC-SHA256(index_key, name)`, where `index_key` is derived from the vault key. The name is also encrypted along with the value. |
+| Item contents | Encrypted together with the name using XChaCha20-Poly1305 and the vault key. Each one gets a fresh random 24-byte nonce, and the row id is bound into the encryption, so an encrypted value can't be moved to a different row. |
+| Logins and notes | Their fields (usernames, URLs, passwords, 2FA secrets, notes, timestamps) are JSON *inside* the same per-item encryption. A copied vault doesn't reveal even an item's kind, its usernames, or its websites. |
 | Deleted secrets | SQLite's `secure_delete` setting overwrites freed pages with zeros. |
 | File permissions | The vault file is created with mode `0600`, and new parent directories with `0700`. |
+
+**Version 2** only adds the structured encoding for logins and notes. Single-value secrets keep the original encoding. A version 1 vault opens normally. Unlocking it with the master password re-wraps the vault key bound to version 2, so older versions of stash refuse it instead of misreading new items. Unlocking with Touch ID or a session can't do that, because only the password-derived key can re-wrap.
 
 Because of this design, changing the master password (not yet available as a command) will only need to re-encrypt the vault key, not every secret.
 

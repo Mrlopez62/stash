@@ -4,6 +4,12 @@ use std::path::PathBuf;
 pub enum Error {
     #[error("wrong master password")]
     WrongPassword,
+    #[error("`{0}` has no field `{1}`")]
+    NoSuchField(String, String),
+    #[error("`{0}` holds binary data, which only `stash get` can output")]
+    NotText(String),
+    #[error("invalid password rules: {0}")]
+    InvalidRules(String),
     #[error("not a valid 2FA (TOTP) secret: {0}")]
     InvalidOtp(String),
     #[error("this key does not unlock the vault")]

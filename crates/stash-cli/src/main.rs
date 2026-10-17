@@ -3,6 +3,7 @@ mod audit;
 mod clipboard;
 mod envfile;
 mod inject;
+mod items;
 mod mask;
 mod mcp;
 mod procinfo;
@@ -18,7 +19,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
-use secrecy::ExposeSecret;
+use stash_core::reference;
 use stash_core::{KdfParams, Vault};
 use zeroize::Zeroizing;
 
@@ -38,17 +39,56 @@ struct Cli {
 enum Command {
     /// Create a new vault protected by a master password
     Init,
-    /// Store a secret (value is read from stdin, or prompted for without echo)
+    /// Store a secret, login, or note (secret values are read from stdin or
+    /// a prompt without echo, never from flags)
+    #[command(
+        after_help = "Examples:\n  stash add openai/api-key                     # a single secret\n  stash add github --login --username octocat --url https://github.com --generate\n  stash add github --login --otp               # asks for the password and 2FA secret\n  stash add notes/wifi --note"
+    )]
     Add {
-        /// Secret name, e.g. `github/token`
+        /// Item name, e.g. `github/token`
         name: String,
-        /// Overwrite the secret if it already exists
+        /// Overwrite the item if it already exists
         #[arg(long, short)]
         force: bool,
+        /// Create a login (username, password, website, 2FA)
+        #[arg(long, conflicts_with = "note")]
+        login: bool,
+        /// Create a secure note
+        #[arg(long)]
+        note: bool,
+        #[command(flatten)]
+        fields: items::LoginArgs,
     },
-    /// Print a secret's value
+    /// Change an item's fields
+    #[command(
+        after_help = "Examples:\n  stash edit github --generate               # new random password\n  stash edit github --otp                    # add or replace 2FA\n  stash edit github --set recovery-email=me@example.com --unset website"
+    )]
+    Edit {
+        /// Item name
+        name: String,
+        #[command(flatten)]
+        args: items::EditArgs,
+    },
+    /// Show an item's fields (hidden values stay hidden unless --reveal)
+    Show {
+        /// Item name
+        name: String,
+        /// Show passwords, 2FA codes, and notes
+        #[arg(long)]
+        reveal: bool,
+    },
+    /// Generate a random password
+    Generate {
+        #[command(flatten)]
+        rules: items::GenerateArgs,
+        /// Copy it to the clipboard instead of printing it
+        #[arg(long, short)]
+        copy: bool,
+    },
+    /// Print a value: an item's main value (a login's password), or one field
     Get {
-        /// Secret name or reference, e.g. `github/token` or `stash://github/token`
+        /// Item name, `name#field` (e.g. `github#username`, `github#otp`), or a
+        /// `stash://` reference
         name: String,
         /// Copy to the clipboard instead of printing; cleared after 30 seconds
         /// (STASH_CLIPBOARD_TIMEOUT) if it hasn't changed
@@ -69,9 +109,13 @@ enum Command {
         #[arg(long, short)]
         copy: bool,
     },
-    /// List secret names (never values)
+    /// List item names (never values)
     #[command(alias = "list")]
-    Ls,
+    Ls {
+        /// Also show each item's kind, username, website, and 2FA
+        #[arg(long, short)]
+        long: bool,
+    },
     /// Delete a secret
     #[command(alias = "remove")]
     Rm {
@@ -219,30 +263,66 @@ fn run(cli: Cli) -> Result<ExitCode> {
                 eprintln!("Tip: run `stash touchid enable` to unlock with your fingerprint.");
             }
         }
-        Command::Add { name, force } => {
+        Command::Add {
+            name,
+            force,
+            login,
+            note,
+            fields,
+        } => {
             stash_core::validate_name(&name)?;
             let mut vault = unlock(&path, &format!("add {name}"))?;
-            let value = read_value(&name)?;
-            vault.add(&name, &value, force)?;
-            eprintln!("Saved {name}");
+            if login {
+                items::add_login(&mut vault, &name, &fields, force)?;
+            } else if note {
+                items::add_note(&mut vault, &name, force)?;
+            } else {
+                if fields.username.is_some()
+                    || fields.url.is_some()
+                    || fields.otp
+                    || fields.generate
+                {
+                    bail!("--username, --url, --otp, and --generate need --login");
+                }
+                let value = read_value(&name)?;
+                vault.add(&name, &value, force)?;
+                eprintln!("Saved {name}");
+            }
+        }
+        Command::Edit { name, args } => {
+            stash_core::validate_name(&name)?;
+            let mut vault = unlock(&path, &format!("edit {name}"))?;
+            items::edit(&mut vault, &name, &args)?;
+        }
+        Command::Show { name, reveal } => {
+            let r = reference::parse_arg(&name)?;
+            let vault = unlock(&path, &format!("show {}", r.name))?;
+            items::show(&vault, r.name, reveal)?;
+        }
+        Command::Generate { rules, copy } => {
+            let password = stash_core::generate::password(rules.rules())?;
+            if copy {
+                copy_to_clipboard(password.as_bytes(), "a new password")?;
+            } else {
+                print_secret(password.as_bytes())?;
+            }
         }
         Command::Get { name, copy } => {
-            let name = stash_core::reference::parse(&name)?.unwrap_or(&name);
-            let vault = unlock(&path, &format!("get {name}"))?;
-            let value = vault.get(name)?;
+            let r = reference::parse_arg(&name)?;
+            let shown = r.describe();
+            let vault = unlock(&path, &format!("get {shown}"))?;
+            let value = vault.resolve(&r, unix_now())?;
             if copy {
-                copy_to_clipboard(value.expose_secret(), name)?;
+                copy_to_clipboard(&value, &shown)?;
             } else {
-                print_secret(value.expose_secret())?;
+                print_secret(&value)?;
             }
         }
         Command::Otp { name, copy } => {
-            let name = stash_core::reference::parse(&name)?.unwrap_or(&name);
+            let name = reference::parse_arg(&name)?.name;
             let vault = unlock(&path, &format!("get a 2FA code for {name}"))?;
-            let value = vault.get(name)?;
-            let text = std::str::from_utf8(value.expose_secret())
-                .map_err(|_| stash_core::Error::InvalidOtp("the value isn't text".into()))?;
-            let totp = stash_core::otp::Totp::parse(text)
+            let secret = items::otp_secret(&vault, name)?;
+            let totp = stash_core::otp::Totp::parse(&secret)
                 .with_context(|| format!("{name} isn't a 2FA secret"))?;
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)?
@@ -255,11 +335,15 @@ fn run(cli: Cli) -> Result<ExitCode> {
             }
             ui::success(&format!("valid for {}s", totp.remaining(now)));
         }
-        Command::Ls => {
+        Command::Ls { long } => {
             let vault = unlock(&path, "list secret names")?;
-            let mut out = io::stdout().lock();
-            for name in vault.names()? {
-                writeln!(out, "{name}")?;
+            if long {
+                items::list_long(&vault)?;
+            } else {
+                let mut out = io::stdout().lock();
+                for name in vault.names()? {
+                    writeln!(out, "{name}")?;
+                }
             }
         }
         Command::Rm { name } => {
@@ -520,9 +604,25 @@ fn new_password() -> Result<Zeroizing<String>> {
 /// Prompt without echo on a terminal; otherwise read all of stdin, dropping
 /// one trailing newline so `echo token | stash add name` stores `token`.
 fn read_value(name: &str) -> Result<Zeroizing<Vec<u8>>> {
+    read_input(&format!("Value for {name}: "))
+}
+
+pub(crate) fn stdin_is_terminal() -> bool {
+    io::stdin().is_terminal()
+}
+
+pub(crate) fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
+}
+
+/// A hidden prompt on a terminal; otherwise all of stdin, minus one trailing
+/// newline.
+pub(crate) fn read_input(prompt: &str) -> Result<Zeroizing<Vec<u8>>> {
     let stdin = io::stdin();
     if stdin.is_terminal() {
-        let value = Zeroizing::new(rpassword::prompt_password(format!("Value for {name}: "))?);
+        let value = Zeroizing::new(rpassword::prompt_password(prompt)?);
         if value.is_empty() {
             bail!("value is empty");
         }

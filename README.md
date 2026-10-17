@@ -14,7 +14,7 @@
 
 A free, developer-first secrets manager for macOS. Unlock with Touch ID, pass API tokens into commands safely, and let AI agents use your secrets without ever seeing them.
 
-> **Status: early development (v0.5).** The encrypted vault, the CLI, Touch ID unlock, sessions scoped to your shell, `stash://` references, `stash run`, `stash inject`, the MCP server for AI agents, clipboard copy, and 2FA codes work today. A native Mac app is next. See the [Roadmap](#roadmap) for what's next. Don't trust it with production secrets until it has been reviewed.
+> **Status: early development (v0.6).** The encrypted vault, logins and notes, the password generator, the CLI, Touch ID unlock, sessions scoped to your shell, `stash://` references, `stash run`, `stash inject`, the MCP server for AI agents, clipboard copy, and 2FA codes work today. The native Mac app is next (see the [Roadmap](#roadmap)). Don't trust it with production secrets until it has been reviewed.
 
 ## Getting started
 
@@ -28,6 +28,7 @@ cd stash
 stash init                            # create a vault (asks for a new master password)
 stash touchid enable                  # macOS: unlock with your fingerprint from now on
 stash add github/token                # prompts for the value without echoing it
+stash add github --login --username octocat --url https://github.com --generate
 echo "$OPENAI_KEY" | stash add openai/api-key   # or pipe it in
 stash ls                              # names only
 stash get github/token                # prints the value
@@ -121,12 +122,41 @@ If any reference is missing, nothing is written. Existing files are only overwri
 
 `stash get` also accepts a reference: `stash get stash://github/token`.
 
+### Logins, notes, and passwords
+
+Items come in three kinds: a single **secret** (an API token), a **login** (username, password, website, optional 2FA), or a **note**.
+
+```sh
+stash add github --login --username octocat --url https://github.com --generate
+stash add github --login --otp           # type the password, then paste the 2FA secret
+stash add notes/wifi --note
+
+stash show github                        # fields, with passwords and codes hidden
+stash show github --reveal
+stash ls --long                          # kind, username, website, 2FA for every item
+
+stash edit github --generate             # new random password
+stash edit github --otp                  # add or replace 2FA
+stash edit github --set recovery-email=me@example.com --unset website
+
+stash generate --length 32 --no-symbols  # just a password
+```
+
+**Reference one field with `#`:**
+- `stash://github` is a login's password, so existing references keep working.
+- `stash://github#username` is its username.
+- `stash://github#otp` is the **current 2FA code**.
+
+These work everywhere references do: `stash get github#username`, `.env` files for `stash run`, `stash inject` templates, and the MCP server.
+
+Passwords, 2FA secrets, and notes are only ever read from a hidden prompt or stdin, never from flags, so they stay out of your shell history. Generated passwords use the OS random number generator with uniform sampling, and always include each enabled character type.
+
 ### Clipboard and 2FA codes
 
 - **`stash get <name> --copy`** puts a secret on the clipboard instead of printing it.
   - It's cleared after 30 seconds, but only if the clipboard still holds that secret, so something you've copied since is left alone.
   - `STASH_CLIPBOARD_TIMEOUT` changes the delay, and `0` keeps the value.
-- **`stash otp <name>`** prints the current 2FA code. Add `--copy` to copy it instead.
+- **`stash otp <name>`** prints the current 2FA code, from a 2FA secret or a login's 2FA field. Add `--copy` to copy it instead.
   - **Adding a 2FA item:** store either the `otpauth://totp/...` URI from the 2FA setup QR code or the base32 secret shown under "can't scan it?", with `stash add github/2fa`.
   - **Code formats:** 6–8 digits, any period, and SHA-1, SHA-256, or SHA-512, checked against the RFC 6238 test vectors.
 
@@ -193,7 +223,7 @@ Rust handles everything that is security-critical and cross-platform. The Swift 
 | v0.3 ✅ | `stash://` references, `run`, `inject` |
 | v0.4 ✅ | MCP server with Touch ID approvals, allowlists, and an audit log; sessions scoped to your shell |
 | v0.5 ✅ | `stash get --copy` with a self-clearing clipboard, 2FA (TOTP) codes |
-| v0.6 | 1Password-style items: logins with username, password, URL, 2FA, and notes; password generator |
+| v0.6 ✅ | 1Password-style items: logins with username, password, URL, 2FA, and notes; `#field` references; password generator |
 | v0.7 | **The stash Mac app:** menu bar, Quick Access search, vault browser and editor, Touch ID. Ships the CLI and helpers inside `stash.app` |
 | v0.8 | SSH agent, git commit signing |
 | Later | Encrypted sync (iCloud Drive or Git), browser extension, Linux support |

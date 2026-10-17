@@ -72,7 +72,7 @@ pub fn now_rfc3339() -> String {
 
 /// Seconds since the epoch → `YYYY-MM-DDTHH:MM:SSZ` (Howard Hinnant's
 /// civil-from-days algorithm), to avoid a date-time dependency.
-fn format_utc(secs: u64) -> String {
+pub(crate) fn format_utc(secs: u64) -> String {
     let days = (secs / 86_400) as i64;
     let rem = secs % 86_400;
     let z = days + 719_468;
