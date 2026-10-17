@@ -299,3 +299,23 @@ fn the_mcp_server_never_creates_a_shell_session() {
     f.mcp(&[], &[json!({"name": "list_secrets", "arguments": {}})]);
     assert!(!f.dir.path().join("agent.sock").exists());
 }
+
+#[test]
+fn missing_references_fail_before_any_approval_prompt() {
+    let f = Fixture::new();
+    let results = f.mcp(
+        &[],
+        &[
+            json!({"name": "list_secrets", "arguments": {}}),
+            run_call(&["true"], json!({"T": "stash://github/token#nope"})),
+            run_call(&["true"], json!({"T": "stash://missing"})),
+        ],
+    );
+    for r in &results[1..] {
+        assert_eq!(r["isError"], true, "{r}");
+    }
+    assert!(text(&results[1]).contains("has no field `nope`"));
+    assert!(text(&results[2]).contains("no secret named `missing`"));
+    // Only the unlock for list_secrets: no approval was asked for either run.
+    assert_eq!(f.prompts().len(), 1, "{:?}", f.prompts());
+}

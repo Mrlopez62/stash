@@ -284,6 +284,9 @@ fn run(cli: Cli) -> Result<ExitCode> {
                 {
                     bail!("--username, --url, --otp, and --generate need --login");
                 }
+                if !force && vault.contains(&name)? {
+                    bail!("{name} already exists (use --force to overwrite)");
+                }
                 let value = read_value(&name)?;
                 vault.add(&name, &value, force)?;
                 eprintln!("Saved {name}");
@@ -635,6 +638,9 @@ pub(crate) fn read_input(prompt: &str) -> Result<Zeroizing<Vec<u8>>> {
         if value.ends_with(b"\r") {
             value.pop();
         }
+    }
+    if value.is_empty() {
+        bail!("value is empty");
     }
     Ok(value)
 }

@@ -330,6 +330,18 @@ impl Server {
         Ok((&unlocked.vault, approved))
     }
 
+    /// The vault right after an approval. Uses the key that was just checked
+    /// even if the idle timeout passed while the dialog was open, so a slow
+    /// approval never causes a second prompt.
+    fn after_approval(&mut self, purpose: &str) -> Result<&Vault, Refusal> {
+        if self.unlocked.is_none() {
+            return Ok(self.vault(purpose)?.0);
+        }
+        let unlocked = self.unlocked.as_mut().expect("checked above");
+        unlocked.last_used = Instant::now();
+        Ok(&unlocked.vault)
+    }
+
     /// Ask the user to approve `purpose` with Touch ID, unless the unlock
     /// that just happened already asked.
     fn approve(&self, purpose: &str, already_approved: bool) -> Result<(), Refusal> {
@@ -398,7 +410,18 @@ impl Server {
                 request.display,
                 crate::run::summarize(&described.iter().map(String::as_str).collect::<Vec<_>>())
             );
-            let (vault, approved) = self.vault(&purpose)?;
+            // Fail on missing items before bothering the user, but produce
+            // values only after approval, so a 2FA code is fresh when the
+            // command starts.
+            let approved = {
+                let (vault, approved) = self.vault(&purpose)?;
+                for (_, r) in &request.references {
+                    check_exists(vault, &r.as_ref())?;
+                }
+                approved
+            };
+            self.approve(&purpose, approved)?;
+            let vault = self.after_approval(&purpose)?;
             let now = crate::unix_now();
             for (key, r) in &request.references {
                 let value = vault.resolve(&r.as_ref(), now)?;
@@ -410,7 +433,6 @@ impl Server {
                 }
                 resolved.push((key.clone(), value));
             }
-            self.approve(&purpose, approved)?;
         }
 
         let output = execute(&request, &resolved).map_err(Refusal::from)?;
@@ -455,13 +477,31 @@ impl Server {
         self.check_allowed(&[&r.name])?;
 
         let purpose = format!("see the value of {shown}");
-        let (vault, approved) = self.vault(&purpose)?;
+        let approved = {
+            let (vault, approved) = self.vault(&purpose)?;
+            check_exists(vault, &r.as_ref())?;
+            approved
+        };
+        self.approve(&purpose, approved)?;
+        let vault = self.after_approval(&purpose)?;
         let value = vault.resolve(&r.as_ref(), crate::unix_now())?;
         let text = String::from_utf8(value.to_vec())
             .map_err(|_| Refusal::new("error", format!("{shown} isn't text")))?;
-        self.approve(&purpose, approved)?;
         Ok(json!({ "content": [{ "type": "text", "text": text }] }))
     }
+}
+
+/// Does this reference point at something, without producing its value?
+fn check_exists(vault: &Vault, r: &reference::Reference) -> Result<(), Refusal> {
+    if !vault.contains(r.name)? {
+        return Err(stash_core::Error::NotFound(r.name.to_owned()).into());
+    }
+    if let Some(field) = r.field
+        && vault.item(r.name)?.field(field).is_none()
+    {
+        return Err(stash_core::Error::NoSuchField(r.name.to_owned(), field.to_owned()).into());
+    }
+    Ok(())
 }
 
 fn touch_id_refusal(e: touchid::UnlockError) -> Refusal {
@@ -847,6 +887,34 @@ mod tests {
             text.contains("not allowed for AI agents: stripe/secret"),
             "{text}"
         );
+        let _ = std::fs::remove_file(&s.audit_log);
+    }
+
+    #[test]
+    fn a_slow_approval_reuses_the_approved_key_instead_of_prompting_again() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("vault.db");
+        let fast = stash_core::KdfParams {
+            m_cost_kib: 8,
+            t_cost: 1,
+            p_cost: 1,
+        };
+        let vault = Vault::create(&path, b"pw", fast).unwrap();
+        let mut s = server();
+        s.vault_path = path;
+        s.opts.idle_timeout = Duration::from_secs(1);
+        // As if the Touch ID dialog stayed open well past the idle timeout.
+        let long_ago = Instant::now()
+            .checked_sub(Duration::from_secs(3600))
+            .unwrap();
+        s.unlocked = Some(Unlocked {
+            vault,
+            last_used: long_ago,
+        });
+        // Calling `vault()` here would re-unlock (a second prompt);
+        // `after_approval` must hand back the key that was just approved.
+        assert!(s.after_approval("test").is_ok());
+        assert!(s.unlocked.as_ref().unwrap().last_used > long_ago);
         let _ = std::fs::remove_file(&s.audit_log);
     }
 }

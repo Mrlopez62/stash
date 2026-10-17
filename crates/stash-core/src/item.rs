@@ -217,7 +217,7 @@ impl Item {
         self.fields.iter().find(|f| normalize(&f.label) == wanted)
     }
 
-    /// Set a field's value, adding the field if it doesn't exist.
+    /// Set a field's value and kind, adding the field if it doesn't exist.
     pub fn set(&mut self, label: &str, kind: FieldKind, value: impl Into<String>) {
         let wanted = normalize(label);
         match self
@@ -226,6 +226,8 @@ impl Item {
             .find(|f| normalize(&f.label) == wanted)
         {
             Some(field) => {
+                // Wipe the old value before it's freed.
+                field.value.zeroize();
                 field.value = value.into();
                 field.kind = kind;
             }

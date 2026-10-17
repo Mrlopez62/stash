@@ -1,0 +1,69 @@
+# Changelog
+
+All notable changes to stash. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/) (pre-1.0: minor versions may change behavior).
+
+## [0.6.1] - 2026-10-17
+
+Security and correctness fixes for 0.6.0, found by an independent security review. **Upgrade if you use 0.6.0.**
+
+### Fixed
+- **Older vaults.** A vault created before 0.6, unlocked with Touch ID or a session, accepted logins and notes. Older versions of stash then misread those items, and for items of 64 KiB or more could print their contents as a name. stash now refuses to store logins and notes until the vault has been unlocked once with the master password, and says so before asking for anything.
+- **Lost notes and fields.** Notes or extra fields on a single-value secret were silently dropped. So were notes when you changed a secret's value. Both are now kept.
+- **`--set` and secrets.** `--set` could put passwords and 2FA secrets on the command line, where shell history and `ps` can see them, and turn them into visible fields. It now refuses password, 2FA, and notes fields and common secret-sounding labels, and it keeps an existing field's type.
+- **`--set` on a secret.** It no longer turns the secret into a login.
+- **Empty values.** `--unset` could remove a secret's value, and empty piped input was saved as an empty secret. Both are refused.
+- **2FA items from 0.5.** Short 2FA secrets saved by 0.5 stopped working. The 80-bit minimum now applies only to newly entered secrets.
+- **MCP 2FA codes.** `stash mcp` generated 2FA codes before your approval, so they could expire while you approved. Values are now produced after approval, and a slow approval no longer asks twice.
+- **Vault upgrade errors.** The upgrade to format 2 tolerates only a read-only or busy vault file (with a 5-second wait for other stash processes), and says clearly when that blocked it. Any other failure is reported.
+- **Wiping secrets.** Old values are wiped from memory when replaced, revealed `show` output is wiped, and listing names no longer decrypts item contents.
+- **Creation times.** `add --force` no longer keeps the replaced item's creation time.
+
+### Changed
+- **Docs.** The docs no longer overstate protection. An item's encrypted size can hint at its kind, MCP allowlists work per item, and generated symbols may need quoting in shells.
+
+## [0.6.0] - 2026-10-17
+
+### Added
+- **New item kinds:** logins (username, password, website, 2FA, notes) and secure notes, alongside single-value secrets.
+- **Field references:** `stash://github#username`, and `stash://github#otp` for the current 2FA code, in `get`, `run`, `inject`, and MCP.
+- **Item commands:** `add --login` / `add --note`, `edit`, `show [--reveal]`, `ls --long`, and `generate` (password generator).
+
+### Changed
+- **Vault format 2.** Logins and notes use a new encrypted encoding, and older vaults upgrade when unlocked with the master password.
+
+## [0.5.0] - 2026-10-17
+
+### Added
+- **`stash get --copy`:** copies to the clipboard, which is cleared after 30 seconds if it still holds the secret.
+- **`stash otp`:** time-based 2FA codes (RFC 6238).
+
+## [0.4.0] - 2026-10-17
+
+### Added
+- **`stash mcp`:** an MCP server for AI agents (`list_secrets`, `run_with_secrets`, and an opt-in `request_secret`), with a Touch ID approval for every use, `--allow` patterns, and an audit log (`stash audit`).
+
+### Security
+- **Scoped sessions.** Sessions now belong to the process that unlocked them. Commands started by `stash run`, scripts, and AI agents' shells must unlock for themselves, and the prompt says who's asking.
+
+## [0.3.0] - 2026-10-17
+
+### Added
+- **References and injection:** `stash://` references, `stash run` (secrets for one command, with output masking), and `stash inject` (templates).
+
+## [0.2.0] - 2026-10-17
+
+### Added
+- **Touch ID and sessions:** Touch ID unlock through the Secure Enclave, and unlocked sessions held by a background agent.
+
+## [0.1.0] - 2026-10-17
+
+### Added
+- **The first release:** an encrypted vault (Argon2id + XChaCha20-Poly1305) and the `init`, `add`, `get`, `ls`, and `rm` commands.
+
+[0.6.1]: https://github.com/Mrlopez62/stash/pull/9
+[0.6.0]: https://github.com/Mrlopez62/stash/pull/8
+[0.5.0]: https://github.com/Mrlopez62/stash/pull/7
+[0.4.0]: https://github.com/Mrlopez62/stash/pull/6
+[0.3.0]: https://github.com/Mrlopez62/stash/pull/5
+[0.2.0]: https://github.com/Mrlopez62/stash/pull/4
+[0.1.0]: https://github.com/Mrlopez62/stash/pull/1
