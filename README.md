@@ -14,7 +14,7 @@
 
 A free, developer-first secrets manager for macOS. Unlock with Touch ID, pass API tokens into commands safely, and let AI agents use your secrets without ever seeing them.
 
-> **Status: early development (v0.2).** The encrypted vault, the CLI, Touch ID unlock, and unlocked sessions work today. `stash run` and MCP support are next (see [Roadmap](#roadmap)). Don't trust it with production secrets until it has been reviewed.
+> **Status: early development (v0.3).** The encrypted vault, the CLI, Touch ID unlock, unlocked sessions, `stash://` references, `stash run`, and `stash inject` work today. MCP support for AI agents is next (see [Roadmap](#roadmap)). Don't trust it with production secrets until it has been reviewed.
 
 ## Getting started
 
@@ -71,30 +71,51 @@ How unlocking works:
 - Cloud sync (planned for later, see Roadmap)
 - Mobile apps
 
-## Where it's headed
+## Use secrets in your projects
 
-The full workflow we're building toward. Only `add`/`get`/`ls`/`rm` work today; the rest is planned.
+### `stash run`: secrets for one command only
+
+Put references instead of secret values in your `.env` file. It's safe to commit:
 
 ```sh
-# Store and read secrets
-stash add github/token              # prompts for the value (never put it in shell history)
-stash get github/token              # Touch ID prompt, then prints the value
-stash get github/token --copy       # copies it; the clipboard clears after 30s
-stash ls                            # lists names only, never values
-
-# Reference secrets instead of pasting them
-cat .env
-# GITHUB_TOKEN=stash://github/token
-# OPENAI_API_KEY=stash://openai/api-key
-
-# Inject secrets into one process only
-stash run --env-file .env -- npm start
-
-# Render a config file from a template
-stash inject -i config.tpl.yml -o config.yml
+# .env
+GITHUB_TOKEN=stash://github/token
+OPENAI_API_KEY=stash://openai/api-key
+PORT=3000
 ```
 
-After one Touch ID unlock, a background agent keeps the vault unlocked for a short session (10 minutes by default, configurable), so you aren't asked again for every command. This works like `ssh-agent`.
+Then run your command through stash:
+
+```sh
+stash run --env-file .env -- npm start
+```
+```
+✓ unlocked · injected 2 secrets into npm
+> app@1.0.0 start · listening on :3000
+```
+
+- **What gets replaced:** any variable whose whole value is `stash://<name>` is swapped for the secret, only inside that one command. Your shell, your history, and your files never hold the secret.
+- **Where references come from:** the current environment works too, for example `GITHUB_TOKEN=stash://github/token stash run -- gh repo list`. Values from `--env-file` take priority, and later files win.
+- **Output masking:** if the command prints a secret, stash replaces it with `<concealed by stash>`. Use `--no-masking` to turn this off. Values shorter than 4 characters aren't masked.
+- **Ctrl-C and exit codes:** both behave as if you ran the command directly.
+- **No unlock without references:** if no references are found, stash runs the command without unlocking anything.
+
+### `stash inject`: fill in config templates
+
+```yaml
+# config.tpl.yml (commit this)
+database_url: {{ stash://db/url }}
+api_key: {{ stash://openai/api-key }}
+```
+
+```sh
+stash inject -i config.tpl.yml -o config.yml   # config.yml is created readable only by you
+stash inject < config.tpl.yml                  # or print to stdout
+```
+
+If any reference is missing, nothing is written. Existing files are only overwritten with `--force`.
+
+`stash get` also accepts a reference: `stash get stash://github/token`.
 
 ## AI and MCP integration
 
@@ -143,9 +164,9 @@ Rust handles everything that is security-critical and cross-platform. The Swift 
 |---|---|
 | v0.1 ✅ | Encrypted vault, CLI (`init`/`add`/`get`/`ls`/`rm`), master password |
 | v0.2 ✅ | Touch ID unlock + agent sessions |
-| v0.3 | `stash://` references, `run`, `inject` |
+| v0.3 ✅ | `stash://` references, `run`, `inject` |
 | v0.4 | MCP server with approvals and audit log |
-| v0.5 | SSH agent, TOTP codes, git commit signing |
+| v0.5 | SSH agent, TOTP codes, git commit signing, `stash get --copy` with auto-clearing clipboard |
 | Later | Encrypted sync (iCloud Drive or Git), menu bar app, browser extension, Linux support |
 
 ## How it compares
