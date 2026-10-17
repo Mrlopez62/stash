@@ -13,6 +13,12 @@ All notable changes to stash. The format follows [Keep a Changelog](https://keep
 - **Brand look throughout.** The app follows the system light or dark appearance, in the brand palette. It bundles JetBrains Mono and IBM Plex Sans (OFL), and keeps amber for the primary action, the selection, secrets, and 2FA timers.
 - **Quick Access.** Keycap hints, ⌥↩ to copy a 2FA code, and a no-results state.
 
+### Added
+- **Scan 2FA QR codes** in the editor's Two-factor field.
+  - Read the code from the screen (stash's own windows are left out of the capture), paste a screenshot, choose an image, or drop one onto the field.
+  - Decoding is local, with Vision, and captures stay in memory.
+  - New logins get their name and username filled in from the code.
+
 ### Fixed
 - **Password generator** text was unreadable in light mode.
 

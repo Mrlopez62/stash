@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 enum EditorTarget: Identifiable {
     case new(ItemKind)
@@ -36,6 +37,9 @@ struct ItemEditorView: View {
     @ViewState private var secretLabel = "value"
     @ViewState private var showGenerator = false
     @ViewState private var showSecret = false
+    /// The result of the last QR scan, shown under the 2FA field.
+    @ViewState private var qrStatus: QRStatus?
+    @ViewState private var dropTargeted = false
 
     private var isNew: Bool { if case .new = target { true } else { false } }
     private var original: ItemDetail? { if case .edit(let d) = target { d } else { nil } }
@@ -209,16 +213,94 @@ struct ItemEditorView: View {
     private var otpInput: some View {
         LabeledInput(
             hadOTP && !removeOTP ? "Two-factor" : "Two-factor (optional)",
-            hint: "Paste the otpauth:// link or the setup key from the site's 2FA page"
+            hint: qrStatus == nil ? "Scan the site's 2FA QR code, drop a screenshot of it here, or paste its setup key" : nil
         ) {
-            FieldBox {
-                SecureField("", text: $otp, prompt: Text(hadOTP && !removeOTP ? "Unchanged" : "otpauth://… or setup key").foregroundStyle(Color.inkTertiary))
-            } trailing: {
-                if hadOTP && !removeOTP {
-                    IconButton("trash", help: "Remove two-factor") { removeOTP = true; otp = "" }
+            VStack(alignment: .leading, spacing: 6) {
+                FieldBox {
+                    SecureField("", text: $otp, prompt: Text(hadOTP && !removeOTP ? "Unchanged" : "otpauth://… or setup key").foregroundStyle(Color.inkTertiary))
+                } trailing: {
+                    Menu {
+                        Button { Task { await scan { try await QRScanner.scanScreen() } } } label: {
+                            Label("Scan QR Code on Screen", systemImage: "qrcode.viewfinder")
+                        }
+                        Button { Task { await scan { try QRScanner.fromPasteboard() } } } label: {
+                            Label("Paste QR Code Image", systemImage: "doc.on.clipboard")
+                        }
+                        Button { Task { await scan { try QRScanner.chooseFile() } } } label: {
+                            Label("Choose Image…", systemImage: "photo")
+                        }
+                    } label: {
+                        Label("Scan QR", systemImage: "qrcode.viewfinder")
+                            .font(.plex(12, weight: .medium))
+                            .padding(.horizontal, 8)
+                            .frame(height: 26)
+                            .background(Color.surface, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                            .overlay(RoundedRectangle(cornerRadius: 6, style: .continuous).strokeBorder(Color.line))
+                    }
+                    .menuStyle(.borderlessButton)
+                    .menuIndicator(.hidden)
+                    .fixedSize()
+                    .tint(Color.inkSecondary)
+                    .foregroundStyle(Color.inkSecondary)
+                    .help("Set up 2FA from the site's QR code")
+                    if hadOTP && !removeOTP {
+                        IconButton("trash", help: "Remove two-factor") { removeOTP = true; otp = ""; qrStatus = nil }
+                    }
+                }
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .strokeBorder(Color.keyholeAmber, style: StrokeStyle(lineWidth: 1.5, dash: [5, 3]))
+                        .opacity(dropTargeted ? 1 : 0))
+                .onDrop(of: [.image, .fileURL], isTargeted: $dropTargeted, perform: dropped)
+                if let qrStatus {
+                    Label(qrStatus.text, systemImage: qrStatus.ok ? "checkmark.circle.fill" : "exclamationmark.circle")
+                        .font(.plex(11.5, weight: qrStatus.ok ? .medium : .regular))
+                        .foregroundStyle(qrStatus.ok ? Color.success : Color.danger)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
         }
+    }
+
+    /// Run a QR source and apply what it finds: the secret, plus a name and
+    /// username for new items that don't have them yet.
+    private func scan(_ source: () async throws -> OTPSetup?) async {
+        do {
+            guard let setup = try await source() else { return }
+            apply(setup)
+        } catch {
+            qrStatus = QRStatus(ok: false, text: error.localizedDescription)
+        }
+    }
+
+    private func apply(_ setup: OTPSetup) {
+        otp = setup.uri
+        removeOTP = false
+        if isNew && name.trimmingCharacters(in: .whitespaces).isEmpty, let suggested = setup.suggestedName {
+            name = suggested
+        }
+        if kind == .login && username.isEmpty, let account = setup.account {
+            username = account
+        }
+        let who = [setup.issuer, setup.account].compactMap { $0 }.joined(separator: " · ")
+        qrStatus = QRStatus(ok: true, text: who.isEmpty ? "Found a 2FA setup code" : "Found 2FA for \(who)")
+    }
+
+    private func dropped(_ providers: [NSItemProvider]) -> Bool {
+        guard let provider = providers.first else { return false }
+        if provider.canLoadObject(ofClass: URL.self) {
+            _ = provider.loadObject(ofClass: URL.self) { url, _ in
+                guard let url else { return }
+                Task { @MainActor in await scan { try QRScanner.fromFile(url) } }
+            }
+            return true
+        }
+        _ = provider.loadDataRepresentation(for: .image) { data, _ in
+            guard let data, let image = NSImage(data: data)?.cgImage(forProposedRect: nil, context: nil, hints: nil)
+            else { return }
+            Task { @MainActor in await scan { try QRScanner.setup(in: image) } }
+        }
+        return true
     }
 
     private var problem: String? {
@@ -299,6 +381,11 @@ struct ItemEditorView: View {
             dismiss()
         }
     }
+}
+
+struct QRStatus: Equatable {
+    var ok: Bool
+    var text: String
 }
 
 struct CustomField: Identifiable {

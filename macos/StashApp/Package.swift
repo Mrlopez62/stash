@@ -9,7 +9,11 @@ let package = Package(
             name: "Stash",
             path: "Sources/Stash",
             exclude: ["Fonts"],
-            linkerSettings: [.linkedFramework("Carbon")]
+            linkerSettings: [
+                .linkedFramework("Carbon"),
+                .linkedFramework("ScreenCaptureKit"),
+                .linkedFramework("Vision"),
+            ]
         )
     ]
 )
