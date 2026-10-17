@@ -22,3 +22,6 @@ vault.db
 .env
 .env.*
 !.env.example
+
+# App bundle output
+build/

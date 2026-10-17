@@ -2,6 +2,13 @@
 
 All notable changes to stash. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/) (pre-1.0: minor versions may change behavior).
 
+## [0.7.0] - 2026-10-17
+
+### Added
+- **The stash Mac app (`stash.app`)** has a vault browser with search, item details with reveal and copy, live 2FA codes, an editor, and the password generator. It also adds a menu bar icon, Quick Access from anywhere with **⇧⌘Space**, and settings. It's built with `./scripts/build-app.sh` and needs only the Xcode Command Line Tools.
+- **`stash app-server`** is the app's private backend: JSON-RPC over stdio, with values sent only on demand and an idle auto-lock.
+- **Concealed clipboard.** Copies from the app are marked concealed and transient, kept off Universal Clipboard, and cleared after 30 seconds.
+
 ## [0.6.1] - 2026-10-17
 
 Security and correctness fixes for 0.6.0, found by an independent security review. **Upgrade if you use 0.6.0.**
@@ -60,6 +67,7 @@ Security and correctness fixes for 0.6.0, found by an independent security revie
 ### Added
 - **The first release:** an encrypted vault (Argon2id + XChaCha20-Poly1305) and the `init`, `add`, `get`, `ls`, and `rm` commands.
 
+[0.7.0]: https://github.com/Mrlopez62/stash/pull/10
 [0.6.1]: https://github.com/Mrlopez62/stash/pull/9
 [0.6.0]: https://github.com/Mrlopez62/stash/pull/8
 [0.5.0]: https://github.com/Mrlopez62/stash/pull/7

@@ -1,4 +1,5 @@
 mod agent;
+mod app_server;
 mod audit;
 mod clipboard;
 mod envfile;
@@ -195,6 +196,9 @@ enum Command {
         #[command(subcommand)]
         action: TouchIdAction,
     },
+    /// Backend for the stash Mac app (JSON-RPC over stdio; not for direct use)
+    #[command(hide = true)]
+    AppServer,
     /// Clear the clipboard later if unchanged (started automatically)
     #[command(hide = true)]
     ClipboardClear {
@@ -222,7 +226,7 @@ enum TouchIdAction {
 /// Read from the environment instead of prompting. Meant for scripts and CI:
 /// anything that can read your environment can read this password.
 pub(crate) const PASSWORD_ENV: &str = "STASH_PASSWORD";
-const MIN_PASSWORD_LEN: usize = 8;
+pub(crate) const MIN_PASSWORD_LEN: usize = 8;
 /// Seconds an unlocked session lasts without use. `0` turns sessions off.
 const SESSION_TIMEOUT_ENV: &str = "STASH_SESSION_TIMEOUT";
 const DEFAULT_SESSION_TIMEOUT: Duration = Duration::from_secs(10 * 60);
@@ -414,6 +418,10 @@ fn run(cli: Cli) -> Result<ExitCode> {
             }
         }
         Command::TouchId { action } => touch_id(action, &path)?,
+        Command::AppServer => {
+            let idle = session_timeout()?.unwrap_or(DEFAULT_SESSION_TIMEOUT);
+            app_server::serve(path, idle)?;
+        }
         Command::Agent { .. } | Command::ClipboardClear { .. } => unreachable!("handled above"),
     }
     Ok(ExitCode::SUCCESS)

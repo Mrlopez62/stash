@@ -14,7 +14,27 @@
 
 A free, developer-first secrets manager for macOS. Unlock with Touch ID, pass API tokens into commands safely, and let AI agents use your secrets without ever seeing them.
 
-> **Status: early development (v0.6).** The encrypted vault, logins and notes, the password generator, the CLI, Touch ID unlock, sessions scoped to your shell, `stash://` references, `stash run`, `stash inject`, the MCP server for AI agents, clipboard copy, and 2FA codes work today. The native Mac app is next (see the [Roadmap](#roadmap)). Don't trust it with production secrets until it has been reviewed.
+> **Status: early development (v0.7).** The **stash Mac app** (menu bar, Quick Access, vault browser and editor) and the full CLI work today: the encrypted vault, logins and notes, the password generator, Touch ID, sessions scoped to your shell, `stash://` references, `stash run`, `stash inject`, the MCP server for AI agents, clipboard copy, and 2FA codes. Don't trust it with production secrets until it has been reviewed.
+
+## The Mac app
+
+<p align="center"><img src="docs/screenshots/vault.png" alt="The stash vault browser showing a GitHub login with a live 2FA code" width="760"></p>
+<p align="center"><img src="docs/screenshots/quick-access.png" alt="Quick Access search panel" width="560"></p>
+
+```sh
+git clone https://github.com/Mrlopez62/stash.git && cd stash
+./scripts/build-app.sh --install     # builds stash.app into ~/Applications
+open ~/Applications/stash.app
+```
+
+- **Vault browser.** Search, logins, secrets, and notes, with copy buttons for every field and live 2FA codes with a countdown.
+- **Quick Access** with **⇧⌘Space** from anywhere. Type a few letters, press Return, and the password is on your clipboard.
+- **Menu bar icon.** Quick Access, lock and unlock, open stash.
+- **Touch ID unlock** and a built-in **password generator**. The app locks itself after 10 idle minutes.
+- **Safer copies.** They're marked concealed, so clipboard-history apps skip them. They stay on this Mac (no Universal Clipboard) and are cleared after 30 seconds.
+- **The same vault as the CLI.** Everything you add in the app works with `stash run`, `stash inject`, and the MCP server, and the other way round.
+
+Building needs Rust and the free Xcode Command Line Tools (`xcode-select --install`), not Xcode. The app is ad-hoc signed. If you build it yourself, macOS opens it normally.
 
 ## Getting started
 
@@ -229,7 +249,8 @@ Rust handles everything that is security-critical and cross-platform. The Swift 
 | v0.4 ✅ | MCP server with Touch ID approvals, allowlists, and an audit log; sessions scoped to your shell |
 | v0.5 ✅ | `stash get --copy` with a self-clearing clipboard, 2FA (TOTP) codes |
 | v0.6 ✅ | 1Password-style items: logins with username, password, URL, 2FA, and notes; `#field` references; password generator |
-| v0.7 | **The stash Mac app:** menu bar, Quick Access search, vault browser and editor, Touch ID. Ships the CLI and helpers inside `stash.app` |
+| v0.7 ✅ | **The stash Mac app:** menu bar, Quick Access (⇧⌘Space), vault browser and editor, Touch ID, concealed clipboard. Ships the CLI and helpers inside `stash.app` |
+| v0.7.x | Bundled JetBrains Mono / IBM Plex fonts, a configurable Quick Access shortcut, launch at login, a signed and notarized download |
 | v0.8 | SSH agent, git commit signing |
 | Later | Encrypted sync (iCloud Drive or Git), browser extension, Linux support |
 

@@ -1,6 +1,6 @@
 # Threat model
 
-This document covers what stash protects against, how it does it, and what it doesn't protect against. It describes **v0.6**: an encrypted vault file, a CLI, Touch ID unlock, sessions scoped to your shell, `stash run` / `stash inject`, and the MCP server for AI agents.
+This document covers what stash protects against, how it does it, and what it doesn't protect against. It describes **v0.7**: an encrypted vault file, a CLI, Touch ID unlock, sessions scoped to your shell, `stash run` / `stash inject`, and the MCP server for AI agents.
 
 ## What we protect
 
@@ -110,8 +110,26 @@ After an unlock, `stash` starts `stash agent` in the background. The agent keeps
 | Threat | Protected? | How |
 |---|---|---|
 | A secret left on the clipboard | ✅ | Cleared after 30 seconds (`STASH_CLIPBOARD_TIMEOUT`). |
-| Clipboard history managers and Universal Clipboard (Handoff) | ❌ for now | They can record the value before it's cleared. Marking copies as "concealed" so well-behaved managers skip them needs native pasteboard access, which is planned with the Mac app. |
+| Clipboard history managers and Universal Clipboard (Handoff) | ✅ in the Mac app, ❌ in the CLI | The app marks copies `org.nspasteboard.ConcealedType` and `TransientType`, so well-behaved managers skip them, and keeps them on this Mac only (no Universal Clipboard). The CLI's `pbcopy` can't set those types. |
 | Apps that read the clipboard while it holds the secret | ❌ | Any app can read the clipboard. Prefer `stash run` where you can. |
+
+## The Mac app
+
+`stash.app` is UI only. When it starts, it launches its own `stash app-server` child and talks to it with JSON-RPC over that process's stdin and stdout.
+
+- **Only the app can talk to its backend.** There's no socket and no port. The pipes belong to the app.
+- **The vault key stays in the backend.** It's held in the Rust process's memory, never sent to the app or to the session agent, and dropped on lock and after 10 idle minutes.
+- **Values only on demand.**
+  - Listing items and opening one never sends passwords, 2FA secrets, or notes to the app.
+  - A value crosses over only when you click to reveal or copy it, one at a time.
+  - Editing doesn't need values: untouched secret fields are saved as "keep".
+- **Touch ID** works the same as in the CLI, through `stash-touchid` inside the bundle (`Contents/Helpers`).
+
+| Threat | Protected? | How |
+|---|---|---|
+| Other apps reading the vault through the app | ✅ | No IPC endpoint exists. The backend is a private child process. |
+| Secrets lingering in the app's memory | Partial | Only values you revealed or copied ever reach the app, and revealed values hide again after 30 seconds. Swift strings can't be reliably wiped, so a revealed value may stay in the app's memory until it's reused. |
+| A modified `stash.app` | ❌ | The app is ad-hoc signed, so macOS can't vouch for who built it. Build it yourself from source, or wait for a signed and notarized release. |
 
 ## The MCP server (`stash mcp`)
 

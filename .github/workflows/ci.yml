@@ -31,6 +31,9 @@ jobs:
       - name: Build Touch ID helper
         if: runner.os == 'macOS'
         run: swift build -c release --package-path swift/stash-touchid
+      - name: Build the Mac app
+        if: runner.os == 'macOS'
+        run: swift build -c release --package-path macos/StashApp
 
   msrv:
     name: Minimum Rust version
