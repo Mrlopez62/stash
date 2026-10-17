@@ -33,6 +33,25 @@ swift build -c release --package-path swift/stash-touchid
 
 The tests don't need a fingerprint. They use a fake helper (see `fake_touch_id` in `crates/stash-cli/tests/cli.rs` and `tests/mcp.rs`), so they run anywhere. `tests/mcp.rs` drives `stash mcp` over stdio the way a real MCP client does. Changes to the Swift helper itself need a manual check on a Mac with Touch ID.
 
+### The Mac app
+
+The app lives in `macos/StashApp`, a Swift package. It's UI only: it runs `stash app-server` (`crates/stash-cli/src/app_server.rs`) and talks JSON-RPC to it.
+
+```sh
+./scripts/build-app.sh                          # build/stash.app
+swift build --package-path macos/StashApp       # just the app, for quick iteration
+```
+
+- **No `@State`.** Use `@ViewState` (see `ViewState.swift`). The SwiftUI `@State` macro's plugin ships only with Xcode, and stash builds with the Command Line Tools alone.
+- **Check the UI without touching a vault.** Render the window from sample data:
+  ```sh
+  macos/StashApp/.build/debug/Stash --mock --snapshot /tmp/shot.png [--select github] [--locked] [--quick-access]
+  ```
+- **Check the Swift ↔ Rust protocol** against a throwaway vault:
+  ```sh
+  STASH_VAULT=/tmp/selftest.db build/stash.app/Contents/MacOS/Stash --selftest
+  ```
+
 Try the CLI against a throwaway vault so you don't touch your real one:
 
 ```sh
@@ -72,6 +91,7 @@ These apply to everything in `crates/stash-core` and any code that touches secre
 crates/stash-core   vault format, crypto, and operations (library)
 crates/stash-cli    the `stash` command and session agent
 swift/stash-touchid Touch ID helper (macOS)
+macos/StashApp      the Mac app (SwiftUI)
 scripts/            install script
 docs/               design and security docs
 ```
