@@ -18,6 +18,9 @@ A free, developer-first secrets manager for macOS. Unlock with Touch ID, pass AP
 
 ## The Mac app
 
+<p align="center"><img src="docs/screenshots/vault.png" alt="The stash vault browser showing a GitHub login with a live 2FA code" width="760"></p>
+<p align="center"><img src="docs/screenshots/quick-access.png" alt="Quick Access search panel" width="560"></p>
+
 ```sh
 git clone https://github.com/Mrlopez62/stash.git && cd stash
 ./scripts/build-app.sh --install     # builds stash.app into ~/Applications
