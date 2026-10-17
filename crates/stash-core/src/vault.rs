@@ -82,23 +82,16 @@ impl Vault {
             insert.execute(params!["kdf_p_cost", params.p_cost])?;
             insert.execute(params!["kdf_salt", salt.as_slice()])?;
             insert.execute(params!["wrapped_key", wrapped])?;
+            insert.execute(params!["key_check", key_check(&vault_key).as_slice()])?;
         }
         tx.commit()?;
 
         Ok(Self::from_parts(conn, vault_key, path))
     }
 
-    /// Open and unlock an existing vault.
+    /// Open and unlock an existing vault with the master password.
     pub fn open(path: &Path, password: &[u8]) -> Result<Self> {
-        if !path.exists() {
-            return Err(Error::VaultMissing(path.to_owned()));
-        }
-        let conn = connect(path)?;
-
-        let version: i64 = meta(&conn, "format_version")?;
-        if version != FORMAT_VERSION {
-            return Err(Error::UnsupportedVersion(version));
-        }
+        let conn = connect_existing(path)?;
         let params = KdfParams {
             m_cost_kib: meta(&conn, "kdf_m_cost_kib")?,
             t_cost: meta(&conn, "kdf_t_cost")?,
@@ -116,7 +109,34 @@ impl Vault {
         }
         vault_key.copy_from_slice(&unwrapped);
 
+        // Vaults created before the key check existed get one on first unlock.
+        let check = key_check(&vault_key);
+        conn.execute(
+            "INSERT OR IGNORE INTO meta (key, value) VALUES ('key_check', ?1)",
+            params![check.as_slice()],
+        )?;
+
         Ok(Self::from_parts(conn, vault_key, path))
+    }
+
+    /// Open an existing vault with its raw vault key, as handed back by
+    /// Touch ID or the session agent. Fails with [`Error::WrongKey`] if the
+    /// key doesn't belong to this vault.
+    pub fn open_with_key(path: &Path, key: &[u8; crypto::KEY_LEN]) -> Result<Self> {
+        let conn = connect_existing(path)?;
+        let stored: Option<Vec<u8>> = conn
+            .query_row("SELECT value FROM meta WHERE key = 'key_check'", [], |r| {
+                r.get(0)
+            })
+            .optional()?;
+        let vault_key = Zeroizing::new(*key);
+        let expected = key_check(&vault_key);
+        match stored {
+            Some(stored) if crypto::ct_eq(&stored, &expected) => {
+                Ok(Self::from_parts(conn, vault_key, path))
+            }
+            _ => Err(Error::WrongKey),
+        }
     }
 
     fn from_parts(conn: Connection, vault_key: SecretKey, path: &Path) -> Self {
@@ -131,6 +151,12 @@ impl Vault {
 
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    /// The raw vault key, for handing to Touch ID enrollment or the session
+    /// agent. Treat it like the master password.
+    pub fn key(&self) -> &[u8; crypto::KEY_LEN] {
+        &self.vault_key
     }
 
     /// Store a secret. Fails with [`Error::AlreadyExists`] unless `overwrite` is set.
@@ -218,6 +244,25 @@ fn connect(path: &Path) -> Result<Connection> {
     // Overwrite deleted rows with zeros instead of leaving them in free pages.
     conn.execute_batch("PRAGMA secure_delete = ON;")?;
     Ok(conn)
+}
+
+/// Open an existing vault file and check its format version.
+fn connect_existing(path: &Path) -> Result<Connection> {
+    if !path.exists() {
+        return Err(Error::VaultMissing(path.to_owned()));
+    }
+    let conn = connect(path)?;
+    let version: i64 = meta(&conn, "format_version")?;
+    if version != FORMAT_VERSION {
+        return Err(Error::UnsupportedVersion(version));
+    }
+    Ok(conn)
+}
+
+/// A value derived from the vault key that proves a key belongs to this
+/// vault without revealing anything about it.
+fn key_check(vault_key: &[u8; crypto::KEY_LEN]) -> [u8; 32] {
+    crypto::hmac(vault_key, b"stash/key-check/v1")
 }
 
 fn meta<T: rusqlite::types::FromSql>(conn: &Connection, key: &str) -> Result<T> {
@@ -423,5 +468,39 @@ mod tests {
         let bytes: Vec<u8> = (0..=255).collect();
         vault.add("bin", &bytes, false).unwrap();
         assert_eq!(value(&vault, "bin"), bytes);
+    }
+
+    #[test]
+    fn open_with_key_accepts_only_the_right_key() {
+        let (_dir, path, mut vault) = new_vault();
+        vault.add("k", b"v", false).unwrap();
+        let key = *vault.key();
+        drop(vault);
+
+        let vault = Vault::open_with_key(&path, &key).unwrap();
+        assert_eq!(value(&vault, "k"), b"v");
+        let wrong = [7u8; crypto::KEY_LEN];
+        assert!(matches!(
+            Vault::open_with_key(&path, &wrong),
+            Err(Error::WrongKey)
+        ));
+    }
+
+    #[test]
+    fn older_vaults_get_a_key_check_on_password_unlock() {
+        let (_dir, path, vault) = new_vault();
+        let key = *vault.key();
+        vault
+            .conn
+            .execute("DELETE FROM meta WHERE key = 'key_check'", [])
+            .unwrap();
+        drop(vault);
+
+        assert!(matches!(
+            Vault::open_with_key(&path, &key),
+            Err(Error::WrongKey)
+        ));
+        drop(Vault::open(&path, b"correct horse").unwrap());
+        assert!(Vault::open_with_key(&path, &key).is_ok());
     }
 }

@@ -10,3 +10,8 @@ updates:
     target-branch: dev
     schedule:
       interval: weekly
+    ignore:
+      # Its refs (`@stable`, `@1.88`) pick a Rust toolchain, not a release of
+      # the action. `@1.88` is the MSRV check and must match `rust-version` in
+      # Cargo.toml, so it only changes when we raise the MSRV on purpose.
+      - dependency-name: dtolnay/rust-toolchain

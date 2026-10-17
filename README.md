@@ -5,24 +5,36 @@
 [![CI](https://github.com/Mrlopez62/stash/actions/workflows/ci.yml/badge.svg)](https://github.com/Mrlopez62/stash/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-> **Status: early development (v0.1).** The encrypted vault and basic CLI work today. Touch ID, `stash run`, and MCP support are coming next (see [Roadmap](#roadmap)). Don't trust it with production secrets until it has been reviewed.
+> **Status: early development (v0.2).** The encrypted vault, the CLI, Touch ID unlock, and unlocked sessions work today. `stash run` and MCP support are next (see [Roadmap](#roadmap)). Don't trust it with production secrets until it has been reviewed.
 
 ## Getting started
 
-Requires [Rust](https://rustup.rs) 1.88 or newer.
+Requires [Rust](https://rustup.rs) 1.88 or newer. On macOS, the Touch ID helper also needs Xcode or the Command Line Tools (`xcode-select --install`).
 
 ```sh
-cargo install --git https://github.com/Mrlopez62/stash stash-cli
+git clone https://github.com/Mrlopez62/stash.git
+cd stash
+./scripts/install.sh                  # installs `stash` (and `stash-touchid` on macOS)
 
 stash init                            # create a vault (asks for a new master password)
+stash touchid enable                  # macOS: unlock with your fingerprint from now on
 stash add github/token                # prompts for the value without echoing it
 echo "$OPENAI_KEY" | stash add openai/api-key   # or pipe it in
 stash ls                              # names only
 stash get github/token                # prints the value
 stash rm github/token
+stash lock                            # end the unlocked session now
 ```
 
-The vault lives at `~/.stash/vault.db`. Use `--vault <path>` or `STASH_VAULT` to point somewhere else.
+How unlocking works:
+- **The first command unlocks the vault.** With Touch ID turned on, that's a fingerprint prompt. Otherwise you type the master password. If Touch ID is cancelled or unavailable (for example, the lid is closed), stash asks for the master password instead.
+- **Then a session starts.** Commands in the next **10 minutes** don't ask again, and each use restarts the 10-minute timer. A small background agent holds the session, like `ssh-agent`. Run `stash lock` to end it early.
+
+| Setting | What it does |
+|---|---|
+| `--vault <path>` / `STASH_VAULT` | Use a vault other than `~/.stash/vault.db` |
+| `STASH_SESSION_TIMEOUT` | How many seconds a session lasts without use. `0` turns sessions off |
+| `STASH_PASSWORD` | Supply the master password for scripts and CI. This skips Touch ID and sessions. Any process that can read your environment can read it, so avoid it on your own machine |
 
 ## Why
 
@@ -99,7 +111,8 @@ Safety rules:
 
 - **Vault:** one SQLite file at `~/.stash/vault.db`. Each item is encrypted separately with XChaCha20-Poly1305. Secret names are encrypted too, so the file doesn't reveal which services you use.
 - **Keys:** the master password goes through Argon2id to produce a key-encryption key. That key wraps a random 256-bit vault key, so changing the master password doesn't mean re-encrypting every item.
-- **Touch ID (planned for v0.2):** the vault key is kept in the macOS Keychain, guarded by a biometric access policy (`biometryCurrentSet`). If someone adds a new fingerprint, Touch ID unlock stops working until you enter the master password again.
+- **Touch ID:** the vault key is encrypted to a Secure Enclave key that only works after a fingerprint match (`biometryCurrentSet`). The Secure Enclave key never leaves the chip, and no Keychain entitlements or code signing are needed. If someone adds or removes a fingerprint, Touch ID unlock stops working until you run `stash touchid enable` again.
+- **Sessions:** the agent keeps unlocked keys only in memory. It answers only processes running as your user, over a `0600` socket, and exits once it holds no keys.
 - **Memory:** secrets are wiped from memory after use (`zeroize`) and never logged.
 - **Threat model:** see [docs/threat-model.md](docs/threat-model.md), including what `stash` does *not* protect against, such as malware already running as your user.
 
@@ -107,21 +120,20 @@ Safety rules:
 
 ```
 stash (Rust workspace)
-├── stash-core      crypto, vault format, items
-├── stash-cli       the `stash` command
-├── stash-agent     background session holder (Unix socket, like ssh-agent)
-├── stash-mcp       MCP server (`stash mcp`)
-└── stash-touchid   small Swift helper for LocalAuthentication + Keychain
+├── crates/stash-core      crypto, vault format, items
+├── crates/stash-cli       the `stash` command, including the session agent (`stash agent`)
+├── swift/stash-touchid    small Swift helper: Touch ID + Secure Enclave via CryptoKit
+└── stash-mcp              MCP server (`stash mcp`), planned
 ```
 
-Rust handles everything that is security-critical and cross-platform. The Swift helper is kept small and does only the macOS-specific Touch ID and Keychain work.
+Rust handles everything that is security-critical and cross-platform. The Swift helper is kept small and does only the macOS-specific Touch ID and Secure Enclave work. It talks to `stash` over pipes.
 
 ## Roadmap
 
 | Version | Scope |
 |---|---|
 | v0.1 ✅ | Encrypted vault, CLI (`init`/`add`/`get`/`ls`/`rm`), master password |
-| v0.2 | Touch ID unlock + agent sessions |
+| v0.2 ✅ | Touch ID unlock + agent sessions |
 | v0.3 | `stash://` references, `run`, `inject` |
 | v0.4 | MCP server with approvals and audit log |
 | v0.5 | SSH agent, TOTP codes, git commit signing |

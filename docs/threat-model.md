@@ -1,6 +1,6 @@
 # Threat model
 
-This document covers what stash protects against, how it does it, and what it doesn't protect against. It describes **v0.1**: an encrypted vault file plus a CLI that asks for the master password. Each later feature (Touch ID, the background agent, MCP) will add its own section here.
+This document covers what stash protects against, how it does it, and what it doesn't protect against. It describes **v0.2**: an encrypted vault file, a CLI, Touch ID unlock, and unlocked sessions. Each later feature (such as MCP) will add its own section here.
 
 ## What we protect
 
@@ -39,7 +39,39 @@ Because of this design, changing the master password (not yet available as a com
 - **Secrets after you use them.** Once `stash get` prints a value, stash can't control what your shell, terminal scrollback, or the receiving program does with it. The planned `stash run` reduces this exposure.
 - **Losing your master password.** There's no recovery. Without the password, the vault can't be opened.
 
+## Touch ID unlock (macOS)
+
+`stash touchid enable` asks for the master password once. Then the `stash-touchid` helper:
+
+1. creates a P-256 key **inside the Secure Enclave**, with the access control `privateKeyUsage + biometryCurrentSet`
+2. encrypts the vault key to that key: an ephemeral ECDH key exchange, HKDF-SHA256, and ChaCha20-Poly1305
+3. saves the result as `<vault>.touchid` (mode `0600`). The file holds the encrypted vault key and an encrypted handle to the Secure Enclave key, which is useless on any other Mac.
+
+To unlock, the helper asks for a fingerprint and then has the Secure Enclave do the key exchange. The vault key is passed back to `stash` over a pipe, never as a command-line argument. Before using the key, `stash` checks it against the vault's key check (an HMAC of the vault key), so a stale or swapped `.touchid` file is rejected.
+
+| Threat | Protected? | How |
+|---|---|---|
+| Someone copies `vault.db` and `vault.db.touchid` to another machine | ✅ | The Secure Enclave key can't leave this Mac's chip, so the `.touchid` file is useless elsewhere. They're left with the master-password protection described above. |
+| Someone with your unlocked Mac but not your finger | ✅ | The Secure Enclave won't use the key without a fingerprint match. |
+| Someone enrolls their own fingerprint on your Mac | ✅ | `biometryCurrentSet` makes the key unusable after any fingerprint change. Run `stash touchid enable` again (with the master password). |
+| Malware running as your user | ❌ | It can trigger the Touch ID prompt, so look closely at what the dialog says. The prompt comes from `stash-touchid`. |
+
+## Unlocked sessions (the agent)
+
+After an unlock, `stash` starts `stash agent` in the background. The agent keeps the vault key in memory and gives it to later `stash` commands, so one fingerprint covers several commands.
+
+- **Socket:** `~/.stash/agent.sock`, mode `0600`, inside the `0700` directory `~/.stash`.
+- **Same-user check:** the agent checks every connection's user id (`getpeereid` / `SO_PEERCRED`) and ignores other users.
+- **Timeout:** each key is forgotten after 10 minutes without use (`STASH_SESSION_TIMEOUT`). `stash lock` forgets all keys immediately. The agent exits once it holds no keys.
+- **Memory only:** keys are never written to disk and are wiped from memory when dropped.
+
+| Threat | Protected? | How |
+|---|---|---|
+| Other user accounts | ✅ | Socket permissions plus the user id check on every connection. |
+| A forgotten unlocked session | Partial | It ends by itself after 10 idle minutes, and `stash lock` ends it at once. |
+| Malware running as your user *during* a session | ❌ | It can ask the agent for the key, just as it could ask `ssh-agent` to sign. Set `STASH_SESSION_TIMEOUT=0` if you'd rather confirm every command. |
+
 ## Planned features and their open questions
 
-- **Touch ID (v0.2):** the vault key will be stored in the macOS Keychain behind a `biometryCurrentSet` access control, with session lifetime handled by the background agent. Each part will get its own threat-model section before it ships.
 - **MCP server (v0.4):** AI agents will get secret names and the ability to run commands with secrets filled in, not the values themselves. Getting a raw value will need approval each time. Leaks through command output are a known risk, and the plan is to mask secret values in output on a best-effort basis.
+- **Per-session approval:** a future version may scope sessions to one terminal or process tree, rather than to your whole user account.
