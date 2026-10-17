@@ -31,7 +31,7 @@ On macOS, also build the Touch ID helper (needs Xcode or the Command Line Tools)
 swift build -c release --package-path swift/stash-touchid
 ```
 
-The tests don't need a fingerprint. They use a fake helper (see `fake_touch_id` in `crates/stash-cli/tests/cli.rs`), so they run anywhere. Changes to the Swift helper itself need a manual check on a Mac with Touch ID.
+The tests don't need a fingerprint. They use a fake helper (see `fake_touch_id` in `crates/stash-cli/tests/cli.rs` and `tests/mcp.rs`), so they run anywhere. `tests/mcp.rs` drives `stash mcp` over stdio the way a real MCP client does. Changes to the Swift helper itself need a manual check on a Mac with Touch ID.
 
 Try the CLI against a throwaway vault so you don't touch your real one:
 
