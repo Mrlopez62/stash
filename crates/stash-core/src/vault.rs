@@ -1,15 +1,26 @@
 //! The on-disk vault: a SQLite file holding a password-wrapped vault key and
 //! individually encrypted items.
 //!
-//! Layout (format version 1):
+//! Layout (format version 2):
 //!
 //! - `meta` — KDF salt and parameters, plus the random vault key encrypted
 //!   with the Argon2id key-encryption key (KEK). Changing the master password
 //!   only re-wraps this one key.
-//! - `items` — one row per secret. The row id is `HMAC(index_key, name)`, so
-//!   names are never stored in plaintext. The blob is the name and value
+//! - `items` — one row per item. The row id is `HMAC(index_key, name)`, so
+//!   names are never stored in plaintext. The blob is the name and contents
 //!   encrypted together with the vault key, with the row id as AAD so a blob
 //!   can't be moved to another row.
+//!
+//! Item plaintext comes in two encodings:
+//! - **secret** (v1 and v2): `u16 name length (LE) || name || raw value`.
+//!   Any bytes work.
+//! - **structured** (v2, logins and notes): `0xFFFF || u16 name length ||
+//!   name || JSON item`. A real name length is at most 128, so the marker
+//!   can't be mistaken for one.
+//!
+//! Version 2 only adds the structured encoding. Version 1 vaults open fine;
+//! unlocking one with the master password upgrades its header to 2, so
+//! older versions of stash refuse it instead of misreading new items.
 
 use std::fs::{self, OpenOptions};
 use std::io::ErrorKind;
@@ -20,9 +31,26 @@ use secrecy::SecretSlice;
 use zeroize::Zeroizing;
 
 use crate::crypto::{self, KdfParams, SALT_LEN, SecretKey};
+use crate::item::{FieldValue, Item, Kind};
+use crate::reference::Reference;
 use crate::{Error, Result, validate_name};
 
-const FORMAT_VERSION: i64 = 1;
+const FORMAT_VERSION: i64 = 2;
+const OLDEST_SUPPORTED_VERSION: i64 = 1;
+/// Marks the structured encoding (see the module docs).
+const STRUCTURED: [u8; 2] = [0xFF, 0xFF];
+
+/// One row of a listing: enough for `stash ls --long` or the app's sidebar,
+/// without any secret values.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Summary {
+    pub name: String,
+    pub kind: Kind,
+    pub username: Option<String>,
+    pub url: Option<String>,
+    pub has_otp: bool,
+    pub updated: u64,
+}
 
 const SCHEMA: &str = "
     CREATE TABLE meta  (key TEXT PRIMARY KEY, value ANY NOT NULL) STRICT;
@@ -70,7 +98,11 @@ impl Vault {
         let salt: [u8; SALT_LEN] = crypto::random_bytes()?;
         let kek = crypto::derive_kek(password, &salt, params)?;
         let vault_key = crypto::random_key()?;
-        let wrapped = crypto::seal(&kek, &header_aad(params, &salt), vault_key.as_ref())?;
+        let wrapped = crypto::seal(
+            &kek,
+            &header_aad(FORMAT_VERSION, params, &salt),
+            vault_key.as_ref(),
+        )?;
 
         let tx = conn.transaction()?;
         tx.execute_batch(SCHEMA)?;
@@ -91,7 +123,7 @@ impl Vault {
 
     /// Open and unlock an existing vault with the master password.
     pub fn open(path: &Path, password: &[u8]) -> Result<Self> {
-        let conn = connect_existing(path)?;
+        let (mut conn, version) = connect_existing(path)?;
         let params = KdfParams {
             m_cost_kib: meta(&conn, "kdf_m_cost_kib")?,
             t_cost: meta(&conn, "kdf_t_cost")?,
@@ -101,7 +133,7 @@ impl Vault {
         let wrapped: Vec<u8> = meta(&conn, "wrapped_key")?;
 
         let kek = crypto::derive_kek(password, &salt, params)?;
-        let unwrapped = crypto::open(&kek, &header_aad(params, &salt), &wrapped)
+        let unwrapped = crypto::open(&kek, &header_aad(version, params, &salt), &wrapped)
             .map_err(|_| Error::WrongPassword)?;
         let mut vault_key = Zeroizing::new([0u8; crypto::KEY_LEN]);
         if unwrapped.len() != vault_key.len() {
@@ -116,6 +148,26 @@ impl Vault {
             params![check.as_slice()],
         )?;
 
+        // Upgrade an older header: re-wrap the vault key bound to the current
+        // version, so older versions of stash refuse the vault cleanly.
+        if version < FORMAT_VERSION {
+            let rewrapped = crypto::seal(
+                &kek,
+                &header_aad(FORMAT_VERSION, params, &salt),
+                vault_key.as_ref(),
+            )?;
+            let tx = conn.transaction()?;
+            tx.execute(
+                "UPDATE meta SET value = ?1 WHERE key = 'wrapped_key'",
+                params![rewrapped],
+            )?;
+            tx.execute(
+                "UPDATE meta SET value = ?1 WHERE key = 'format_version'",
+                params![FORMAT_VERSION],
+            )?;
+            tx.commit()?;
+        }
+
         Ok(Self::from_parts(conn, vault_key, path))
     }
 
@@ -123,7 +175,7 @@ impl Vault {
     /// Touch ID or the session agent. Fails with [`Error::WrongKey`] if the
     /// key doesn't belong to this vault.
     pub fn open_with_key(path: &Path, key: &[u8; crypto::KEY_LEN]) -> Result<Self> {
-        let conn = connect_existing(path)?;
+        let (conn, _) = connect_existing(path)?;
         let stored: Option<Vec<u8>> = conn
             .query_row("SELECT value FROM meta WHERE key = 'key_check'", [], |r| {
                 r.get(0)
@@ -159,15 +211,43 @@ impl Vault {
         &self.vault_key
     }
 
-    /// Store a secret. Fails with [`Error::AlreadyExists`] unless `overwrite` is set.
+    /// Store a single-value secret. Fails with [`Error::AlreadyExists`]
+    /// unless `overwrite` is set.
     pub fn add(&mut self, name: &str, value: &[u8], overwrite: bool) -> Result<()> {
         validate_name(name)?;
+        let payload = encode_secret(name, value);
+        self.write(name, &payload, overwrite)
+    }
+
+    /// Store an item. Single-value secrets use the original encoding, so
+    /// they stay readable by any version; logins and notes use the
+    /// structured one. Timestamps are filled in.
+    pub fn put(&mut self, name: &str, item: &Item, overwrite: bool) -> Result<()> {
+        validate_name(name)?;
+        if item.kind == Kind::Secret {
+            let value = item.primary().unwrap_or("");
+            return self.add(name, value.as_bytes(), overwrite);
+        }
+        let now = unix_now();
+        let mut item = item.clone();
+        item.updated = now;
+        if item.created == 0 {
+            item.created = self
+                .stored(name)?
+                .and_then(|old| old.structured().map(|i| i.created))
+                .filter(|&c| c != 0)
+                .unwrap_or(now);
+        }
+        let payload = encode_structured(name, &item)?;
+        self.write(name, &payload, overwrite)
+    }
+
+    fn write(&mut self, name: &str, payload: &[u8], overwrite: bool) -> Result<()> {
         let id = self.item_id(name);
         if !overwrite && self.blob(&id)?.is_some() {
             return Err(Error::AlreadyExists(name.to_owned()));
         }
-        let payload = encode_item(name, value);
-        let blob = crypto::seal(&self.vault_key, &item_aad(&id), &payload)?;
+        let blob = crypto::seal(&self.vault_key, &item_aad(&id), payload)?;
         self.conn.execute(
             "INSERT INTO items (id, blob) VALUES (?1, ?2)
              ON CONFLICT (id) DO UPDATE SET blob = excluded.blob",
@@ -176,21 +256,71 @@ impl Vault {
         Ok(())
     }
 
-    /// Read a secret's value.
+    /// Read an item's main value: a secret's value, a login's password, a
+    /// note's text.
     pub fn get(&self, name: &str) -> Result<SecretSlice<u8>> {
+        match self
+            .stored(name)?
+            .ok_or_else(|| Error::NotFound(name.to_owned()))?
+        {
+            Stored::Secret(value) => Ok(SecretSlice::from(value.to_vec())),
+            Stored::Structured(item) => item
+                .primary()
+                .map(|v| SecretSlice::from(v.as_bytes().to_vec()))
+                .ok_or_else(|| Error::NoSuchField(name.to_owned(), "password".into())),
+        }
+    }
+
+    /// Read a whole item. Single-value secrets come back as `Kind::Secret`
+    /// items; binary ones fail with [`Error::NotText`] (use [`Vault::get`]).
+    pub fn item(&self, name: &str) -> Result<Item> {
+        match self
+            .stored(name)?
+            .ok_or_else(|| Error::NotFound(name.to_owned()))?
+        {
+            Stored::Secret(value) => {
+                let text = String::from_utf8(value.to_vec())
+                    .map_err(|_| Error::NotText(name.to_owned()))?;
+                Ok(Item::secret(text))
+            }
+            Stored::Structured(item) => Ok(item),
+        }
+    }
+
+    /// Resolve a `stash://name` or `stash://name#field` reference. An OTP
+    /// field yields its current code for `unix_time`.
+    pub fn resolve(&self, reference: &Reference, unix_time: u64) -> Result<Zeroizing<Vec<u8>>> {
+        let Some(selector) = reference.field else {
+            use secrecy::ExposeSecret;
+            return Ok(Zeroizing::new(
+                self.get(reference.name)?.expose_secret().to_vec(),
+            ));
+        };
+        let item = self.item(reference.name)?;
+        let missing = || Error::NoSuchField(reference.name.to_owned(), selector.to_owned());
+        match item.field(selector).ok_or_else(missing)? {
+            FieldValue::Plain(v) => Ok(Zeroizing::new(v.as_bytes().to_vec())),
+            FieldValue::Otp(secret) => {
+                let code = crate::otp::Totp::parse(secret)?.code_at(unix_time);
+                Ok(Zeroizing::new(code.into_bytes()))
+            }
+        }
+    }
+
+    fn stored(&self, name: &str) -> Result<Option<Stored>> {
         validate_name(name)?;
         let id = self.item_id(name);
-        let blob = self
-            .blob(&id)?
-            .ok_or_else(|| Error::NotFound(name.to_owned()))?;
+        let Some(blob) = self.blob(&id)? else {
+            return Ok(None);
+        };
         let payload = crypto::open(&self.vault_key, &item_aad(&id), &blob)?;
-        let (stored_name, value) = decode_item(&payload)?;
+        let (stored_name, stored) = decode_item(&payload)?;
         if stored_name != name {
             return Err(Error::Corrupt(format!(
                 "item `{name}` holds a different name"
             )));
         }
-        Ok(SecretSlice::from(value.to_vec()))
+        Ok(Some(stored))
     }
 
     /// Delete a secret.
@@ -206,20 +336,43 @@ impl Vault {
         Ok(())
     }
 
-    /// All secret names, sorted. Values are never returned.
+    /// All item names, sorted. Values are never returned.
     pub fn names(&self) -> Result<Vec<String>> {
+        Ok(self.summaries()?.into_iter().map(|s| s.name).collect())
+    }
+
+    /// One summary per item, sorted by name: kind, username, URL, whether it
+    /// has 2FA. No secret values.
+    pub fn summaries(&self) -> Result<Vec<Summary>> {
         let mut stmt = self.conn.prepare("SELECT id, blob FROM items")?;
         let mut rows = stmt.query([])?;
-        let mut names = Vec::new();
+        let mut out = Vec::new();
         while let Some(row) = rows.next()? {
             let id: Vec<u8> = row.get(0)?;
             let blob: Vec<u8> = row.get(1)?;
             let payload = crypto::open(&self.vault_key, &item_aad(&id), &blob)?;
-            let (name, _) = decode_item(&payload)?;
-            names.push(name.to_owned());
+            let (name, stored) = decode_item(&payload)?;
+            out.push(match stored.structured() {
+                None => Summary {
+                    name,
+                    kind: Kind::Secret,
+                    username: None,
+                    url: None,
+                    has_otp: false,
+                    updated: 0,
+                },
+                Some(item) => Summary {
+                    name,
+                    kind: item.kind,
+                    username: item.username().map(str::to_owned),
+                    url: item.url().map(str::to_owned),
+                    has_otp: item.has_otp(),
+                    updated: item.updated,
+                },
+            });
         }
-        names.sort();
-        Ok(names)
+        out.sort_by(|a, b| a.name.cmp(&b.name));
+        Ok(out)
     }
 
     fn item_id(&self, name: &str) -> [u8; 32] {
@@ -247,16 +400,22 @@ fn connect(path: &Path) -> Result<Connection> {
 }
 
 /// Open an existing vault file and check its format version.
-fn connect_existing(path: &Path) -> Result<Connection> {
+fn connect_existing(path: &Path) -> Result<(Connection, i64)> {
     if !path.exists() {
         return Err(Error::VaultMissing(path.to_owned()));
     }
     let conn = connect(path)?;
     let version: i64 = meta(&conn, "format_version")?;
-    if version != FORMAT_VERSION {
+    if !(OLDEST_SUPPORTED_VERSION..=FORMAT_VERSION).contains(&version) {
         return Err(Error::UnsupportedVersion(version));
     }
-    Ok(conn)
+    Ok((conn, version))
+}
+
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
 }
 
 /// A value derived from the vault key that proves a key belongs to this
@@ -282,9 +441,9 @@ fn create_private_dir(dir: &Path) -> Result<()> {
 
 /// AAD for the wrapped vault key: binds it to the format version, KDF
 /// parameters, and salt so none of them can be swapped without detection.
-fn header_aad(params: KdfParams, salt: &[u8]) -> Vec<u8> {
+fn header_aad(version: i64, params: KdfParams, salt: &[u8]) -> Vec<u8> {
     let mut aad = b"stash/vault-key/v1".to_vec();
-    aad.extend_from_slice(&FORMAT_VERSION.to_le_bytes());
+    aad.extend_from_slice(&version.to_le_bytes());
     aad.extend_from_slice(&params.m_cost_kib.to_le_bytes());
     aad.extend_from_slice(&params.t_cost.to_le_bytes());
     aad.extend_from_slice(&params.p_cost.to_le_bytes());
@@ -298,25 +457,70 @@ fn item_aad(id: &[u8]) -> Vec<u8> {
     aad
 }
 
-/// Item plaintext: `u16 name length (LE) || name || value`.
-fn encode_item(name: &str, value: &[u8]) -> Zeroizing<Vec<u8>> {
-    let len = u16::try_from(name.len()).expect("names are validated to be short");
+/// A decrypted item, in whichever encoding it was stored.
+enum Stored {
+    Secret(Zeroizing<Vec<u8>>),
+    Structured(Item),
+}
+
+impl Stored {
+    fn structured(&self) -> Option<&Item> {
+        match self {
+            Stored::Structured(item) => Some(item),
+            Stored::Secret(_) => None,
+        }
+    }
+}
+
+fn name_header(name: &str) -> [u8; 2] {
+    u16::try_from(name.len())
+        .expect("names are validated to be short")
+        .to_le_bytes()
+}
+
+/// `u16 name length (LE) || name || value`.
+fn encode_secret(name: &str, value: &[u8]) -> Zeroizing<Vec<u8>> {
     let mut out = Zeroizing::new(Vec::with_capacity(2 + name.len() + value.len()));
-    out.extend_from_slice(&len.to_le_bytes());
+    out.extend_from_slice(&name_header(name));
     out.extend_from_slice(name.as_bytes());
     out.extend_from_slice(value);
     out
 }
 
-fn decode_item(payload: &[u8]) -> Result<(&str, &[u8])> {
+/// `0xFFFF || u16 name length (LE) || name || JSON`.
+fn encode_structured(name: &str, item: &Item) -> Result<Zeroizing<Vec<u8>>> {
+    let json = Zeroizing::new(
+        serde_json::to_vec(item).map_err(|e| Error::Corrupt(format!("encoding item: {e}")))?,
+    );
+    let mut out = Zeroizing::new(Vec::with_capacity(4 + name.len() + json.len()));
+    out.extend_from_slice(&STRUCTURED);
+    out.extend_from_slice(&name_header(name));
+    out.extend_from_slice(name.as_bytes());
+    out.extend_from_slice(&json);
+    Ok(out)
+}
+
+fn decode_item(payload: &[u8]) -> Result<(String, Stored)> {
     let corrupt = || Error::Corrupt("malformed item".into());
+    let (structured, payload) = match payload.strip_prefix(&STRUCTURED) {
+        Some(rest) => (true, rest),
+        None => (false, payload),
+    };
     let (len, rest) = payload.split_first_chunk::<2>().ok_or_else(corrupt)?;
     let len = usize::from(u16::from_le_bytes(*len));
     if rest.len() < len {
         return Err(corrupt());
     }
-    let (name, value) = rest.split_at(len);
-    Ok((std::str::from_utf8(name).map_err(|_| corrupt())?, value))
+    let (name, body) = rest.split_at(len);
+    let name = std::str::from_utf8(name).map_err(|_| corrupt())?.to_owned();
+    let stored = if structured {
+        let item = serde_json::from_slice(body)
+            .map_err(|e| Error::Corrupt(format!("item `{name}`: {e}")))?;
+        Stored::Structured(item)
+    } else {
+        Stored::Secret(Zeroizing::new(body.to_vec()))
+    };
+    Ok((name, stored))
 }
 
 #[cfg(test)]
@@ -502,5 +706,155 @@ mod tests {
         ));
         drop(Vault::open(&path, b"correct horse").unwrap());
         assert!(Vault::open_with_key(&path, &key).is_ok());
+    }
+
+    fn github_login() -> Item {
+        let mut item = Item::login(Some("octocat"), "hunter2!", Some("https://github.com"));
+        item.set(
+            crate::item::ONE_TIME_PASSWORD,
+            crate::FieldKind::Otp,
+            "JBSWY3DPEHPK3PXP",
+        );
+        item
+    }
+
+    #[test]
+    fn stores_and_resolves_structured_items() {
+        let (_dir, path, mut vault) = new_vault();
+        vault.put("github", &github_login(), false).unwrap();
+        vault
+            .put("notes/wifi", &Item::note("ssid: home"), false)
+            .unwrap();
+        drop(vault);
+        let vault = Vault::open(&path, b"correct horse").unwrap();
+
+        // Main values.
+        assert_eq!(value(&vault, "github"), b"hunter2!");
+        assert_eq!(value(&vault, "notes/wifi"), b"ssid: home");
+
+        // Field references, including the current 2FA code.
+        let resolve = |s: &str| {
+            let r = crate::reference::parse(s).unwrap().unwrap();
+            String::from_utf8(vault.resolve(&r, 59).unwrap().to_vec()).unwrap()
+        };
+        assert_eq!(resolve("stash://github#username"), "octocat");
+        assert_eq!(resolve("stash://github#url"), "https://github.com");
+        let expected = crate::otp::Totp::parse("JBSWY3DPEHPK3PXP")
+            .unwrap()
+            .code_at(59);
+        assert_eq!(resolve("stash://github#otp"), expected);
+        let missing = crate::reference::parse("stash://github#nope")
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            vault.resolve(&missing, 0),
+            Err(Error::NoSuchField(..))
+        ));
+
+        let item = vault.item("github").unwrap();
+        assert_eq!(item.kind, Kind::Login);
+        assert!(item.created > 0 && item.updated >= item.created);
+    }
+
+    #[test]
+    fn summaries_describe_items_without_values() {
+        let (_dir, _path, mut vault) = new_vault();
+        vault.put("github", &github_login(), false).unwrap();
+        vault.add("api/key", b"tok", false).unwrap();
+        let s = vault.summaries().unwrap();
+        assert_eq!(s.len(), 2);
+        assert_eq!((s[0].name.as_str(), s[0].kind), ("api/key", Kind::Secret));
+        assert_eq!(s[1].username.as_deref(), Some("octocat"));
+        assert_eq!(s[1].url.as_deref(), Some("https://github.com"));
+        assert!(s[1].has_otp);
+        assert_eq!(vault.names().unwrap(), ["api/key", "github"]);
+    }
+
+    #[test]
+    fn plain_secrets_read_as_secret_items_and_binary_ones_refuse() {
+        let (_dir, _path, mut vault) = new_vault();
+        vault.add("tok", b"abc", false).unwrap();
+        vault.add("bin", &[0xff, 0x00], false).unwrap();
+        let item = vault.item("tok").unwrap();
+        assert_eq!((item.kind, item.primary()), (Kind::Secret, Some("abc")));
+        assert!(matches!(vault.item("bin"), Err(Error::NotText(_))));
+        // Putting a secret item keeps the original encoding.
+        vault.put("tok2", &Item::secret("xyz"), false).unwrap();
+        assert_eq!(value(&vault, "tok2"), b"xyz");
+    }
+
+    #[test]
+    fn editing_an_item_keeps_its_creation_time() {
+        let (_dir, _path, mut vault) = new_vault();
+        vault.put("github", &github_login(), false).unwrap();
+        let created = vault.item("github").unwrap().created;
+        let mut edited = vault.item("github").unwrap();
+        edited.set("password", crate::FieldKind::Concealed, "new!");
+        edited.created = 0;
+        vault.put("github", &edited, true).unwrap();
+        let after = vault.item("github").unwrap();
+        assert_eq!(after.created, created);
+        assert_eq!(after.primary(), Some("new!"));
+    }
+
+    #[test]
+    fn version_1_vaults_open_and_upgrade_on_password_unlock() {
+        let (_dir, path, mut vault) = new_vault();
+        vault.add("old", b"value", false).unwrap();
+        let key = *vault.key();
+        // Rewrite the header exactly as v0.1–v0.5 wrote it.
+        let salt: Vec<u8> = meta(&vault.conn, "kdf_salt").unwrap();
+        let kek = crypto::derive_kek(b"correct horse", &salt, FAST).unwrap();
+        let wrapped = crypto::seal(&kek, &header_aad(1, FAST, &salt), &key).unwrap();
+        vault
+            .conn
+            .execute(
+                "UPDATE meta SET value = ?1 WHERE key = 'wrapped_key'",
+                params![wrapped],
+            )
+            .unwrap();
+        vault
+            .conn
+            .execute("UPDATE meta SET value = 1 WHERE key = 'format_version'", [])
+            .unwrap();
+        drop(vault);
+
+        // Touch ID / session keys still open it, without upgrading.
+        drop(Vault::open_with_key(&path, &key).unwrap());
+        let version = |p: &Path| -> i64 { meta(&connect(p).unwrap(), "format_version").unwrap() };
+        assert_eq!(version(&path), 1);
+
+        // The master password opens and upgrades it.
+        let vault = Vault::open(&path, b"correct horse").unwrap();
+        assert_eq!(value(&vault, "old"), b"value");
+        drop(vault);
+        assert_eq!(version(&path), 2);
+        let vault = Vault::open(&path, b"correct horse").unwrap();
+        assert_eq!(value(&vault, "old"), b"value");
+    }
+
+    #[test]
+    fn rejects_vaults_from_the_future() {
+        let (_dir, path, vault) = new_vault();
+        vault
+            .conn
+            .execute("UPDATE meta SET value = 3 WHERE key = 'format_version'", [])
+            .unwrap();
+        drop(vault);
+        assert!(matches!(
+            Vault::open(&path, b"correct horse"),
+            Err(Error::UnsupportedVersion(3))
+        ));
+    }
+
+    #[test]
+    fn structured_items_are_encrypted_too() {
+        let (_dir, path, mut vault) = new_vault();
+        vault.put("github", &github_login(), false).unwrap();
+        drop(vault);
+        let raw = fs::read(&path).unwrap();
+        for needle in [&b"octocat"[..], b"hunter2!", b"login", b"JBSWY3DP"] {
+            assert!(!raw.windows(needle.len()).any(|w| w == needle));
+        }
     }
 }
