@@ -25,10 +25,18 @@ git checkout dev
 cargo test
 ```
 
+On macOS, also build the Touch ID helper (needs Xcode or the Command Line Tools):
+
+```sh
+swift build -c release --package-path swift/stash-touchid
+```
+
+The tests don't need a fingerprint. They use a fake helper (see `fake_touch_id` in `crates/stash-cli/tests/cli.rs`), so they run anywhere. Changes to the Swift helper itself need a manual check on a Mac with Touch ID.
+
 Try the CLI against a throwaway vault so you don't touch your real one:
 
 ```sh
-export STASH_VAULT=/tmp/stash-dev.db
+export STASH_VAULT=/tmp/stash-dev.db STASH_AGENT_SOCK=/tmp/stash-dev.sock
 cargo run -- init
 echo "hello" | cargo run -- add demo/secret
 cargo run -- get demo/secret
@@ -61,7 +69,9 @@ These apply to everything in `crates/stash-core` and any code that touches secre
 
 ```
 crates/stash-core   vault format, crypto, and operations (library)
-crates/stash-cli    the `stash` command
+crates/stash-cli    the `stash` command and session agent
+swift/stash-touchid Touch ID helper (macOS)
+scripts/            install script
 docs/               design and security docs
 ```
 
