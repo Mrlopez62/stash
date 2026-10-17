@@ -8,6 +8,10 @@ pub enum Error {
         "this vault needs a one-time upgrade before it can store logins and notes: unlock it once with your master password (for example `STASH_SESSION_TIMEOUT=0 stash ls`, then cancel the Touch ID prompt)"
     )]
     NeedsUpgrade,
+    #[error(
+        "this vault couldn't be upgraded to store logins and notes because the file is read-only or in use by another stash process; fix its permissions or close the other process, then try again"
+    )]
+    UpgradeBlocked,
     #[error("`{0}` has no field `{1}`")]
     NoSuchField(String, String),
     #[error("`{0}` holds binary data, which only `stash get` can output")]

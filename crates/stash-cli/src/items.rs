@@ -106,7 +106,7 @@ fn check_can_add(vault: &Vault, name: &str, force: bool, structured: bool) -> Re
         bail!("{name} already exists (use --force to overwrite)");
     }
     if structured && !vault.is_current() {
-        return Err(stash_core::Error::NeedsUpgrade.into());
+        return Err(vault.upgrade_error().into());
     }
     Ok(())
 }
@@ -153,13 +153,19 @@ pub struct EditArgs {
 pub fn edit(vault: &mut Vault, name: &str, args: &EditArgs) -> Result<()> {
     let login = &args.login;
     let changes_password = args.password || login.generate;
-    let touches_login =
-        login.username.is_some() || login.url.is_some() || login.otp || !args.set.is_empty();
+    // Username, website, and 2FA make an item a login. Custom fields (--set)
+    // don't: an API token with a `scope` field is still a secret.
+    let touches_login = login.username.is_some() || login.url.is_some() || login.otp;
     let inputs = [changes_password && !login.generate, login.otp, args.notes];
     if inputs.iter().filter(|&&x| x).count() > 1 && !stdin_is_terminal() {
         bail!("only one of --password, --otp, and --notes can read from piped stdin at a time");
     }
-    if !(changes_password || touches_login || !args.unset.is_empty() || args.notes) {
+    if !(changes_password
+        || touches_login
+        || !args.set.is_empty()
+        || !args.unset.is_empty()
+        || args.notes)
+    {
         bail!("nothing to change (see `stash edit --help`)");
     }
 
@@ -170,10 +176,11 @@ pub fn edit(vault: &mut Vault, name: &str, args: &EditArgs) -> Result<()> {
         && item.fields.len() == 1
         && item.notes.is_empty()
         && !touches_login
+        && args.set.is_empty()
         && !args.notes
         && args.unset.is_empty();
     if !stays_plain_secret && !vault.is_current() {
-        return Err(stash_core::Error::NeedsUpgrade.into());
+        return Err(vault.upgrade_error().into());
     }
     // Checked up front so no secret is asked for before an error.
     for pair in &args.set {
@@ -183,9 +190,15 @@ pub fn edit(vault: &mut Vault, name: &str, args: &EditArgs) -> Result<()> {
             .trim();
         check_settable(&item, label)?;
     }
+    // A secret's first field *is* its value: removing it would quietly make
+    // the next field the secret.
     for label in &args.unset {
-        if item.kind == Kind::Secret && item.fields.len() == 1 && item.labeled(label).is_some() {
-            bail!("that's {name}'s only value; to delete the item, use `stash rm {name}`");
+        let is_value = item.kind == Kind::Secret
+            && item.labeled(label).is_some_and(|f| {
+                std::ptr::eq(f, item.fields.first().expect("labeled found a field"))
+            });
+        if is_value {
+            bail!("that's {name}'s value; to delete the item, use `stash rm {name}`");
         }
     }
     // A secret that gains login details becomes a login: its value becomes

@@ -889,4 +889,32 @@ mod tests {
         );
         let _ = std::fs::remove_file(&s.audit_log);
     }
+
+    #[test]
+    fn a_slow_approval_reuses_the_approved_key_instead_of_prompting_again() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("vault.db");
+        let fast = stash_core::KdfParams {
+            m_cost_kib: 8,
+            t_cost: 1,
+            p_cost: 1,
+        };
+        let vault = Vault::create(&path, b"pw", fast).unwrap();
+        let mut s = server();
+        s.vault_path = path;
+        s.opts.idle_timeout = Duration::from_secs(1);
+        // As if the Touch ID dialog stayed open well past the idle timeout.
+        let long_ago = Instant::now()
+            .checked_sub(Duration::from_secs(3600))
+            .unwrap();
+        s.unlocked = Some(Unlocked {
+            vault,
+            last_used: long_ago,
+        });
+        // Calling `vault()` here would re-unlock (a second prompt);
+        // `after_approval` must hand back the key that was just approved.
+        assert!(s.after_approval("test").is_ok());
+        assert!(s.unlocked.as_ref().unwrap().last_used > long_ago);
+        let _ = std::fs::remove_file(&s.audit_log);
+    }
 }

@@ -66,6 +66,9 @@ pub struct Vault {
     /// The header's format version. Structured items can only be written
     /// once it's current, so older versions of stash never see them.
     version: i64,
+    /// A master-password unlock tried to upgrade the header but couldn't,
+    /// because the file is read-only or in use.
+    upgrade_blocked: bool,
 }
 
 impl Vault {
@@ -161,14 +164,17 @@ impl Vault {
         // Upgrade an older header: re-wrap the vault key bound to the current
         // version, so older versions of stash refuse the vault cleanly.
         let mut version = version;
-        if version < FORMAT_VERSION
-            && tolerate_unwritable(upgrade_header(&mut conn, &kek, params, &salt, &vault_key))?
-                .is_some()
-        {
-            version = FORMAT_VERSION;
+        let mut upgrade_blocked = false;
+        if version < FORMAT_VERSION {
+            match tolerate_unwritable(upgrade_header(&mut conn, &kek, params, &salt, &vault_key))? {
+                Some(()) => version = FORMAT_VERSION,
+                None => upgrade_blocked = true,
+            }
         }
 
-        Ok(Self::from_parts(conn, vault_key, path, version))
+        let mut vault = Self::from_parts(conn, vault_key, path, version);
+        vault.upgrade_blocked = upgrade_blocked;
+        Ok(vault)
     }
 
     /// Open an existing vault with its raw vault key, as handed back by
@@ -199,6 +205,7 @@ impl Vault {
             index_key,
             path: path.to_owned(),
             version,
+            upgrade_blocked: false,
         }
     }
 
@@ -206,6 +213,16 @@ impl Vault {
     /// A version 1 vault becomes current on its next master-password unlock.
     pub fn is_current(&self) -> bool {
         self.version >= FORMAT_VERSION
+    }
+
+    /// Why logins and notes can't be stored yet: the vault needs a
+    /// master-password unlock, or that unlock couldn't write the upgrade.
+    pub fn upgrade_error(&self) -> Error {
+        if self.upgrade_blocked {
+            Error::UpgradeBlocked
+        } else {
+            Error::NeedsUpgrade
+        }
     }
 
     /// Whether an item with this name exists.
@@ -245,7 +262,7 @@ impl Vault {
             return self.add(name, value.as_bytes(), overwrite);
         }
         if !self.is_current() {
-            return Err(Error::NeedsUpgrade);
+            return Err(self.upgrade_error());
         }
         let now = unix_now();
         let mut item = item.clone();
@@ -957,7 +974,35 @@ mod tests {
         fs::set_permissions(&path, fs::Permissions::from_mode(0o400)).unwrap();
         let opened = Vault::open(&path, b"correct horse");
         fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
-        assert!(!opened.unwrap().is_current());
+        let mut vault = opened.unwrap();
+        assert!(!vault.is_current());
+        // And says why, instead of asking for the unlock that just happened.
+        assert!(matches!(
+            vault.put("github", &github_login(), false),
+            Err(Error::UpgradeBlocked)
+        ));
+    }
+
+    #[test]
+    fn only_read_only_and_busy_errors_are_tolerated() {
+        use rusqlite::ffi;
+        let failure = |code| {
+            Err::<(), _>(Error::Database(rusqlite::Error::SqliteFailure(
+                ffi::Error::new(code),
+                None,
+            )))
+        };
+        for code in [ffi::SQLITE_READONLY, ffi::SQLITE_BUSY, ffi::SQLITE_LOCKED] {
+            assert!(
+                matches!(tolerate_unwritable(failure(code)), Ok(None)),
+                "{code}"
+            );
+        }
+        for code in [ffi::SQLITE_CORRUPT, ffi::SQLITE_FULL, ffi::SQLITE_IOERR] {
+            assert!(tolerate_unwritable(failure(code)).is_err(), "{code}");
+        }
+        assert!(tolerate_unwritable(Err::<(), _>(Error::Decrypt)).is_err());
+        assert!(matches!(tolerate_unwritable(Ok(5)), Ok(Some(5))));
     }
 
     #[test]

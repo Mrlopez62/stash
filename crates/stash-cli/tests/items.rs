@@ -406,3 +406,36 @@ fn set_refuses_labels_that_look_like_secrets() {
             .stderr(predicate::str::contains("looks like a secret"));
     }
 }
+
+#[test]
+fn custom_fields_on_a_secret_keep_it_a_secret() {
+    // Regression (PR #9 review): `--set` used to turn an API key into a
+    // "login" whose value was relabeled "password".
+    let dir = init();
+    stash(&dir)
+        .args(["add", "api/key"])
+        .write_stdin("sk_live_123")
+        .assert()
+        .success();
+    stash(&dir)
+        .args(["edit", "api/key", "--set", "scope=read-only"])
+        .assert()
+        .success();
+    let shown = out(&dir, &["show", "api/key"]);
+    assert!(shown.starts_with("api/key  (secret)"), "{shown}");
+    assert_eq!(out(&dir, &["get", "api/key"]), "sk_live_123");
+    assert_eq!(out(&dir, &["get", "api/key#scope"]), "read-only");
+
+    // Its value can't be removed, even with other fields present: the next
+    // field would silently become the secret.
+    stash(&dir)
+        .args(["edit", "api/key", "--unset", "value"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("stash rm api/key"));
+    stash(&dir)
+        .args(["edit", "api/key", "--unset", "scope"])
+        .assert()
+        .success();
+    assert_eq!(out(&dir, &["get", "api/key"]), "sk_live_123");
+}
