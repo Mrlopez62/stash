@@ -4,6 +4,8 @@ use std::path::PathBuf;
 pub enum Error {
     #[error("wrong master password")]
     WrongPassword,
+    #[error("not a valid 2FA (TOTP) secret: {0}")]
+    InvalidOtp(String),
     #[error("this key does not unlock the vault")]
     WrongKey,
     #[error("no secret named `{0}`")]
