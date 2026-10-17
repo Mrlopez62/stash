@@ -2,7 +2,27 @@
 
 **A free, developer-first secrets manager for macOS. Unlock with Touch ID, pass API tokens into commands safely, and let AI agents use your secrets without ever seeing them.**
 
-> Status: planning. Nothing here is built yet. This document describes the goal.
+[![CI](https://github.com/Mrlopez62/stash/actions/workflows/ci.yml/badge.svg)](https://github.com/Mrlopez62/stash/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
+> **Status: early development (v0.1).** The encrypted vault and basic CLI work today. Touch ID, `stash run`, and MCP support are coming next (see [Roadmap](#roadmap)). Don't trust it with production secrets until it has been reviewed.
+
+## Getting started
+
+Requires [Rust](https://rustup.rs) 1.88 or newer.
+
+```sh
+cargo install --git https://github.com/Mrlopez62/stash stash-cli
+
+stash init                            # create a vault (asks for a new master password)
+stash add github/token                # prompts for the value without echoing it
+echo "$OPENAI_KEY" | stash add openai/api-key   # or pipe it in
+stash ls                              # names only
+stash get github/token                # prints the value
+stash rm github/token
+```
+
+The vault lives at `~/.stash/vault.db`. Use `--vault <path>` or `STASH_VAULT` to point somewhere else.
 
 ## Why
 
@@ -30,7 +50,9 @@
 - Cloud sync (planned for later, see Roadmap)
 - Mobile apps
 
-## What using it looks like
+## Where it's headed
+
+The full workflow we're building toward. Only `add`/`get`/`ls`/`rm` work today; the rest is planned.
 
 ```sh
 # Store and read secrets
@@ -75,11 +97,11 @@ Safety rules:
 
 ## Security model
 
-- **Vault:** one SQLite file at `~/.stash/vault.db`. Each item is encrypted separately with XChaCha20-Poly1305.
+- **Vault:** one SQLite file at `~/.stash/vault.db`. Each item is encrypted separately with XChaCha20-Poly1305. Secret names are encrypted too, so the file doesn't reveal which services you use.
 - **Keys:** the master password goes through Argon2id to produce a key-encryption key. That key wraps a random 256-bit vault key, so changing the master password doesn't mean re-encrypting every item.
-- **Touch ID:** the vault key is kept in the macOS Keychain, guarded by a biometric access policy (`biometryCurrentSet`). If someone adds a new fingerprint, Touch ID unlock stops working until you enter the master password again.
+- **Touch ID (planned for v0.2):** the vault key is kept in the macOS Keychain, guarded by a biometric access policy (`biometryCurrentSet`). If someone adds a new fingerprint, Touch ID unlock stops working until you enter the master password again.
 - **Memory:** secrets are wiped from memory after use (`zeroize`) and never logged.
-- **Threat model:** documented in `docs/threat-model.md` (to be written), including what `stash` does *not* protect against, such as malware already running as your user.
+- **Threat model:** see [docs/threat-model.md](docs/threat-model.md), including what `stash` does *not* protect against, such as malware already running as your user.
 
 ## Architecture
 
@@ -98,7 +120,7 @@ Rust handles everything that is security-critical and cross-platform. The Swift 
 
 | Version | Scope |
 |---|---|
-| v0.1 | Encrypted vault, CLI (`add`/`get`/`ls`/`rm`), master password |
+| v0.1 ✅ | Encrypted vault, CLI (`init`/`add`/`get`/`ls`/`rm`), master password |
 | v0.2 | Touch ID unlock + agent sessions |
 | v0.3 | `stash://` references, `run`, `inject` |
 | v0.4 | MCP server with approvals and audit log |
@@ -106,6 +128,8 @@ Rust handles everything that is security-critical and cross-platform. The Swift 
 | Later | Encrypted sync (iCloud Drive or Git), menu bar app, browser extension, Linux support |
 
 ## How it compares
+
+This compares stash's planned v1 with the other tools.
 
 | | stash | 1Password | Bitwarden | pass / gopass |
 |---|---|---|---|---|
@@ -116,12 +140,12 @@ Rust handles everything that is security-critical and cross-platform. The Swift 
 | Data stays local | ✅ | ❌ (cloud) | ❌ unless self-hosted | ✅ |
 | Browser autofill | Later | ✅ | ✅ | Via plugins |
 
-## Branches
+## Contributing
 
-- `main` is the stable branch. Never commit to it directly.
-- `dev` is for development. Commit there, or on feature branches made from `dev`.
-- To ship, open a pull request from `dev` into `main` and merge it.
+Contributions are welcome! Start with [CONTRIBUTING.md](CONTRIBUTING.md). In short: branch from `dev` and open pull requests against `dev`. `main` is the stable branch and only gets updated from `dev`.
+
+Report security issues privately as described in [SECURITY.md](SECURITY.md). Please don't open public issues for them.
 
 ## License
 
-MIT
+[MIT](LICENSE)

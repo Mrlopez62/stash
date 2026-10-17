@@ -1,0 +1,40 @@
+name: Bug report
+description: Something isn't working as expected
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Security issue?** Don't file it here. See [SECURITY.md](https://github.com/Mrlopez62/stash/blob/main/SECURITY.md).
+        Never paste real secret values or your master password into an issue.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. stash init
+        2. echo test | stash add demo/key
+        3. ...
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: stash version
+      description: Output of `stash --version`
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: OS and version
+      placeholder: macOS 27.0 (Apple Silicon)
+    validations:
+      required: true
