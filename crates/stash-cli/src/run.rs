@@ -6,10 +6,13 @@ use std::collections::BTreeMap;
 use std::ffi::{OsStr, OsString};
 use std::io::{self, ErrorKind};
 use std::os::unix::ffi::OsStrExt;
-use std::os::unix::process::ExitStatusExt;
+use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::PathBuf;
 use std::process::{Command, ExitCode, ExitStatus, Stdio};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicI32, Ordering};
+use std::sync::mpsc;
+use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
 use secrecy::ExposeSecret;
@@ -28,6 +31,9 @@ pub struct Options {
 enum Value {
     Plain(String),
     Reference(String),
+    /// An inherited `stash://` value that doesn't parse. It's only an error if
+    /// nothing overrides it, so one stray variable can't break every run.
+    Invalid(String),
 }
 
 /// Variables the child gets on top of the inherited environment. References
@@ -39,8 +45,14 @@ fn collect_env(env_files: &[PathBuf]) -> Result<BTreeMap<String, Value>> {
         let (Some(key), Some(value)) = (key.to_str(), value.to_str()) else {
             continue;
         };
-        if let Some(name) = reference::parse(value).with_context(|| key.to_owned())? {
-            vars.insert(key.to_owned(), Value::Reference(name.to_owned()));
+        match reference::parse(value) {
+            Ok(Some(name)) => {
+                vars.insert(key.to_owned(), Value::Reference(name.to_owned()));
+            }
+            Ok(None) => {}
+            Err(e) => {
+                vars.insert(key.to_owned(), Value::Invalid(e.to_string()));
+            }
         }
     }
     for path in env_files {
@@ -57,10 +69,16 @@ fn collect_env(env_files: &[PathBuf]) -> Result<BTreeMap<String, Value>> {
             vars.insert(key, entry);
         }
     }
+    if let Some((key, why)) = vars.iter().find_map(|(k, v)| match v {
+        Value::Invalid(why) => Some((k, why)),
+        _ => None,
+    }) {
+        bail!("{key}: {why}");
+    }
     Ok(vars)
 }
 
-pub fn run(opts: Options, unlock: impl FnOnce() -> Result<Vault>) -> Result<ExitCode> {
+pub fn run(opts: Options, unlock: impl FnOnce(&str) -> Result<Vault>) -> Result<ExitCode> {
     let (program, args) = opts.command.split_first().context("no command given")?;
     let vars = collect_env(&opts.env_files)?;
 
@@ -69,11 +87,16 @@ pub fn run(opts: Options, unlock: impl FnOnce() -> Result<Vault>) -> Result<Exit
         .iter()
         .filter_map(|(key, value)| match value {
             Value::Reference(name) => Some((key.as_str(), name.as_str())),
-            Value::Plain(_) => None,
+            Value::Plain(_) | Value::Invalid(_) => None,
         })
         .collect();
     if !references.is_empty() {
-        let vault = unlock()?;
+        let names: Vec<&str> = references.iter().map(|(_, name)| *name).collect();
+        let vault = unlock(&format!(
+            "run {} with {}",
+            program.to_string_lossy(),
+            summarize(&names)
+        ))?;
         for (key, name) in references {
             let secret = vault
                 .get(name)
@@ -119,25 +142,67 @@ pub fn run(opts: Options, unlock: impl FnOnce() -> Result<Vault>) -> Result<Exit
         ));
     }
 
+    prepare_signals(&mut cmd);
     let mut child = cmd.spawn().map_err(|e| match e.kind() {
         ErrorKind::NotFound => anyhow!("command not found: {}", program.to_string_lossy()),
         _ => anyhow!(e).context(format!("could not run {}", program.to_string_lossy())),
     })?;
-    forward_signals_to(child.id());
+    CHILD_PID.store(child.id() as i32, Ordering::Relaxed);
 
-    let status = match &masker {
+    let status = match masker {
         None => child.wait()?,
         Some(masker) => {
-            let stdout = child.stdout.take().expect("stdout is piped");
-            let stderr = child.stderr.take().expect("stderr is piped");
-            std::thread::scope(|s| {
-                s.spawn(move || masker.pump(stdout, io::stdout().lock()));
-                s.spawn(move || masker.pump(stderr, io::stderr().lock()));
-                child.wait()
-            })?
+            let masker = Arc::new(masker);
+            let (done, finished) = mpsc::channel();
+            let pump = |reader: Box<dyn io::Read + Send>, to_stderr: bool| {
+                let (masker, done) = (Arc::clone(&masker), done.clone());
+                std::thread::spawn(move || {
+                    let _ = if to_stderr {
+                        masker.pump(reader, io::stderr().lock())
+                    } else {
+                        masker.pump(reader, io::stdout().lock())
+                    };
+                    let _ = done.send(());
+                });
+            };
+            pump(
+                Box::new(child.stdout.take().expect("stdout is piped")),
+                false,
+            );
+            pump(
+                Box::new(child.stderr.take().expect("stderr is piped")),
+                true,
+            );
+            let status = child.wait()?;
+            // Drain what's left. A background grandchild may hold the pipes
+            // open forever, so don't wait on it past a short grace period.
+            for _ in 0..2 {
+                if finished.recv_timeout(OUTPUT_GRACE).is_err() {
+                    break;
+                }
+            }
+            status
         }
     };
     Ok(exit_code(status))
+}
+
+/// How long to keep relaying output after the command exits.
+const OUTPUT_GRACE: Duration = Duration::from_millis(500);
+
+/// "a, b, and 3 more" — keeps prompts readable.
+pub(crate) fn summarize(names: &[&str]) -> String {
+    const SHOWN: usize = 3;
+    let mut list = names
+        .iter()
+        .take(SHOWN)
+        .copied()
+        .collect::<Vec<_>>()
+        .join(", ");
+    if names.len() > SHOWN {
+        list.push_str(&format!(", and {} more", names.len() - SHOWN));
+    }
+    list
 }
 
 /// Mirror the child's exit: its code, or 128 + signal number like a shell.
@@ -149,6 +214,8 @@ fn exit_code(status: ExitStatus) -> ExitCode {
     }
 }
 
+/// Pid of the running child, for the signal handler. 0 until it's spawned,
+/// so a signal in that window is dropped rather than misdirected.
 static CHILD_PID: AtomicI32 = AtomicI32::new(0);
 
 extern "C" fn forward(signal: libc::c_int) {
@@ -159,17 +226,48 @@ extern "C" fn forward(signal: libc::c_int) {
     }
 }
 
-/// Ctrl-C and Ctrl-\ already reach the child through the terminal, so stash
-/// ignores them and lets the child shut down on its own terms. Signals sent
-/// only to stash (like `kill`, or a closed terminal) are passed on.
-fn forward_signals_to(pid: u32) {
-    CHILD_PID.store(pid as i32, Ordering::Relaxed);
-    let handler = forward as extern "C" fn(libc::c_int) as libc::sighandler_t;
-    // SAFETY: installing handlers; `forward` only calls async-signal-safe code.
+/// Is this process in the terminal's foreground process group? If so, the
+/// terminal already sends Ctrl-C (SIGINT) and Ctrl-\ (SIGQUIT) to the whole
+/// group, child included.
+fn in_terminal_foreground() -> bool {
+    // SAFETY: plain syscalls on stdin and our own process.
     unsafe {
-        libc::signal(libc::SIGINT, libc::SIG_IGN);
-        libc::signal(libc::SIGQUIT, libc::SIG_IGN);
+        libc::isatty(libc::STDIN_FILENO) == 1
+            && libc::tcgetpgrp(libc::STDIN_FILENO) == libc::getpgrp()
+    }
+}
+
+/// Install signal handling *before* spawning, so there's no window where
+/// Ctrl-C kills stash but leaves the child running with dead pipes.
+///
+/// - SIGTERM and SIGHUP (sent to stash alone, e.g. `kill` or a closed
+///   terminal) are forwarded to the child.
+/// - SIGINT and SIGQUIT are ignored when the terminal already delivers them
+///   to the child, and forwarded otherwise (`kill -INT`, `timeout -s INT`,
+///   an IDE's stop button).
+///
+/// The child gets default handling back before it starts: ignored signals
+/// would otherwise stay ignored across exec.
+fn prepare_signals(cmd: &mut Command) {
+    let handler = forward as extern "C" fn(libc::c_int) as libc::sighandler_t;
+    let interrupt = if in_terminal_foreground() {
+        libc::SIG_IGN
+    } else {
+        handler
+    };
+    // SAFETY: `forward` only calls async-signal-safe code. The pre_exec hook
+    // runs between fork and exec and only calls signal(2), which is
+    // async-signal-safe.
+    unsafe {
         libc::signal(libc::SIGTERM, handler);
         libc::signal(libc::SIGHUP, handler);
+        libc::signal(libc::SIGINT, interrupt);
+        libc::signal(libc::SIGQUIT, interrupt);
+        cmd.pre_exec(|| {
+            for signal in [libc::SIGINT, libc::SIGQUIT, libc::SIGTERM, libc::SIGHUP] {
+                libc::signal(signal, libc::SIG_DFL);
+            }
+            Ok(())
+        });
     }
 }

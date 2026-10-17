@@ -4,6 +4,15 @@
 //!
 //! - It listens on a Unix socket (`~/.stash/agent.sock`, mode `0600`) and
 //!   only answers processes running as the same user.
+//! - **Sessions are scoped to the process that unlocked.** When `stash` hands
+//!   over a key, the agent asks the kernel who connected and records that
+//!   process's *parent*, usually your shell, as the session's owner. A later
+//!   `GET` succeeds only if the requester's parent is that same process (pid
+//!   and start time), so commands you type in that shell reuse the session.
+//!   Anything else, like a command launched by `stash run`, a script, or an AI
+//!   agent's shell, has a different parent and must unlock for itself, with a
+//!   prompt saying who is asking. Callers can't claim an identity: it all
+//!   comes from the kernel.
 //! - Each key is forgotten after it has gone unused for its idle timeout.
 //! - The agent exits as soon as it holds no keys, so nothing lingers.
 //!
@@ -31,11 +40,15 @@ use anyhow::{Context, Result, bail};
 use stash_core::crypto::{self, SecretKey};
 use zeroize::Zeroizing;
 
+use crate::procinfo::{self, Identity};
+
 /// How long a fresh agent waits for its first key before exiting.
 const STARTUP_GRACE: Duration = Duration::from_secs(10);
 const POLL_INTERVAL: Duration = Duration::from_millis(50);
 const IO_TIMEOUT: Duration = Duration::from_secs(2);
 const MAX_REQUEST_LEN: u64 = 8 * 1024;
+/// `sun_path` is 104 bytes on macOS (108 on Linux), including the NUL.
+const MAX_SOCKET_PATH_LEN: usize = 103;
 
 pub fn default_socket() -> Result<PathBuf> {
     if let Some(path) = std::env::var_os("STASH_AGENT_SOCK") {
@@ -76,7 +89,7 @@ pub fn serve(socket: &Path) -> Result<()> {
     listener.set_nonblocking(true)?;
 
     let started = Instant::now();
-    let mut keys: HashMap<PathBuf, Entry> = HashMap::new();
+    let mut keys: Sessions = HashMap::new();
     let mut held_a_key = false;
     loop {
         match listener.accept() {
@@ -97,7 +110,16 @@ pub fn serve(socket: &Path) -> Result<()> {
     Ok(())
 }
 
-fn handle(stream: UnixStream, keys: &mut HashMap<PathBuf, Entry>) -> Result<()> {
+/// Keys by vault and by the process that owns the session.
+type Sessions = HashMap<(PathBuf, Identity), Entry>;
+
+/// The session owner a connection maps to: the connecting process's parent.
+fn requester_scope(stream: &UnixStream) -> Option<Identity> {
+    let peer = procinfo::info(procinfo::peer_pid(stream)?)?;
+    Some(procinfo::info(peer.ppid)?.identity())
+}
+
+fn handle(stream: UnixStream, keys: &mut Sessions) -> Result<()> {
     stream.set_nonblocking(false)?;
     stream.set_read_timeout(Some(IO_TIMEOUT))?;
     stream.set_write_timeout(Some(IO_TIMEOUT))?;
@@ -108,17 +130,18 @@ fn handle(stream: UnixStream, keys: &mut HashMap<PathBuf, Entry>) -> Result<()> 
     BufReader::new(&stream)
         .take(MAX_REQUEST_LEN)
         .read_line(&mut line)?;
-    let response = respond(line.trim_end_matches('\n'), keys);
+    let scope = requester_scope(&stream);
+    let response = respond(line.trim_end_matches('\n'), scope, keys);
     (&stream).write_all(response.as_bytes())?;
     Ok(())
 }
 
-fn respond(request: &str, keys: &mut HashMap<PathBuf, Entry>) -> Zeroizing<String> {
+fn respond(request: &str, scope: Option<Identity>, keys: &mut Sessions) -> Zeroizing<String> {
     let reply = |s: &str| Zeroizing::new(format!("{s}\n"));
     let (command, rest) = request.split_once(' ').unwrap_or((request, ""));
     match command {
         "PING" => reply("PONG"),
-        "GET" => match keys.get_mut(Path::new(rest)) {
+        "GET" => match scope.and_then(|scope| keys.get_mut(&(PathBuf::from(rest), scope))) {
             Some(entry) if !entry.expired() => {
                 entry.last_used = Instant::now();
                 let hex = crypto::to_hex(entry.key.as_ref());
@@ -132,11 +155,13 @@ fn respond(request: &str, keys: &mut HashMap<PathBuf, Entry>) -> Zeroizing<Strin
             else {
                 return reply("ERR");
             };
-            let (Ok(secs), Some(key)) = (secs.parse::<u64>(), crypto::key_from_hex(hex)) else {
+            let (Ok(secs), Some(key), Some(scope)) =
+                (secs.parse::<u64>(), crypto::key_from_hex(hex), scope)
+            else {
                 return reply("ERR");
             };
             keys.insert(
-                PathBuf::from(vault),
+                (PathBuf::from(vault), scope),
                 Entry {
                     key,
                     idle_timeout: Duration::from_secs(secs),
@@ -213,6 +238,14 @@ pub fn get(socket: &Path, vault: &Path) -> Option<SecretKey> {
 /// Hand a key to the agent, starting one if needed.
 pub fn put(socket: &Path, vault: &Path, key: &[u8; 32], idle_timeout: Duration) -> Result<()> {
     let vault = usable(vault).context("vault path can't be used with the agent")?;
+    let len = socket.as_os_str().len();
+    if len > MAX_SOCKET_PATH_LEN {
+        bail!(
+            "the agent socket path is {len} bytes, over the {MAX_SOCKET_PATH_LEN}-byte limit \
+             for Unix sockets ({}); set STASH_AGENT_SOCK to a shorter path",
+            socket.display()
+        );
+    }
     ensure_running(socket)?;
     let hex = crypto::to_hex(key);
     let line = Zeroizing::new(format!(
@@ -321,11 +354,64 @@ mod tests {
         assert!(get(&socket, Path::new("/a.db")).is_none());
     }
 
+    const SCOPE: Identity = Identity { pid: 100, start: 1 };
+
+    fn put_key(keys: &mut Sessions, scope: Option<Identity>, vault: &str) -> String {
+        let line = put_line(60, &[3u8; 32], vault);
+        respond(&line, scope, keys).as_str().to_owned()
+    }
+
+    #[test]
+    fn sessions_only_serve_the_process_that_owns_them() {
+        let mut keys = HashMap::new();
+        assert_eq!(put_key(&mut keys, Some(SCOPE), "/v.db"), "OK\n");
+
+        let get =
+            |keys: &mut Sessions, scope| respond("GET /v.db", scope, keys).as_str().to_owned();
+        assert!(get(&mut keys, Some(SCOPE)).starts_with("KEY "));
+        // Another process, or the same pid reused by a newer process: refused.
+        assert_eq!(
+            get(&mut keys, Some(Identity { pid: 101, start: 1 })),
+            "NONE\n"
+        );
+        assert_eq!(
+            get(&mut keys, Some(Identity { pid: 100, start: 2 })),
+            "NONE\n"
+        );
+        // Unknown requester (its info couldn't be read): refused.
+        assert_eq!(get(&mut keys, None), "NONE\n");
+    }
+
+    #[test]
+    fn put_without_a_known_requester_is_refused() {
+        let mut keys = HashMap::new();
+        assert_eq!(put_key(&mut keys, None, "/v.db"), "ERR\n");
+        assert!(keys.is_empty());
+    }
+
+    #[test]
+    fn too_long_socket_paths_get_a_clear_error() {
+        let socket = PathBuf::from(format!("/tmp/{}/agent.sock", "x".repeat(120)));
+        let err = put(
+            &socket,
+            Path::new("/v.db"),
+            &[0u8; 32],
+            Duration::from_secs(1),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("over the 103-byte limit"), "{err}");
+    }
+
     #[test]
     fn rejects_malformed_requests() {
         let mut keys = HashMap::new();
         for bad in ["PUT", "PUT 60", "PUT x abc /v", "PUT 60 nothex /v", "NOPE"] {
-            assert_eq!(respond(bad, &mut keys).as_str(), "ERR\n", "{bad}");
+            assert_eq!(
+                respond(bad, Some(SCOPE), &mut keys).as_str(),
+                "ERR\n",
+                "{bad}"
+            );
         }
         assert!(keys.is_empty());
     }

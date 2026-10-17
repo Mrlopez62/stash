@@ -58,18 +58,24 @@ To unlock, the helper asks for a fingerprint and then has the Secure Enclave do 
 
 ## Unlocked sessions (the agent)
 
-After an unlock, `stash` starts `stash agent` in the background. The agent keeps the vault key in memory and gives it to later `stash` commands, so one fingerprint covers several commands.
+After an unlock, `stash` starts `stash agent` in the background. The agent keeps the vault key in memory so one fingerprint covers several commands, but only for the process that unlocked.
 
 - **Socket:** `~/.stash/agent.sock`, mode `0600`, inside the `0700` directory `~/.stash`.
 - **Same-user check:** the agent checks every connection's user id (`getpeereid` / `SO_PEERCRED`) and ignores other users.
+- **Sessions are scoped to the unlocking process's parent.** When `stash` hands the agent a key, the agent asks the kernel which process connected (`LOCAL_PEERPID` / `SO_PEERCRED`). It records that process's parent, usually your shell, by pid *and* start time. A later request gets the key only if the requester's parent is that same process. A recycled pid doesn't match, because its start time differs. Callers never state who they are: it all comes from the kernel.
+- **Anyone else unlocks for themselves.** The prompt names the request and the process chain behind it, so an unexpected prompt is visible.
 - **Timeout:** each key is forgotten after 10 minutes without use (`STASH_SESSION_TIMEOUT`). `stash lock` forgets all keys immediately. The agent exits once it holds no keys.
 - **Memory only:** keys are never written to disk and are wiped from memory when dropped.
 
 | Threat | Protected? | How |
 |---|---|---|
 | Other user accounts | ✅ | Socket permissions plus the user id check on every connection. |
+| A command launched by `stash run` reading other secrets | ✅ | It isn't a child of your shell, so it gets no session. Any `stash` call it makes triggers a prompt naming it (e.g. `sh ← stash`). Covered by the `run_children_cannot_ride_the_session` test. |
+| Scripts, other terminals, and AI agents' shells | ✅ | Each has a different parent, so each must unlock with its own prompt. If you approve one, the new session belongs to that process. |
+| Orphaned or daemonized processes | ✅ | Their parent becomes `launchd`/`init`, which never owns a session. |
+| A program you start *directly from the unlocked shell* during a session | ❌ | Its parent *is* your shell, so it can reach the agent, just as with `ssh-agent` or 1Password's CLI. This applies to programs you type yourself, like `node script.js`, not to what those programs spawn. Run untrusted programs through `stash run`, use `stash lock`, or set `STASH_SESSION_TIMEOUT=0`. |
 | A forgotten unlocked session | Partial | It ends by itself after 10 idle minutes, and `stash lock` ends it at once. |
-| Malware running as your user *during* a session | ❌ | It can ask the agent for the key, just as it could ask `ssh-agent` to sign. Set `STASH_SESSION_TIMEOUT=0` if you'd rather confirm every command. |
+| Malware that can inject code into your shell (ptrace and similar) | ❌ | It can act as your shell. On macOS this needs privileges that ordinary processes don't have. |
 
 ## `stash run` and `stash inject`
 
@@ -85,7 +91,7 @@ After an unlock, `stash` starts `stash agent` in the background. The agent keeps
 | Secrets in shell history, dotfiles, or committed `.env` files | ✅ | Files hold only `stash://` references. |
 | The child echoing a secret into logs or a terminal recording | Partial | Output masking replaces exact matches of each secret (4 bytes or longer) in stdout and stderr. Encoded or transformed copies (base64, URL-encoding, split lines) aren't caught. Masking also makes the child's output a pipe rather than a terminal, so some tools turn off colors. `--no-masking` restores the terminal. |
 | Other processes reading the child's environment | Partial | Other users can't. Processes running as *you* can read it (for example, with `ps eww` on some systems). That's inherent to environment variables. |
-| The child itself misusing the secret | ❌ | You're choosing to give that program the secret. Only `stash run` programs you trust. |
+| The child itself misusing the secrets it was given | ❌ | You're choosing to give that program those secrets. It can't reach *other* secrets without a prompt (see sessions above). Only `stash run` programs you trust. |
 | Rendered `stash inject` files left on disk | Partial | They're `0600`, but they hold plaintext. Prefer `stash run` where possible, and keep rendered files out of git. |
 
 ## Planned features and their open questions

@@ -121,10 +121,11 @@ pub fn disable(vault: &Path) -> Result<bool> {
 }
 
 /// Prompt for a fingerprint and recover the vault key.
-pub fn unlock(helper: &Path, vault: &Path) -> Result<SecretKey, UnlockError> {
+/// `reason` finishes the system dialog's sentence "stash-touchid is trying to …".
+pub fn unlock(helper: &Path, vault: &Path, reason: &str) -> Result<SecretKey, UnlockError> {
     let blob = fs::read_to_string(blob_path(vault))
         .map_err(|e| UnlockError::Failed(format!("could not read Touch ID data: {e}")))?;
-    let out = run(helper, &["unwrap", "unlock your stash vault"], &blob)
+    let out = run(helper, &["unwrap", reason], &blob)
         .map_err(|e| UnlockError::Unavailable(format!("{e:#}")))?;
     match out.code {
         Some(0) => crypto::key_from_hex(&out.stdout)
