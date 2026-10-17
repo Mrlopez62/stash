@@ -1,6 +1,6 @@
 # Threat model
 
-This document covers what stash protects against, how it does it, and what it doesn't protect against. It describes **v0.3**: an encrypted vault file, a CLI, Touch ID unlock, unlocked sessions, and `stash run` / `stash inject`. Each later feature (such as MCP) will add its own section here.
+This document covers what stash protects against, how it does it, and what it doesn't protect against. It describes **v0.4**: an encrypted vault file, a CLI, Touch ID unlock, sessions scoped to your shell, `stash run` / `stash inject`, and the MCP server for AI agents.
 
 ## What we protect
 
@@ -58,18 +58,24 @@ To unlock, the helper asks for a fingerprint and then has the Secure Enclave do 
 
 ## Unlocked sessions (the agent)
 
-After an unlock, `stash` starts `stash agent` in the background. The agent keeps the vault key in memory and gives it to later `stash` commands, so one fingerprint covers several commands.
+After an unlock, `stash` starts `stash agent` in the background. The agent keeps the vault key in memory so one fingerprint covers several commands, but only for the process that unlocked.
 
 - **Socket:** `~/.stash/agent.sock`, mode `0600`, inside the `0700` directory `~/.stash`.
 - **Same-user check:** the agent checks every connection's user id (`getpeereid` / `SO_PEERCRED`) and ignores other users.
+- **Sessions are scoped to the unlocking process's parent.** When `stash` hands the agent a key, the agent asks the kernel which process connected (`LOCAL_PEERPID` / `SO_PEERCRED`). It records that process's parent, usually your shell, by pid *and* start time. A later request gets the key only if the requester's parent is that same process. A recycled pid doesn't match, because its start time differs. Callers never state who they are: it all comes from the kernel.
+- **Anyone else unlocks for themselves.** The prompt names the request and the process chain behind it, so an unexpected prompt is visible.
 - **Timeout:** each key is forgotten after 10 minutes without use (`STASH_SESSION_TIMEOUT`). `stash lock` forgets all keys immediately. The agent exits once it holds no keys.
 - **Memory only:** keys are never written to disk and are wiped from memory when dropped.
 
 | Threat | Protected? | How |
 |---|---|---|
 | Other user accounts | ✅ | Socket permissions plus the user id check on every connection. |
+| A command launched by `stash run` reading other secrets | ✅ | It isn't a child of your shell, so it gets no session. Any `stash` call it makes triggers a prompt naming it (e.g. `sh ← stash`). Covered by the `run_children_cannot_ride_the_session` test. |
+| Scripts, other terminals, and AI agents' shells | ✅ | Each has a different parent, so each must unlock with its own prompt. If you approve one, the new session belongs to that process. |
+| Orphaned or daemonized processes | ✅ | Their parent becomes `launchd`/`init`, which never owns a session. |
+| A program you start *directly from the unlocked shell* during a session | ❌ | Its parent *is* your shell, so it can reach the agent, just as with `ssh-agent` or 1Password's CLI. This applies to programs you type yourself, like `node script.js`, not to what those programs spawn. Run untrusted programs through `stash run`, use `stash lock`, or set `STASH_SESSION_TIMEOUT=0`. |
 | A forgotten unlocked session | Partial | It ends by itself after 10 idle minutes, and `stash lock` ends it at once. |
-| Malware running as your user *during* a session | ❌ | It can ask the agent for the key, just as it could ask `ssh-agent` to sign. Set `STASH_SESSION_TIMEOUT=0` if you'd rather confirm every command. |
+| Malware that can inject code into your shell (ptrace and similar) | ❌ | It can act as your shell. On macOS this needs privileges that ordinary processes don't have. |
 
 ## `stash run` and `stash inject`
 
@@ -85,10 +91,34 @@ After an unlock, `stash` starts `stash agent` in the background. The agent keeps
 | Secrets in shell history, dotfiles, or committed `.env` files | ✅ | Files hold only `stash://` references. |
 | The child echoing a secret into logs or a terminal recording | Partial | Output masking replaces exact matches of each secret (4 bytes or longer) in stdout and stderr. Encoded or transformed copies (base64, URL-encoding, split lines) aren't caught. Masking also makes the child's output a pipe rather than a terminal, so some tools turn off colors. `--no-masking` restores the terminal. |
 | Other processes reading the child's environment | Partial | Other users can't. Processes running as *you* can read it (for example, with `ps eww` on some systems). That's inherent to environment variables. |
-| The child itself misusing the secret | ❌ | You're choosing to give that program the secret. Only `stash run` programs you trust. |
+| The child itself misusing the secrets it was given | ❌ | You're choosing to give that program those secrets. It can't reach *other* secrets without a prompt (see sessions above). Only `stash run` programs you trust. |
 | Rendered `stash inject` files left on disk | Partial | They're `0600`, but they hold plaintext. Prefer `stash run` where possible, and keep rendered files out of git. |
+
+## The MCP server (`stash mcp`)
+
+AI agents talk to `stash mcp` over stdio. The design assumes the agent may be confused or manipulated, for example by prompt injection in a file it reads. So the agent is never the authority on what it may do. The user's fingerprint is.
+
+- **Per-use approval:** every `run_with_secrets` and `request_secret` call needs a Touch ID match.
+  - The system dialog shows the client's name, the exact command (sanitized and shortened), and the secret names.
+  - The first request's unlock prompt counts as its approval, so there's one prompt per request, not two.
+  - A declined request never starts its command.
+- **No values in the conversation:** `run_with_secrets` returns output with injected values masked, and `request_secret` is off unless the server is started with `--allow-reveal`.
+- **Allowlists:** with `--allow`, secrets outside the patterns are refused before any prompt, and the refusal is logged as `blocked`.
+- **No shell sessions:** the server never creates or reuses agent sessions. It keeps the key in its own memory, which isn't reachable from the agent's shell commands, and forgets it after the idle timeout.
+- **Bounded commands:** commands get no stdin, no `STASH_PASSWORD`, and their own process group, which is killed after the timeout. Output is capped at 64 KB per stream.
+- **Audit log:** `audit.log` next to the vault, mode `0600`, one JSON line per request, with names and outcomes but never values.
+
+| Threat | Protected? | How |
+|---|---|---|
+| A prompt-injected agent quietly using secrets | ✅ | Every use needs a fingerprint, on a dialog that shows the command and secrets. |
+| An agent reading values from a command's output | Partial | Exact matches are masked. A command written to *transform* the secret (base64, reversing it) can leak it in that form, so read the command in the prompt before approving. |
+| An agent using secrets it shouldn't need | ✅ | `--allow` patterns. |
+| An agent reading the vault through its own shell | ✅ | Its shell commands have no session (see sessions above), and any `stash` call they make shows its own prompt naming the process chain. |
+| Approving a request without reading it | ❌ | The prompt can only inform you. Check the command, especially `sh -c` scripts. |
+| `--no-approval` | ❌ | It turns off the main protection. It exists only for headless setups with `STASH_PASSWORD`. |
 
 ## Planned features and their open questions
 
-- **MCP server (v0.4):** AI agents will get secret names and the ability to run commands with secrets filled in, not the values themselves. Getting a raw value will need approval each time. Leaks through command output are a known risk, and the plan is to mask secret values in output on a best-effort basis.
-- **Per-session approval:** a future version may scope sessions to one terminal or process tree, rather than to your whole user account.
+- **Repeated approvals:** a prompt for every agent request is safe but can get tiring. A future option may let you approve one exact command for a few minutes.
+- **Programs started directly from the unlocked shell** can still use its session (see sessions above). Tighter options, like checking the requesting executable or binding sessions to a terminal device, are being considered.
+- **Linux:** there's no Touch ID equivalent yet, so `stash mcp` approvals only work on macOS for now.

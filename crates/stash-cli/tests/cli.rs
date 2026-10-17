@@ -1,4 +1,5 @@
 use assert_cmd::Command;
+use assert_cmd::cargo::CommandCargoExt;
 use predicates::prelude::*;
 use tempfile::TempDir;
 
@@ -123,7 +124,7 @@ fn init_refuses_short_password_and_existing_vault() {
 
 /// A stand-in for the Swift helper that "wraps" by prefixing, so the full
 /// Touch ID and session flow can be tested on any OS without a fingerprint.
-/// Each unwrap (i.e. each Touch ID prompt) appends a line to `unwraps`.
+/// Each unwrap (i.e. each Touch ID prompt) appends its reason to `unwraps`.
 fn fake_touch_id(dir: &TempDir) -> std::path::PathBuf {
     use std::os::unix::fs::PermissionsExt;
     let path = dir.path().join("stash-touchid");
@@ -133,7 +134,7 @@ fn fake_touch_id(dir: &TempDir) -> std::path::PathBuf {
 case "$1" in
   available) exit 0 ;;
   wrap) read k; echo "fake:$k" ;;
-  unwrap) echo x >> "$(dirname "$0")/unwraps"; read b; echo "${b#fake:}" ;;
+  unwrap) echo "$2" >> "$(dirname "$0")/unwraps"; read b; echo "${b#fake:}" ;;
   *) exit 1 ;;
 esac
 "#,
@@ -439,4 +440,180 @@ fn inject_writes_nothing_when_a_reference_is_missing() {
         .assert()
         .success()
         .stdout("x=ghp_abc123");
+}
+
+fn prompt_reasons(dir: &TempDir) -> Vec<String> {
+    std::fs::read_to_string(dir.path().join("unwraps"))
+        .unwrap_or_default()
+        .lines()
+        .map(str::to_owned)
+        .collect()
+}
+
+#[test]
+fn run_children_cannot_ride_the_session() {
+    // Regression test: a command launched by `stash run` used to be able to
+    // read *any* secret, unmasked and without a prompt, during a session.
+    let (dir, helper) = init_with_touch_id();
+    stash(&dir)
+        .args(["add", "stripe/secret"])
+        .write_stdin("sk_live_never_referenced")
+        .assert()
+        .success();
+    let session = |cmd: &mut Command| {
+        cmd.env_remove("STASH_PASSWORD")
+            .env("STASH_TOUCHID_HELPER", &helper)
+            .env("STASH_SESSION_TIMEOUT", "30");
+    };
+
+    let mut first = stash(&dir);
+    session(&mut first);
+    first.arg("ls").assert().success();
+    assert_eq!(prompts(&dir), 1, "first unlock prompts");
+
+    let stash_bin = assert_cmd::cargo::cargo_bin("stash");
+    let mut run = stash(&dir);
+    session(&mut run);
+    run.env("T", "stash://k")
+        .args(["run", "--"])
+        .arg(&stash_bin)
+        .args(["get", "stripe/secret"])
+        .assert()
+        .success();
+    // `stash run` itself reused the session; the child had to ask for itself,
+    // and the prompt said what it wanted and who wanted it.
+    assert_eq!(prompts(&dir), 2, "the child needed its own unlock");
+    let reason = prompt_reasons(&dir).pop().unwrap();
+    assert!(reason.contains("get stripe/secret"), "{reason}");
+    assert!(reason.contains("requested by stash"), "{reason}");
+
+    let mut lock = stash(&dir);
+    session(&mut lock);
+    lock.arg("lock").assert().success();
+}
+
+#[test]
+fn unlock_prompts_describe_the_request() {
+    let (dir, helper) = init_with_touch_id();
+    stash_interactive(&dir, &helper)
+        .env("STASH_SESSION_TIMEOUT", "0")
+        .env("TOKEN", "stash://k")
+        .args(["run", "--", "true"])
+        .assert()
+        .success();
+    let reason = prompt_reasons(&dir).pop().unwrap();
+    assert!(
+        reason.starts_with("unlock stash for “run true with k”, requested by "),
+        "{reason}"
+    );
+}
+
+#[test]
+fn run_forwards_sigint_and_sigterm_when_not_in_the_terminal_foreground() {
+    // Tests have no terminal, so Ctrl-C can't reach the child directly and
+    // stash must pass SIGINT on (as for `kill -INT` or an IDE stop button).
+    let dir = init_with_secrets();
+    for (signal, name) in [(libc_sig::SIGINT, "INT"), (libc_sig::SIGTERM, "TERM")] {
+        let script = format!(
+            r#"trap 'echo got {name}; exit 9' {name}; echo ready; while :; do sleep 0.05; done"#
+        );
+        let mut child = std::process::Command::cargo_bin("stash")
+            .unwrap()
+            .env("STASH_VAULT", dir.path().join("vault.db"))
+            .env("STASH_AGENT_SOCK", dir.path().join("agent.sock"))
+            .env("STASH_PASSWORD", PASSWORD)
+            .env("TOKEN", "stash://github/token")
+            .args(["run", "--", "sh", "-c", &script])
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut out = std::io::BufReader::new(child.stdout.take().unwrap());
+        let mut line = String::new();
+        std::io::BufRead::read_line(&mut out, &mut line).unwrap();
+        assert_eq!(line, "ready\n");
+        // SAFETY: sending a signal to our own child process.
+        unsafe { libc_sig::kill(child.id() as i32, signal) };
+        let status = child.wait().unwrap();
+        let mut rest = String::new();
+        std::io::Read::read_to_string(&mut out, &mut rest).unwrap();
+        assert_eq!(rest, format!("got {name}\n"), "SIG{name}");
+        assert_eq!(status.code(), Some(9), "SIG{name}: child's exit code");
+    }
+}
+
+/// Minimal signal FFI for the test above, without a libc dev-dependency.
+mod libc_sig {
+    pub const SIGINT: i32 = 2;
+    pub const SIGTERM: i32 = 15;
+    unsafe extern "C" {
+        pub fn kill(pid: i32, sig: i32) -> i32;
+    }
+}
+
+#[test]
+fn run_does_not_hang_on_background_grandchildren() {
+    let dir = init_with_secrets();
+    let started = std::time::Instant::now();
+    stash(&dir)
+        .env("TOKEN", "stash://github/token")
+        .args(["run", "--", "sh", "-c", "echo hi; sleep 30 &"])
+        .timeout(std::time::Duration::from_secs(10))
+        .assert()
+        .success()
+        .stdout("hi\n");
+    assert!(started.elapsed() < std::time::Duration::from_secs(5));
+}
+
+#[test]
+fn env_files_override_inherited_values_including_broken_references() {
+    let dir = init_with_secrets();
+    let env = dir.path().join(".env");
+    std::fs::write(&env, "A=from-file\nBROKEN=fixed\n").unwrap();
+    stash(&dir)
+        .env("A", "stash://github/token")
+        .env("BROKEN", "stash://not a valid name")
+        .args(["run", "--env-file"])
+        .arg(&env)
+        .args(["--", "sh", "-c", r#"printf '%s %s' "$A" "$BROKEN""#])
+        .assert()
+        .success()
+        .stdout("from-file fixed");
+
+    // Not overridden: still a clear error.
+    stash(&dir)
+        .env("BROKEN", "stash://not a valid name")
+        .args(["run", "--", "true"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("BROKEN"));
+}
+
+#[test]
+fn inject_force_replaces_a_symlink_instead_of_writing_through_it() {
+    let dir = init_with_secrets();
+    let target = dir.path().join("elsewhere.txt");
+    std::fs::write(&target, "untouched").unwrap();
+    let out = dir.path().join("config.yml");
+    std::os::unix::fs::symlink(&target, &out).unwrap();
+
+    stash(&dir)
+        .args(["inject", "--force", "-o"])
+        .arg(&out)
+        .write_stdin("t={{ stash://github/token }}")
+        .assert()
+        .success();
+    assert_eq!(std::fs::read_to_string(&target).unwrap(), "untouched");
+    assert!(
+        !std::fs::symlink_metadata(&out)
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+    assert_eq!(std::fs::read_to_string(&out).unwrap(), "t=ghp_abc123");
+    let leftovers: Vec<_> = std::fs::read_dir(dir.path())
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_name().to_string_lossy().ends_with(".tmp"))
+        .collect();
+    assert!(leftovers.is_empty(), "temp files left behind");
 }

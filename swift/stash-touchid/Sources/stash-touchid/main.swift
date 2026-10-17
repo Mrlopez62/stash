@@ -10,6 +10,7 @@
 //   stash-touchid available          exit 0 if Touch ID + Secure Enclave are usable
 //   stash-touchid wrap               stdin: vault key (hex)  -> stdout: blob
 //   stash-touchid unwrap <reason>    stdin: blob             -> stdout: vault key (hex)
+//   stash-touchid confirm <reason>   fingerprint check only; exit 0 if approved
 //
 // Exit codes: 0 ok, 1 error, 2 cancelled by the user, 3 Touch ID unavailable.
 
@@ -152,8 +153,11 @@ do {
         try wrap()
     case "unwrap":
         try unwrap(reason: args.dropFirst().first ?? "unlock your stash vault")
+    case "confirm":
+        try checkAvailable()
+        _ = try authenticate(reason: args.dropFirst().first ?? "approve a stash request")
     default:
-        throw Failure("usage: stash-touchid available | wrap | unwrap <reason>")
+        throw Failure("usage: stash-touchid available | wrap | unwrap <reason> | confirm <reason>")
     }
 } catch let failure as Failure {
     FileHandle.standardError.write(Data("stash-touchid: \(failure.message)\n".utf8))

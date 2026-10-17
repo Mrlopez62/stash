@@ -1,7 +1,10 @@
 mod agent;
+mod audit;
 mod envfile;
 mod inject;
 mod mask;
+mod mcp;
+mod procinfo;
 mod run;
 mod touchid;
 mod ui;
@@ -94,6 +97,33 @@ enum Command {
         #[arg(long, short)]
         force: bool,
     },
+    /// Serve MCP over stdio, so AI agents can use secrets without seeing them
+    ///
+    /// Agents can list secret names and run commands with secrets injected.
+    /// Each run (and each reveal, if allowed) needs your Touch ID approval,
+    /// and the prompt names the exact command and secrets. Every request is
+    /// written to the audit log (`stash audit`).
+    #[command(
+        after_help = "Add to Claude Code:\n  claude mcp add stash -- stash mcp --allow 'github/*'"
+    )]
+    Mcp {
+        /// Only let agents use secrets matching this pattern (`*` matches anything;
+        /// repeatable) [default: all secrets]
+        #[arg(long, value_name = "PATTERN")]
+        allow: Vec<String>,
+        /// Offer the request_secret tool, which returns raw values to the agent
+        #[arg(long)]
+        allow_reveal: bool,
+        /// Don't ask for Touch ID per request (headless use with STASH_PASSWORD only)
+        #[arg(long)]
+        no_approval: bool,
+    },
+    /// Show recent AI-agent requests from the audit log
+    Audit {
+        /// How many entries to show
+        #[arg(long, short = 'n', default_value_t = 20)]
+        limit: usize,
+    },
     /// End the unlocked session, so the next command asks again
     Lock,
     /// Unlock with your fingerprint instead of the master password (macOS)
@@ -159,14 +189,14 @@ fn run(cli: Cli) -> Result<ExitCode> {
         }
         Command::Add { name, force } => {
             stash_core::validate_name(&name)?;
-            let mut vault = unlock(&path)?;
+            let mut vault = unlock(&path, &format!("add {name}"))?;
             let value = read_value(&name)?;
             vault.add(&name, &value, force)?;
             eprintln!("Saved {name}");
         }
         Command::Get { name } => {
             let name = stash_core::reference::parse(&name)?.unwrap_or(&name);
-            let vault = unlock(&path)?;
+            let vault = unlock(&path, &format!("get {name}"))?;
             let value = vault.get(name)?;
             let mut out = io::stdout().lock();
             out.write_all(value.expose_secret())?;
@@ -176,14 +206,14 @@ fn run(cli: Cli) -> Result<ExitCode> {
             out.flush()?;
         }
         Command::Ls => {
-            let vault = unlock(&path)?;
+            let vault = unlock(&path, "list secret names")?;
             let mut out = io::stdout().lock();
             for name in vault.names()? {
                 writeln!(out, "{name}")?;
             }
         }
         Command::Rm { name } => {
-            let mut vault = unlock(&path)?;
+            let mut vault = unlock(&path, &format!("remove {name}"))?;
             vault.remove(&name)?;
             eprintln!("Removed {name}");
         }
@@ -197,7 +227,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
                 no_masking,
                 command,
             };
-            return run::run(opts, || unlock(&path));
+            return run::run(opts, |purpose| unlock(&path, purpose));
         }
         Command::Inject {
             input,
@@ -209,7 +239,35 @@ fn run(cli: Cli) -> Result<ExitCode> {
                 output,
                 force,
             };
-            inject::inject(opts, || unlock(&path))?;
+            inject::inject(opts, |purpose| unlock(&path, purpose))?;
+        }
+        Command::Mcp {
+            allow,
+            allow_reveal,
+            no_approval,
+        } => {
+            for pattern in &allow {
+                if pattern.is_empty() {
+                    bail!("--allow patterns can't be empty");
+                }
+            }
+            let opts = mcp::Options {
+                allow,
+                allow_reveal,
+                no_approval,
+                idle_timeout: session_timeout()?.unwrap_or(Duration::ZERO),
+            };
+            mcp::serve(path, opts)?;
+        }
+        Command::Audit { limit } => {
+            let events = audit::recent(&audit::path_for(&path), limit)?;
+            if events.is_empty() {
+                eprintln!("No AI-agent requests recorded yet.");
+            }
+            let mut out = io::stdout().lock();
+            for event in &events {
+                writeln!(out, "{}", audit::describe(event))?;
+            }
         }
         Command::Lock => {
             if agent::lock(&agent::default_socket()?) {
@@ -232,7 +290,7 @@ fn touch_id(action: TouchIdAction, path: &Path) -> Result<()> {
                 "the stash-touchid helper was not found; see the README for how to install it",
             )?;
             // Always require the master password to turn on a new way in.
-            let vault = unlock_with_password(path)?;
+            let vault = unlock_with_password(path, "turn on Touch ID")?;
             touchid::enroll(&helper, path, vault.key())?;
             eprintln!("Touch ID unlock is on");
         }
@@ -272,11 +330,15 @@ fn default_vault_path() -> Result<PathBuf> {
 /// Unlock in order of convenience: an existing session, then Touch ID, then
 /// the master password. A fresh unlock starts a session.
 ///
+/// Sessions belong to the process that ran `stash` (see `agent.rs`), so only
+/// later commands from that same parent reuse one. `purpose` describes the
+/// request in the Touch ID and password prompts, along with who is asking.
+///
 /// `STASH_PASSWORD` skips sessions and Touch ID entirely, so scripts never
 /// start background processes or show prompts.
-fn unlock(path: &Path) -> Result<Vault> {
+fn unlock(path: &Path, purpose: &str) -> Result<Vault> {
     if std::env::var_os(PASSWORD_ENV).is_some() {
-        return unlock_with_password(path);
+        return unlock_with_password(path, purpose);
     }
     if !path.exists() {
         return Err(stash_core::Error::VaultMissing(path.to_owned()).into());
@@ -292,9 +354,9 @@ fn unlock(path: &Path) -> Result<Vault> {
         return Ok(vault);
     }
 
-    let vault = match unlock_with_touch_id(path)? {
+    let vault = match unlock_with_touch_id(path, purpose)? {
         Some(vault) => vault,
-        None => unlock_with_password(path)?,
+        None => unlock_with_password(path, purpose)?,
     };
     if let Some(idle) = session
         && let Err(e) = agent::put(&socket, &canonical, vault.key(), idle)
@@ -305,7 +367,7 @@ fn unlock(path: &Path) -> Result<Vault> {
 }
 
 /// `Ok(None)` means "fall back to the master password".
-fn unlock_with_touch_id(path: &Path) -> Result<Option<Vault>> {
+fn unlock_with_touch_id(path: &Path, purpose: &str) -> Result<Option<Vault>> {
     if !touchid::is_enrolled(path) {
         return Ok(None);
     }
@@ -313,7 +375,11 @@ fn unlock_with_touch_id(path: &Path) -> Result<Option<Vault>> {
         eprintln!("stash: Touch ID helper not found; using the master password");
         return Ok(None);
     };
-    let why = match touchid::unlock(&helper, path) {
+    let reason = format!(
+        "unlock stash for “{purpose}”, requested by {}",
+        procinfo::requester_chain(2)
+    );
+    let why = match touchid::unlock(&helper, path, &reason) {
         Ok(key) => match Vault::open_with_key(path, &key) {
             Ok(vault) => return Ok(Some(vault)),
             Err(stash_core::Error::WrongKey) => {
@@ -329,13 +395,17 @@ fn unlock_with_touch_id(path: &Path) -> Result<Option<Vault>> {
     Ok(None)
 }
 
-fn unlock_with_password(path: &Path) -> Result<Vault> {
+fn unlock_with_password(path: &Path, purpose: &str) -> Result<Vault> {
     let password = match std::env::var(PASSWORD_ENV) {
         Ok(password) => Zeroizing::new(password),
         Err(_) => {
             if !path.exists() {
                 return Err(stash_core::Error::VaultMissing(path.to_owned()).into());
             }
+            eprintln!(
+                "stash: unlocking for “{purpose}”, requested by {}",
+                procinfo::requester_chain(2)
+            );
             Zeroizing::new(rpassword::prompt_password("Master password: ")?)
         }
     };

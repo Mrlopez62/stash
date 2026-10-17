@@ -14,7 +14,7 @@
 
 A free, developer-first secrets manager for macOS. Unlock with Touch ID, pass API tokens into commands safely, and let AI agents use your secrets without ever seeing them.
 
-> **Status: early development (v0.3).** The encrypted vault, the CLI, Touch ID unlock, unlocked sessions, `stash://` references, `stash run`, and `stash inject` work today. MCP support for AI agents is next (see [Roadmap](#roadmap)). Don't trust it with production secrets until it has been reviewed.
+> **Status: early development (v0.4).** The encrypted vault, the CLI, Touch ID unlock, sessions scoped to your shell, `stash://` references, `stash run`, `stash inject`, and the MCP server for AI agents work today. See the [Roadmap](#roadmap) for what's next. Don't trust it with production secrets until it has been reviewed.
 
 ## Getting started
 
@@ -37,7 +37,8 @@ stash lock                            # end the unlocked session now
 
 How unlocking works:
 - **The first command unlocks the vault.** With Touch ID turned on, that's a fingerprint prompt. Otherwise you type the master password. If Touch ID is cancelled or unavailable (for example, the lid is closed), stash asks for the master password instead.
-- **Then a session starts.** Commands in the next **10 minutes** don't ask again, and each use restarts the 10-minute timer. A small background agent holds the session, like `ssh-agent`. Run `stash lock` to end it early.
+- **Then a session starts, for that terminal only.** stash commands you run from the same shell in the next **10 minutes** don't ask again, and each use restarts the 10-minute timer. A small background agent holds the session, like `ssh-agent`. Run `stash lock` to end it early.
+- **Everything else has to ask.** That includes commands started by `stash run`, scripts, other terminals, and AI agents. They all get their own Touch ID prompt, which says what they want and who is asking, for example: *stash-touchid is trying to unlock stash for “get stripe/secret”, requested by sh ← stash*.
 
 | Setting | What it does |
 |---|---|
@@ -119,23 +120,36 @@ If any reference is missing, nothing is written. Existing files are only overwri
 
 ## AI and MCP integration
 
-`stash mcp` runs an MCP server over stdio. Add it to Claude Code, Cursor, or any MCP client:
+`stash mcp` is an MCP server that lets AI agents like Claude Code and Cursor *use* your secrets without ever *seeing* them.
+
+```sh
+# Claude Code
+claude mcp add stash -- stash mcp --allow 'github/*' --allow 'openai/*'
+```
 
 ```json
-{ "mcpServers": { "stash": { "command": "stash", "args": ["mcp"] } } }
+// Other MCP clients
+{ "mcpServers": { "stash": { "command": "stash", "args": ["mcp", "--allow", "github/*"] } } }
 ```
 
 | Tool | What the agent gets |
 |---|---|
-| `list_secrets` | Names and metadata only, never values |
-| `run_with_secrets` | Runs a command with secrets injected as env vars. The agent sees the command's output, not the secrets |
-| `request_secret` | The raw value, only after you approve that use with Touch ID. Off by default |
+| `list_secrets` | Names of the secrets it's allowed to use. Never values |
+| `run_with_secrets` | Runs a command with `stash://` env vars filled in, and gets back the exit code and output, with secret values replaced by `<concealed by stash>` |
+| `request_secret` | A raw value. Only offered with `--allow-reveal` |
 
-Safety rules:
-- Secret values stay out of the model's context by default.
-- Output from `run_with_secrets` is scanned, and any secret value that shows up in it is masked.
-- Access can be limited per agent (for example, only `github/*`).
-- Every agent access is written to an audit log (`stash audit`).
+**You approve every use with your fingerprint.** Each `run_with_secrets` call (and each reveal) shows a Touch ID prompt naming the exact command and secrets, for example: *stash-touchid is trying to let claude-code run \`npm test\` with github/token*. The agent can't answer or fake that dialog. Cancel it, and the command never runs.
+
+| Option | What it does |
+|---|---|
+| `--allow <pattern>` | Only let agents touch matching secrets (`*` matches anything, repeatable). Anything else is refused before any prompt |
+| `--allow-reveal` | Offer `request_secret`. Off by default; prefer `run_with_secrets` |
+| `--no-approval` | Skip the Touch ID approvals. Only for headless setups that use `STASH_PASSWORD` |
+
+More safeguards:
+- **No shell session.** The MCP server never creates or reuses one, so the agent's own shell commands can't read your vault either. It keeps the key in its own memory and forgets it after 10 idle minutes.
+- **A clean environment for commands.** Commands get no stdin, and they're killed after a timeout (120 s by default, 900 s at most).
+- **An audit log.** Every request (who, what, which secret names, approved/denied/blocked, exit code) goes to `~/.stash/audit.log`. It never holds values. View it with `stash audit`.
 
 ## Security model
 
@@ -165,7 +179,7 @@ Rust handles everything that is security-critical and cross-platform. The Swift 
 | v0.1 ✅ | Encrypted vault, CLI (`init`/`add`/`get`/`ls`/`rm`), master password |
 | v0.2 ✅ | Touch ID unlock + agent sessions |
 | v0.3 ✅ | `stash://` references, `run`, `inject` |
-| v0.4 | MCP server with approvals and audit log |
+| v0.4 ✅ | MCP server with Touch ID approvals, allowlists, and an audit log; sessions scoped to your shell |
 | v0.5 | SSH agent, TOTP codes, git commit signing, `stash get --copy` with auto-clearing clipboard |
 | Later | Encrypted sync (iCloud Drive or Git), menu bar app, browser extension, Linux support |
 
@@ -178,7 +192,7 @@ This compares stash's planned v1 with the other tools.
 | Price | Free | Paid | Free tier / paid | Free |
 | Touch ID in CLI | ✅ | ✅ | Partial | ❌ |
 | Secret references + `run` | ✅ | ✅ | Partial (Secrets Manager) | ❌ |
-| MCP / AI-agent support | ✅ built in | Limited | ❌ | ❌ |
+| MCP / AI-agent support | ✅ built in, with per-use Touch ID approval | Limited | ❌ | ❌ |
 | Data stays local | ✅ | ❌ (cloud) | ❌ unless self-hosted | ✅ |
 | Browser autofill | Later | ✅ | ✅ | Via plugins |
 

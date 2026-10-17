@@ -2,10 +2,10 @@
 //! config files can be generated from a committed template without the
 //! secrets ever being committed.
 
-use std::fs::OpenOptions;
-use std::io::{self, Read, Write};
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-use std::path::PathBuf;
+use std::fs::{self, OpenOptions};
+use std::io::{self, ErrorKind, Read, Write};
+use std::os::unix::fs::OpenOptionsExt;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use secrecy::ExposeSecret;
@@ -20,7 +20,7 @@ pub struct Options {
     pub force: bool,
 }
 
-pub fn inject(opts: Options, unlock: impl FnOnce() -> Result<Vault>) -> Result<()> {
+pub fn inject(opts: Options, unlock: impl FnOnce(&str) -> Result<Vault>) -> Result<()> {
     let template = match &opts.input {
         Some(path) => std::fs::read_to_string(path)
             .with_context(|| format!("could not read {}", path.display()))?,
@@ -47,7 +47,15 @@ pub fn inject(opts: Options, unlock: impl FnOnce() -> Result<Vault>) -> Result<(
     if placeholders.is_empty() {
         rendered.extend_from_slice(template.as_bytes());
     } else {
-        let vault = unlock()?;
+        let names: Vec<&str> = placeholders.iter().map(|p| p.name).collect();
+        let target = opts
+            .output
+            .as_ref()
+            .map_or("stdout".to_owned(), |p| p.display().to_string());
+        let vault = unlock(&format!(
+            "inject {} into {target}",
+            crate::run::summarize(&names)
+        ))?;
         let mut last = 0;
         for placeholder in &placeholders {
             let value = vault
@@ -67,16 +75,8 @@ pub fn inject(opts: Options, unlock: impl FnOnce() -> Result<Vault>) -> Result<(
             out.flush()?;
         }
         Some(path) => {
-            // The output holds secrets: only you can read it.
-            let mut file = OpenOptions::new()
-                .write(true)
-                .create(true)
-                .truncate(true)
-                .mode(0o600)
-                .open(path)
+            write_private(path, &rendered, opts.force)
                 .with_context(|| format!("could not write {}", path.display()))?;
-            file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
-            file.write_all(&rendered)?;
             let n = placeholders.len();
             let plural = if n == 1 { "" } else { "s" };
             ui::success(&format!(
@@ -86,4 +86,53 @@ pub fn inject(opts: Options, unlock: impl FnOnce() -> Result<Vault>) -> Result<(
         }
     }
     Ok(())
+}
+
+/// Write a file only you can read, all at once or not at all.
+///
+/// The data goes to a `0600` temp file in the same directory first, then
+/// moves into place: with `overwrite` by rename (which replaces a symlink
+/// rather than writing through it), otherwise by an exclusive hard link, so
+/// an existing file is never clobbered even if one appears after our check.
+fn write_private(path: &Path, data: &[u8], overwrite: bool) -> Result<()> {
+    let dir = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    let name = path
+        .file_name()
+        .context("the output path has no file name")?;
+    let tmp = dir.join(format!(
+        ".{}.stash-{}.tmp",
+        name.to_string_lossy(),
+        std::process::id()
+    ));
+
+    let result = (|| -> Result<()> {
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&tmp)?;
+        file.write_all(data)?;
+        file.sync_all()?;
+        if overwrite {
+            fs::rename(&tmp, path)?;
+            return Ok(());
+        }
+        match fs::hard_link(&tmp, path) {
+            Ok(()) => Ok(fs::remove_file(&tmp)?),
+            Err(e) if e.kind() == ErrorKind::AlreadyExists => {
+                bail!("it already exists (use --force to overwrite)")
+            }
+            // Filesystems without hard links: the earlier existence check is
+            // the best we can do.
+            Err(_) if !path.exists() => Ok(fs::rename(&tmp, path)?),
+            Err(e) => Err(e.into()),
+        }
+    })();
+    if tmp.exists() {
+        let _ = fs::remove_file(&tmp);
+    }
+    result
 }

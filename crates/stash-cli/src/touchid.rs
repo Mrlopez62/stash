@@ -121,14 +121,28 @@ pub fn disable(vault: &Path) -> Result<bool> {
 }
 
 /// Prompt for a fingerprint and recover the vault key.
-pub fn unlock(helper: &Path, vault: &Path) -> Result<SecretKey, UnlockError> {
+/// `reason` finishes the system dialog's sentence "stash-touchid is trying to …".
+pub fn unlock(helper: &Path, vault: &Path, reason: &str) -> Result<SecretKey, UnlockError> {
     let blob = fs::read_to_string(blob_path(vault))
         .map_err(|e| UnlockError::Failed(format!("could not read Touch ID data: {e}")))?;
-    let out = run(helper, &["unwrap", "unlock your stash vault"], &blob)
+    let out = run(helper, &["unwrap", reason], &blob)
         .map_err(|e| UnlockError::Unavailable(format!("{e:#}")))?;
     match out.code {
         Some(0) => crypto::key_from_hex(&out.stdout)
             .ok_or_else(|| UnlockError::Failed("helper returned a malformed key".into())),
+        Some(2) => Err(UnlockError::Cancelled),
+        Some(3) => Err(UnlockError::Unavailable(out.stderr)),
+        _ => Err(UnlockError::Failed(out.stderr)),
+    }
+}
+
+/// Ask for a fingerprint to approve an action, without unwrapping anything.
+/// `reason` finishes the sentence "stash-touchid is trying to …".
+pub fn confirm(helper: &Path, reason: &str) -> Result<(), UnlockError> {
+    let out = run(helper, &["confirm", reason], "")
+        .map_err(|e| UnlockError::Unavailable(format!("{e:#}")))?;
+    match out.code {
+        Some(0) => Ok(()),
         Some(2) => Err(UnlockError::Cancelled),
         Some(3) => Err(UnlockError::Unavailable(out.stderr)),
         _ => Err(UnlockError::Failed(out.stderr)),
