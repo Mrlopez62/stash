@@ -1,6 +1,12 @@
 mod agent;
+mod envfile;
+mod inject;
+mod mask;
+mod run;
 mod touchid;
+mod ui;
 
+use std::ffi::OsString;
 use std::io::{self, IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -38,7 +44,7 @@ enum Command {
     },
     /// Print a secret's value
     Get {
-        /// Secret name, e.g. `github/token`
+        /// Secret name or reference, e.g. `github/token` or `stash://github/token`
         name: String,
     },
     /// List secret names (never values)
@@ -49,6 +55,44 @@ enum Command {
     Rm {
         /// Secret name, e.g. `github/token`
         name: String,
+    },
+    /// Run a command with `stash://` references in its environment replaced by secrets
+    ///
+    /// Any environment variable (inherited or from --env-file) whose whole
+    /// value is `stash://<name>` is replaced with that secret, only for the
+    /// command being run. Secret values in its output are hidden unless
+    /// --no-masking is given. The command's exit code is passed through.
+    #[command(
+        after_help = "Example:\n  echo 'GITHUB_TOKEN=stash://github/token' > .env\n  stash run --env-file .env -- npm start"
+    )]
+    Run {
+        /// Load variables from a .env file (repeatable; later files win)
+        #[arg(long = "env-file", value_name = "FILE")]
+        env_files: Vec<PathBuf>,
+        /// Show secret values in the command's output instead of hiding them
+        #[arg(long)]
+        no_masking: bool,
+        /// The command to run and its arguments
+        #[arg(
+            required = true,
+            trailing_var_arg = true,
+            allow_hyphen_values = true,
+            value_name = "COMMAND"
+        )]
+        command: Vec<OsString>,
+    },
+    /// Fill `{{ stash://<name> }}` placeholders in a template with secrets
+    #[command(after_help = "Example:\n  stash inject -i config.tpl.yml -o config.yml")]
+    Inject {
+        /// Template file [default: stdin]
+        #[arg(long, short)]
+        input: Option<PathBuf>,
+        /// Output file, created readable only by you [default: stdout]
+        #[arg(long, short)]
+        output: Option<PathBuf>,
+        /// Overwrite the output file if it exists
+        #[arg(long, short)]
+        force: bool,
     },
     /// End the unlocked session, so the next command asks again
     Lock,
@@ -78,7 +122,7 @@ enum TouchIdAction {
 
 /// Read from the environment instead of prompting. Meant for scripts and CI:
 /// anything that can read your environment can read this password.
-const PASSWORD_ENV: &str = "STASH_PASSWORD";
+pub(crate) const PASSWORD_ENV: &str = "STASH_PASSWORD";
 const MIN_PASSWORD_LEN: usize = 8;
 /// Seconds an unlocked session lasts without use. `0` turns sessions off.
 const SESSION_TIMEOUT_ENV: &str = "STASH_SESSION_TIMEOUT";
@@ -86,7 +130,7 @@ const DEFAULT_SESSION_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 
 fn main() -> ExitCode {
     match run(Cli::parse()) {
-        Ok(()) => ExitCode::SUCCESS,
+        Ok(code) => code,
         Err(err) => {
             eprintln!("stash: {err:#}");
             ExitCode::FAILURE
@@ -94,9 +138,10 @@ fn main() -> ExitCode {
     }
 }
 
-fn run(cli: Cli) -> Result<()> {
+fn run(cli: Cli) -> Result<ExitCode> {
     if let Command::Agent { socket } = &cli.command {
-        return agent::serve(socket);
+        agent::serve(socket)?;
+        return Ok(ExitCode::SUCCESS);
     }
     let path = match cli.vault {
         Some(path) => path,
@@ -120,8 +165,9 @@ fn run(cli: Cli) -> Result<()> {
             eprintln!("Saved {name}");
         }
         Command::Get { name } => {
+            let name = stash_core::reference::parse(&name)?.unwrap_or(&name);
             let vault = unlock(&path)?;
-            let value = vault.get(&name)?;
+            let value = vault.get(name)?;
             let mut out = io::stdout().lock();
             out.write_all(value.expose_secret())?;
             if out.is_terminal() {
@@ -141,6 +187,30 @@ fn run(cli: Cli) -> Result<()> {
             vault.remove(&name)?;
             eprintln!("Removed {name}");
         }
+        Command::Run {
+            env_files,
+            no_masking,
+            command,
+        } => {
+            let opts = run::Options {
+                env_files,
+                no_masking,
+                command,
+            };
+            return run::run(opts, || unlock(&path));
+        }
+        Command::Inject {
+            input,
+            output,
+            force,
+        } => {
+            let opts = inject::Options {
+                input,
+                output,
+                force,
+            };
+            inject::inject(opts, || unlock(&path))?;
+        }
         Command::Lock => {
             if agent::lock(&agent::default_socket()?) {
                 eprintln!("Locked");
@@ -151,7 +221,7 @@ fn run(cli: Cli) -> Result<()> {
         Command::TouchId { action } => touch_id(action, &path)?,
         Command::Agent { .. } => unreachable!("handled above"),
     }
-    Ok(())
+    Ok(ExitCode::SUCCESS)
 }
 
 fn touch_id(action: TouchIdAction, path: &Path) -> Result<()> {

@@ -1,6 +1,6 @@
 # Threat model
 
-This document covers what stash protects against, how it does it, and what it doesn't protect against. It describes **v0.2**: an encrypted vault file, a CLI, Touch ID unlock, and unlocked sessions. Each later feature (such as MCP) will add its own section here.
+This document covers what stash protects against, how it does it, and what it doesn't protect against. It describes **v0.3**: an encrypted vault file, a CLI, Touch ID unlock, unlocked sessions, and `stash run` / `stash inject`. Each later feature (such as MCP) will add its own section here.
 
 ## What we protect
 
@@ -70,6 +70,23 @@ After an unlock, `stash` starts `stash agent` in the background. The agent keeps
 | Other user accounts | ✅ | Socket permissions plus the user id check on every connection. |
 | A forgotten unlocked session | Partial | It ends by itself after 10 idle minutes, and `stash lock` ends it at once. |
 | Malware running as your user *during* a session | ❌ | It can ask the agent for the key, just as it could ask `ssh-agent` to sign. Set `STASH_SESSION_TIMEOUT=0` if you'd rather confirm every command. |
+
+## `stash run` and `stash inject`
+
+`stash run` puts secret values into one child process's environment. `stash inject` writes them into one output file.
+
+- **No secrets on the command line.** References are resolved inside stash, and values reach the child only through its environment. They never appear in arguments, which other users can see with `ps`.
+- **The master password stays behind.** `STASH_PASSWORD` is always removed from the child's environment.
+- **Keys are wiped before the command starts.** stash drops the vault, and its keys, before the child starts.
+- **Output files are private.** `stash inject` creates its output with mode `0600` and writes nothing if any reference fails to resolve.
+
+| Threat | Protected? | How |
+|---|---|---|
+| Secrets in shell history, dotfiles, or committed `.env` files | ✅ | Files hold only `stash://` references. |
+| The child echoing a secret into logs or a terminal recording | Partial | Output masking replaces exact matches of each secret (4 bytes or longer) in stdout and stderr. Encoded or transformed copies (base64, URL-encoding, split lines) aren't caught. Masking also makes the child's output a pipe rather than a terminal, so some tools turn off colors. `--no-masking` restores the terminal. |
+| Other processes reading the child's environment | Partial | Other users can't. Processes running as *you* can read it (for example, with `ps eww` on some systems). That's inherent to environment variables. |
+| The child itself misusing the secret | ❌ | You're choosing to give that program the secret. Only `stash run` programs you trust. |
+| Rendered `stash inject` files left on disk | Partial | They're `0600`, but they hold plaintext. Prefer `stash run` where possible, and keep rendered files out of git. |
 
 ## Planned features and their open questions
 

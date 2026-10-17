@@ -58,7 +58,7 @@ The balance is mostly ink with a little amber, roughly 60% ink, 22% enclave, 12%
 
 ## In the terminal
 
-CLI output should use the same palette (colored output is coming with `stash run` in v0.3):
+CLI output uses the same palette, and color appears only on a terminal with `NO_COLOR` unset:
 - amber `❯` prompts and `stash://` references
 - Redacted grey for listed names
 - green `#7DD3A8` for success lines, such as `✓ unlocked · injected 1 secret into npm`
