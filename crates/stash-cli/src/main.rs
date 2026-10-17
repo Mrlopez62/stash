@@ -1,5 +1,6 @@
 mod agent;
 mod audit;
+mod clipboard;
 mod envfile;
 mod inject;
 mod mask;
@@ -49,6 +50,24 @@ enum Command {
     Get {
         /// Secret name or reference, e.g. `github/token` or `stash://github/token`
         name: String,
+        /// Copy to the clipboard instead of printing; cleared after 30 seconds
+        /// (STASH_CLIPBOARD_TIMEOUT) if it hasn't changed
+        #[arg(long, short)]
+        copy: bool,
+    },
+    /// Print the current 2FA code for a TOTP secret
+    ///
+    /// The secret's value is an `otpauth://totp/...` URI (what a 2FA QR code
+    /// contains) or a bare base32 secret.
+    #[command(
+        after_help = "Example:\n  stash add github/2fa          # paste the otpauth:// URI or base32 secret\n  stash otp github/2fa --copy"
+    )]
+    Otp {
+        /// Secret name or reference
+        name: String,
+        /// Copy the code to the clipboard instead of printing it
+        #[arg(long, short)]
+        copy: bool,
     },
     /// List secret names (never values)
     #[command(alias = "list")]
@@ -132,6 +151,12 @@ enum Command {
         #[command(subcommand)]
         action: TouchIdAction,
     },
+    /// Clear the clipboard later if unchanged (started automatically)
+    #[command(hide = true)]
+    ClipboardClear {
+        #[arg(long)]
+        after: u64,
+    },
     /// Run the session agent (started automatically; not for direct use)
     #[command(hide = true)]
     Agent {
@@ -169,9 +194,16 @@ fn main() -> ExitCode {
 }
 
 fn run(cli: Cli) -> Result<ExitCode> {
-    if let Command::Agent { socket } = &cli.command {
-        agent::serve(socket)?;
-        return Ok(ExitCode::SUCCESS);
+    match &cli.command {
+        Command::Agent { socket } => {
+            agent::serve(socket)?;
+            return Ok(ExitCode::SUCCESS);
+        }
+        Command::ClipboardClear { after } => {
+            clipboard::clear_if_unchanged(Duration::from_secs(*after))?;
+            return Ok(ExitCode::SUCCESS);
+        }
+        _ => {}
     }
     let path = match cli.vault {
         Some(path) => path,
@@ -194,16 +226,34 @@ fn run(cli: Cli) -> Result<ExitCode> {
             vault.add(&name, &value, force)?;
             eprintln!("Saved {name}");
         }
-        Command::Get { name } => {
+        Command::Get { name, copy } => {
             let name = stash_core::reference::parse(&name)?.unwrap_or(&name);
             let vault = unlock(&path, &format!("get {name}"))?;
             let value = vault.get(name)?;
-            let mut out = io::stdout().lock();
-            out.write_all(value.expose_secret())?;
-            if out.is_terminal() {
-                out.write_all(b"\n")?;
+            if copy {
+                copy_to_clipboard(value.expose_secret(), name)?;
+            } else {
+                print_secret(value.expose_secret())?;
             }
-            out.flush()?;
+        }
+        Command::Otp { name, copy } => {
+            let name = stash_core::reference::parse(&name)?.unwrap_or(&name);
+            let vault = unlock(&path, &format!("get a 2FA code for {name}"))?;
+            let value = vault.get(name)?;
+            let text = std::str::from_utf8(value.expose_secret())
+                .map_err(|_| stash_core::Error::InvalidOtp("the value isn't text".into()))?;
+            let totp = stash_core::otp::Totp::parse(text)
+                .with_context(|| format!("{name} isn't a 2FA secret"))?;
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)?
+                .as_secs();
+            let code = Zeroizing::new(totp.code_at(now));
+            if copy {
+                copy_to_clipboard(code.as_bytes(), &format!("the code for {name}"))?;
+            } else {
+                print_secret(code.as_bytes())?;
+            }
+            ui::success(&format!("valid for {}s", totp.remaining(now)));
         }
         Command::Ls => {
             let vault = unlock(&path, "list secret names")?;
@@ -277,9 +327,33 @@ fn run(cli: Cli) -> Result<ExitCode> {
             }
         }
         Command::TouchId { action } => touch_id(action, &path)?,
-        Command::Agent { .. } => unreachable!("handled above"),
+        Command::Agent { .. } | Command::ClipboardClear { .. } => unreachable!("handled above"),
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// Print a secret to stdout, with a newline only on a terminal so piped
+/// output is the exact value.
+fn print_secret(value: &[u8]) -> Result<()> {
+    let mut out = io::stdout().lock();
+    out.write_all(value)?;
+    if out.is_terminal() {
+        out.write_all(b"\n")?;
+    }
+    out.flush()?;
+    Ok(())
+}
+
+fn copy_to_clipboard(value: &[u8], what: &str) -> Result<()> {
+    clipboard::copy(value)?;
+    match clipboard::timeout()? {
+        Some(after) => {
+            clipboard::clear_later(value, after)?;
+            ui::success(&format!("copied {what} · clears in {}s", after.as_secs()));
+        }
+        None => ui::success(&format!("copied {what}")),
+    }
+    Ok(())
 }
 
 fn touch_id(action: TouchIdAction, path: &Path) -> Result<()> {

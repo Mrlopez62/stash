@@ -617,3 +617,111 @@ fn inject_force_replaces_a_symlink_instead_of_writing_through_it() {
         .collect();
     assert!(leftovers.is_empty(), "temp files left behind");
 }
+
+// ---- clipboard and 2FA codes ----
+
+/// A fake clipboard backed by the file `clip`.
+fn fake_clipboard(dir: &TempDir) -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let path = dir.path().join("clipboard");
+    std::fs::write(
+        &path,
+        "#!/bin/sh\nf=\"$(dirname \"$0\")/clip\"\ncase \"$1\" in copy) cat > \"$f\" ;; paste) cat \"$f\" 2>/dev/null ;; esac\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    path
+}
+
+fn clip(dir: &TempDir) -> String {
+    std::fs::read_to_string(dir.path().join("clip")).unwrap_or_default()
+}
+
+fn wait_for(mut done: impl FnMut() -> bool) -> bool {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while std::time::Instant::now() < deadline {
+        if done() {
+            return true;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    false
+}
+
+#[test]
+fn get_copy_puts_the_value_on_the_clipboard_and_clears_it() {
+    let dir = init_with_secrets();
+    let clipboard = fake_clipboard(&dir);
+    stash(&dir)
+        .env("STASH_CLIPBOARD_HELPER", &clipboard)
+        .env("STASH_CLIPBOARD_TIMEOUT", "1")
+        .args(["get", "--copy", "github/token"])
+        .assert()
+        .success()
+        .stdout(""); // never printed
+    assert_eq!(clip(&dir), "ghp_abc123");
+    assert!(
+        wait_for(|| clip(&dir).is_empty()),
+        "clipboard was not cleared"
+    );
+}
+
+#[test]
+fn clearing_leaves_something_you_copied_since_alone() {
+    let dir = init_with_secrets();
+    let clipboard = fake_clipboard(&dir);
+    stash(&dir)
+        .env("STASH_CLIPBOARD_HELPER", &clipboard)
+        .env("STASH_CLIPBOARD_TIMEOUT", "1")
+        .args(["get", "--copy", "github/token"])
+        .assert()
+        .success();
+    std::fs::write(dir.path().join("clip"), "something else").unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(1800));
+    assert_eq!(clip(&dir), "something else");
+}
+
+#[test]
+fn otp_prints_codes_from_uris_and_bare_secrets() {
+    let dir = init();
+    stash(&dir)
+        .args(["add", "github/2fa"])
+        .write_stdin("otpauth://totp/GitHub:me?secret=JBSWY3DPEHPK3PXP&issuer=GitHub&digits=8")
+        .assert()
+        .success();
+    stash(&dir)
+        .args(["add", "aws/2fa"])
+        .write_stdin("JBSW Y3DP EHPK 3PXP")
+        .assert()
+        .success();
+    let code = |name: &str| {
+        let out = stash(&dir)
+            .args(["otp", name])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+        String::from_utf8(out).unwrap()
+    };
+    let eight = code("github/2fa");
+    assert!(
+        eight.len() == 8 && eight.bytes().all(|b| b.is_ascii_digit()),
+        "{eight:?}"
+    );
+    let six = code("stash://aws/2fa");
+    assert!(
+        six.len() == 6 && six.bytes().all(|b| b.is_ascii_digit()),
+        "{six:?}"
+    );
+}
+
+#[test]
+fn otp_explains_values_that_are_not_2fa_secrets() {
+    let dir = init_with_secrets();
+    stash(&dir)
+        .args(["otp", "db/url"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("db/url isn't a 2FA secret"));
+}
