@@ -16,11 +16,16 @@ The vault is a single SQLite file, `~/.stash/vault.db` by default.
 | Vault key | 32 random bytes from the operating system's random number generator, encrypted with the KEK using **XChaCha20-Poly1305**. The encryption is bound to the format version, the KDF parameters, and the salt, so none of them can be changed without being detected. |
 | Item names | Never stored in plaintext. Each row's id is `HMAC-SHA256(index_key, name)`, where `index_key` is derived from the vault key. The name is also encrypted along with the value. |
 | Item contents | Encrypted together with the name using XChaCha20-Poly1305 and the vault key. Each one gets a fresh random 24-byte nonce, and the row id is bound into the encryption, so an encrypted value can't be moved to a different row. |
-| Logins and notes | Their fields (usernames, URLs, passwords, 2FA secrets, notes, timestamps) are JSON *inside* the same per-item encryption. A copied vault doesn't reveal even an item's kind, its usernames, or its websites. |
+| Logins and notes | Their fields (usernames, URLs, passwords, 2FA secrets, notes, timestamps) are JSON *inside* the same per-item encryption, so a copied vault doesn't reveal usernames or websites. Encrypted sizes are visible, and logins and notes are noticeably larger than plain secrets, so an item's size can hint at its kind. |
 | Deleted secrets | SQLite's `secure_delete` setting overwrites freed pages with zeros. |
 | File permissions | The vault file is created with mode `0600`, and new parent directories with `0700`. |
 
-**Version 2** only adds the structured encoding for logins and notes. Single-value secrets keep the original encoding. A version 1 vault opens normally. Unlocking it with the master password re-wraps the vault key bound to version 2, so older versions of stash refuse it instead of misreading new items. Unlocking with Touch ID or a session can't do that, because only the password-derived key can re-wrap.
+**Version 2** only adds the structured encoding for logins and notes. Single-value secrets keep the original encoding, so they never need it.
+
+- **A version 1 vault opens normally,** with the master password, Touch ID, or a session.
+- **The master password upgrades it.** Unlocking with the password re-wraps the vault key bound to version 2, so older versions of stash refuse the vault from then on.
+- **Touch ID and sessions can't upgrade it,** because only the password-derived key can re-wrap. Until a password unlock, stash **refuses to store logins and notes** in a version 1 vault and asks for that one-time unlock. So an older version of stash never meets an item it would misread.
+- **The upgrade is best-effort:** if the file is read-only or busy, the vault still opens and stays at version 1.
 
 Because of this design, changing the master password (not yet available as a command) will only need to re-encrypt the vault key, not every secret.
 
@@ -126,7 +131,7 @@ AI agents talk to `stash mcp` over stdio. The design assumes the agent may be co
 |---|---|---|
 | A prompt-injected agent quietly using secrets | ✅ | Every use needs a fingerprint, on a dialog that shows the command and secrets. |
 | An agent reading values from a command's output | Partial | Exact matches are masked. A command written to *transform* the secret (base64, reversing it) can leak it in that form, so read the command in the prompt before approving. |
-| An agent using secrets it shouldn't need | ✅ | `--allow` patterns. |
+| An agent using secrets it shouldn't need | ✅ | `--allow` patterns. They work per **item**: allowing `github` also allows `github#notes`, custom fields, and live `#otp` codes. Keep 2FA and sensitive notes in separate items if an agent shouldn't reach them. |
 | An agent reading the vault through its own shell | ✅ | Its shell commands have no session (see sessions above), and any `stash` call they make shows its own prompt naming the process chain. |
 | Approving a request without reading it | ❌ | The prompt can only inform you. Check the command, especially `sh -c` scripts. |
 | `--no-approval` | ❌ | It turns off the main protection. It exists only for headless setups with `STASH_PASSWORD`. |

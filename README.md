@@ -149,7 +149,11 @@ stash generate --length 32 --no-symbols  # just a password
 
 These work everywhere references do: `stash get github#username`, `.env` files for `stash run`, `stash inject` templates, and the MCP server.
 
-Passwords, 2FA secrets, and notes are only ever read from a hidden prompt or stdin, never from flags, so they stay out of your shell history. Generated passwords use the OS random number generator with uniform sampling, and always include each enabled character type.
+Passwords, 2FA secrets, and notes are only ever read from a hidden prompt or stdin, never from flags, so they stay out of your shell history.
+- **`--set` is for visible fields only.** It refuses password, 2FA, and notes fields, plus labels that look like secrets (`token`, `api key`, `client secret`, `pin`, …). Store those as their own secret item and reference it.
+- **The note prompt reads one line.** Pipe multi-line notes in instead: `stash add notes/x --note < notes.txt`.
+- **Generated passwords** use the OS random number generator with uniform sampling and always include each enabled character type. Symbols like `$` and `#` mean something in shells and some `.env` parsers, so quote them, or use `--no-symbols`.
+- **Older vaults need one upgrade.** A vault made before v0.6 can store logins and notes once you've unlocked it with your master password once. Until then, stash asks you to.
 
 ### Clipboard and 2FA codes
 
@@ -184,7 +188,7 @@ claude mcp add stash -- stash mcp --allow 'github/*' --allow 'openai/*'
 
 | Option | What it does |
 |---|---|
-| `--allow <pattern>` | Only let agents touch matching secrets (`*` matches anything, repeatable). Anything else is refused before any prompt |
+| `--allow <pattern>` | Only let agents touch matching items (`*` matches anything, repeatable). Anything else is refused before any prompt. An allowed login's fields are all reachable (`#username`, `#notes`, `#otp`), so keep anything an agent shouldn't see in a separate item |
 | `--allow-reveal` | Offer `request_secret`. Off by default; prefer `run_with_secrets` |
 | `--no-approval` | Skip the Touch ID approvals. Only for headless setups that use `STASH_PASSWORD` |
 

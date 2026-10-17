@@ -13,7 +13,7 @@ use stash_core::generate::{self, Rules};
 use stash_core::item::{FieldValue, ONE_TIME_PASSWORD, PASSWORD, USERNAME, WEBSITE};
 use stash_core::otp::Totp;
 use stash_core::{FieldKind, Item, Kind, Vault};
-use zeroize::Zeroizing;
+use zeroize::{Zeroize, Zeroizing};
 
 use crate::{read_input, stdin_is_terminal, ui};
 
@@ -65,7 +65,7 @@ pub struct LoginArgs {
 
 fn read_otp() -> Result<Zeroizing<String>> {
     let secret = read_text("2FA secret (otpauth:// URI or base32): ")?;
-    Totp::parse(&secret).context("that isn't a 2FA secret")?;
+    Totp::parse_new(&secret).context("that isn't a 2FA secret")?;
     Ok(secret)
 }
 
@@ -99,7 +99,20 @@ fn check_one_piped_secret(needs_password: bool, otp: bool) -> Result<()> {
     Ok(())
 }
 
+/// Checks to run before asking for any secret, so you're never made to type
+/// a password only to hit an error.
+fn check_can_add(vault: &Vault, name: &str, force: bool, structured: bool) -> Result<()> {
+    if !force && vault.contains(name)? {
+        bail!("{name} already exists (use --force to overwrite)");
+    }
+    if structured && !vault.is_current() {
+        return Err(stash_core::Error::NeedsUpgrade.into());
+    }
+    Ok(())
+}
+
 pub fn add_login(vault: &mut Vault, name: &str, login: &LoginArgs, force: bool) -> Result<()> {
+    check_can_add(vault, name, force, true)?;
     check_one_piped_secret(!login.generate, login.otp)?;
     let password = new_password(login)?;
     let mut item = Item::login(login.username.as_deref(), &password, login.url.as_deref());
@@ -112,6 +125,7 @@ pub fn add_login(vault: &mut Vault, name: &str, login: &LoginArgs, force: bool) 
 }
 
 pub fn add_note(vault: &mut Vault, name: &str, force: bool) -> Result<()> {
+    check_can_add(vault, name, force, true)?;
     let text = read_text("Note: ")?;
     vault.put(name, &Item::note(text.as_str()), force)?;
     eprintln!("Saved note {name}");
@@ -150,11 +164,38 @@ pub fn edit(vault: &mut Vault, name: &str, args: &EditArgs) -> Result<()> {
     }
 
     let mut item = vault.item(name)?;
-    // A single-value secret that gains login details becomes a login, with
-    // its value as the password.
+    // Only a one-value, no-notes secret that stays that way can be saved in
+    // a vault that hasn't been upgraded yet.
+    let stays_plain_secret = item.kind == Kind::Secret
+        && item.fields.len() == 1
+        && item.notes.is_empty()
+        && !touches_login
+        && !args.notes
+        && args.unset.is_empty();
+    if !stays_plain_secret && !vault.is_current() {
+        return Err(stash_core::Error::NeedsUpgrade.into());
+    }
+    // Checked up front so no secret is asked for before an error.
+    for pair in &args.set {
+        let label = pair
+            .split_once('=')
+            .map_or(pair.as_str(), |(l, _)| l)
+            .trim();
+        check_settable(&item, label)?;
+    }
+    for label in &args.unset {
+        if item.kind == Kind::Secret && item.fields.len() == 1 && item.labeled(label).is_some() {
+            bail!("that's {name}'s only value; to delete the item, use `stash rm {name}`");
+        }
+    }
+    // A secret that gains login details becomes a login: its value becomes
+    // the password, and its notes and any other fields are kept.
     if item.kind == Kind::Secret && touches_login {
-        let value = item.primary().unwrap_or("").to_owned();
-        item = Item::login(None, &value, None);
+        item.kind = Kind::Login;
+        if let Some(first) = item.fields.first_mut() {
+            first.label = PASSWORD.to_owned();
+            first.kind = FieldKind::Concealed;
+        }
     }
     if item.kind == Kind::Note && (changes_password || login.otp) {
         bail!("{name} is a note, which has no password or 2FA");
@@ -163,7 +204,14 @@ pub fn edit(vault: &mut Vault, name: &str, args: &EditArgs) -> Result<()> {
     if changes_password {
         let password = new_password(login)?;
         match item.kind {
-            Kind::Secret => item = Item::secret(password.as_str()),
+            // Replace the value in place, keeping notes and other fields.
+            Kind::Secret => {
+                let label = item
+                    .fields
+                    .first()
+                    .map_or_else(|| "value".to_owned(), |f| f.label.clone());
+                item.set(&label, FieldKind::Concealed, password.as_str());
+            }
             _ => item.set(PASSWORD, FieldKind::Concealed, password.as_str()),
         }
     }
@@ -185,10 +233,10 @@ pub fn edit(vault: &mut Vault, name: &str, args: &EditArgs) -> Result<()> {
         let (label, value) = pair
             .split_once('=')
             .with_context(|| format!("--set expects LABEL=VALUE, got `{pair}`"))?;
-        if label.trim().is_empty() {
-            bail!("--set needs a label");
-        }
-        item.set(label.trim(), FieldKind::Text, value);
+        let label = label.trim();
+        // Updating a visible field keeps its type (a website stays a URL).
+        let kind = item.labeled(label).map_or(FieldKind::Text, |f| f.kind);
+        item.set(label, kind, value);
     }
     for label in &args.unset {
         let before = item.fields.len();
@@ -199,10 +247,44 @@ pub fn edit(vault: &mut Vault, name: &str, args: &EditArgs) -> Result<()> {
         }
     }
     if args.notes {
-        item.notes = read_text("Notes: ")?.to_string();
+        let notes = read_text("Notes: ")?;
+        item.notes.zeroize();
+        item.notes = notes.to_string();
     }
     vault.put(name, &item, true)?;
     eprintln!("Updated {name}");
+    Ok(())
+}
+
+/// `--set` puts its value on the command line, where shell history and
+/// `ps` can see it, so it's only for visible fields. Secrets have their own
+/// flags, which read from a prompt or stdin.
+fn check_settable(item: &Item, label: &str) -> Result<()> {
+    if label.is_empty() {
+        bail!("--set needs a label");
+    }
+    let normalized: String = label
+        .chars()
+        .filter(|c| !matches!(c, ' ' | '-' | '_'))
+        .flat_map(char::to_lowercase)
+        .collect();
+    let hint = match normalized.as_str() {
+        "password" | "pass" | "pw" | "passcode" | "pin" => Some("--password or --generate"),
+        // Labels that almost always hold a secret. Store those as their own
+        // secret item instead (`stash add <name>`), and reference it.
+        "token" | "secret" | "apikey" | "apisecret" | "privatekey" | "secretkey" | "accesskey"
+        | "clientsecret" => Some("a separate secret item (`stash add <name>`)"),
+        "otp" | "totp" | "2fa" | "code" | "onetimepassword" => Some("--otp"),
+        "notes" | "note" => Some("--notes"),
+        _ => None,
+    };
+    let sensitive = item.labeled(label).is_some_and(|f| f.kind.is_sensitive());
+    if let Some(hint) = hint.or(sensitive.then_some("--password or --otp")) {
+        bail!(
+            "`{label}` looks like a secret, and --set would put it in your shell history; \
+             use {hint} instead, which reads from a hidden prompt or stdin"
+        );
+    }
     Ok(())
 }
 
@@ -221,7 +303,8 @@ pub fn show(vault: &Vault, name: &str, reveal: bool) -> Result<()> {
         .max(8);
     let now = crate::unix_now();
     for field in &item.fields {
-        let shown = match (field.kind, reveal) {
+        // Revealed values are wiped once printed.
+        let shown: Zeroizing<String> = Zeroizing::new(match (field.kind, reveal) {
             (FieldKind::Otp, true) => match Totp::parse(&field.value) {
                 Ok(totp) => format!(
                     "{}  (valid for {}s)",
@@ -235,8 +318,8 @@ pub fn show(vault: &Vault, name: &str, reveal: bool) -> Result<()> {
             }
             (FieldKind::Concealed, false) => HIDDEN.into(),
             _ => field.value.clone(),
-        };
-        writeln!(out, "  {:<width$}  {shown}", field.label)?;
+        });
+        writeln!(out, "  {:<width$}  {}", field.label, shown.as_str())?;
     }
     if !item.notes.is_empty() {
         if reveal {

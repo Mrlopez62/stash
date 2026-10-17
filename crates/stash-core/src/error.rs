@@ -4,6 +4,10 @@ use std::path::PathBuf;
 pub enum Error {
     #[error("wrong master password")]
     WrongPassword,
+    #[error(
+        "this vault needs a one-time upgrade before it can store logins and notes: unlock it once with your master password (for example `STASH_SESSION_TIMEOUT=0 stash ls`, then cancel the Touch ID prompt)"
+    )]
+    NeedsUpgrade,
     #[error("`{0}` has no field `{1}`")]
     NoSuchField(String, String),
     #[error("`{0}` holds binary data, which only `stash get` can output")]

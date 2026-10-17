@@ -12,8 +12,10 @@ use crate::Error;
 const LOWERCASE: &str = "abcdefghijklmnopqrstuvwxyz";
 const UPPERCASE: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
 const DIGITS: &str = "0123456789";
-/// No quotes, backslashes, or spaces, so passwords paste safely into shells
-/// and config files.
+/// No quotes, backslashes, or spaces, the characters that most often break
+/// config files. Symbols like `$`, `!`, and `#` are still special in shells
+/// and some `.env` parsers, so quote generated passwords there (or use
+/// `--no-symbols`).
 const SYMBOLS: &str = "!@#$%^&*()-_=+[]{};:,.<>?";
 
 pub const MIN_LENGTH: usize = 8;

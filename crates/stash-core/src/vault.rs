@@ -63,6 +63,9 @@ pub struct Vault {
     vault_key: SecretKey,
     index_key: SecretKey,
     path: PathBuf,
+    /// The header's format version. Structured items can only be written
+    /// once it's current, so older versions of stash never see them.
+    version: i64,
 }
 
 impl Vault {
@@ -118,7 +121,7 @@ impl Vault {
         }
         tx.commit()?;
 
-        Ok(Self::from_parts(conn, vault_key, path))
+        Ok(Self::from_parts(conn, vault_key, path, FORMAT_VERSION))
     }
 
     /// Open and unlock an existing vault with the master password.
@@ -141,41 +144,38 @@ impl Vault {
         }
         vault_key.copy_from_slice(&unwrapped);
 
+        // Header maintenance below tolerates a read-only or busy file: the
+        // vault still opens, it just isn't upgraded this time. Any other
+        // failure is a real error.
+
         // Vaults created before the key check existed get one on first unlock.
         let check = key_check(&vault_key);
-        conn.execute(
-            "INSERT OR IGNORE INTO meta (key, value) VALUES ('key_check', ?1)",
-            params![check.as_slice()],
+        tolerate_unwritable(
+            conn.execute(
+                "INSERT OR IGNORE INTO meta (key, value) VALUES ('key_check', ?1)",
+                params![check.as_slice()],
+            )
+            .map_err(Error::from),
         )?;
 
         // Upgrade an older header: re-wrap the vault key bound to the current
         // version, so older versions of stash refuse the vault cleanly.
-        if version < FORMAT_VERSION {
-            let rewrapped = crypto::seal(
-                &kek,
-                &header_aad(FORMAT_VERSION, params, &salt),
-                vault_key.as_ref(),
-            )?;
-            let tx = conn.transaction()?;
-            tx.execute(
-                "UPDATE meta SET value = ?1 WHERE key = 'wrapped_key'",
-                params![rewrapped],
-            )?;
-            tx.execute(
-                "UPDATE meta SET value = ?1 WHERE key = 'format_version'",
-                params![FORMAT_VERSION],
-            )?;
-            tx.commit()?;
+        let mut version = version;
+        if version < FORMAT_VERSION
+            && tolerate_unwritable(upgrade_header(&mut conn, &kek, params, &salt, &vault_key))?
+                .is_some()
+        {
+            version = FORMAT_VERSION;
         }
 
-        Ok(Self::from_parts(conn, vault_key, path))
+        Ok(Self::from_parts(conn, vault_key, path, version))
     }
 
     /// Open an existing vault with its raw vault key, as handed back by
     /// Touch ID or the session agent. Fails with [`Error::WrongKey`] if the
     /// key doesn't belong to this vault.
     pub fn open_with_key(path: &Path, key: &[u8; crypto::KEY_LEN]) -> Result<Self> {
-        let (conn, _) = connect_existing(path)?;
+        let (conn, version) = connect_existing(path)?;
         let stored: Option<Vec<u8>> = conn
             .query_row("SELECT value FROM meta WHERE key = 'key_check'", [], |r| {
                 r.get(0)
@@ -185,20 +185,33 @@ impl Vault {
         let expected = key_check(&vault_key);
         match stored {
             Some(stored) if crypto::ct_eq(&stored, &expected) => {
-                Ok(Self::from_parts(conn, vault_key, path))
+                Ok(Self::from_parts(conn, vault_key, path, version))
             }
             _ => Err(Error::WrongKey),
         }
     }
 
-    fn from_parts(conn: Connection, vault_key: SecretKey, path: &Path) -> Self {
+    fn from_parts(conn: Connection, vault_key: SecretKey, path: &Path, version: i64) -> Self {
         let index_key = Zeroizing::new(crypto::hmac(vault_key.as_ref(), b"stash/index-key/v1"));
         Self {
             conn,
             vault_key,
             index_key,
             path: path.to_owned(),
+            version,
         }
+    }
+
+    /// Whether the header is current, so logins and notes can be stored.
+    /// A version 1 vault becomes current on its next master-password unlock.
+    pub fn is_current(&self) -> bool {
+        self.version >= FORMAT_VERSION
+    }
+
+    /// Whether an item with this name exists.
+    pub fn contains(&self, name: &str) -> Result<bool> {
+        validate_name(name)?;
+        Ok(self.blob(&self.item_id(name))?.is_some())
     }
 
     pub fn path(&self) -> &Path {
@@ -219,24 +232,26 @@ impl Vault {
         self.write(name, &payload, overwrite)
     }
 
-    /// Store an item. Single-value secrets use the original encoding, so
-    /// they stay readable by any version; logins and notes use the
-    /// structured one. Timestamps are filled in.
+    /// Store an item. A plain secret (one value, no notes) uses the original
+    /// encoding, so any version can read it; everything else uses the
+    /// structured one, which needs a current header ([`Error::NeedsUpgrade`]
+    /// otherwise). `updated` is set to now, and `created` too if it's 0.
     pub fn put(&mut self, name: &str, item: &Item, overwrite: bool) -> Result<()> {
         validate_name(name)?;
-        if item.kind == Kind::Secret {
+        let plain_secret =
+            item.kind == Kind::Secret && item.fields.len() == 1 && item.notes.is_empty();
+        if plain_secret {
             let value = item.primary().unwrap_or("");
             return self.add(name, value.as_bytes(), overwrite);
+        }
+        if !self.is_current() {
+            return Err(Error::NeedsUpgrade);
         }
         let now = unix_now();
         let mut item = item.clone();
         item.updated = now;
         if item.created == 0 {
-            item.created = self
-                .stored(name)?
-                .and_then(|old| old.structured().map(|i| i.created))
-                .filter(|&c| c != 0)
-                .unwrap_or(now);
+            item.created = now;
         }
         let payload = encode_structured(name, &item)?;
         self.write(name, &payload, overwrite)
@@ -279,8 +294,9 @@ impl Vault {
             .ok_or_else(|| Error::NotFound(name.to_owned()))?
         {
             Stored::Secret(value) => {
-                let text = String::from_utf8(value.to_vec())
-                    .map_err(|_| Error::NotText(name.to_owned()))?;
+                // Check before copying, so a failed conversion leaves no copy.
+                let text =
+                    std::str::from_utf8(&value).map_err(|_| Error::NotText(name.to_owned()))?;
                 Ok(Item::secret(text))
             }
             Stored::Structured(item) => Ok(item),
@@ -336,9 +352,20 @@ impl Vault {
         Ok(())
     }
 
-    /// All item names, sorted. Values are never returned.
+    /// All item names, sorted. Values are never returned, and item contents
+    /// aren't even parsed.
     pub fn names(&self) -> Result<Vec<String>> {
-        Ok(self.summaries()?.into_iter().map(|s| s.name).collect())
+        let mut stmt = self.conn.prepare("SELECT id, blob FROM items")?;
+        let mut rows = stmt.query([])?;
+        let mut names = Vec::new();
+        while let Some(row) = rows.next()? {
+            let id: Vec<u8> = row.get(0)?;
+            let blob: Vec<u8> = row.get(1)?;
+            let payload = crypto::open(&self.vault_key, &item_aad(&id), &blob)?;
+            names.push(decode_name(&payload)?.to_owned());
+        }
+        names.sort();
+        Ok(names)
     }
 
     /// One summary per item, sorted by name: kind, username, URL, whether it
@@ -389,11 +416,53 @@ impl Vault {
     }
 }
 
+/// `Ok(None)` if the write failed only because the vault is read-only or
+/// another process holds it; other errors pass through.
+fn tolerate_unwritable<T>(result: Result<T>) -> Result<Option<T>> {
+    use rusqlite::ErrorCode::{DatabaseBusy, DatabaseLocked, ReadOnly};
+    match result {
+        Ok(v) => Ok(Some(v)),
+        Err(Error::Database(rusqlite::Error::SqliteFailure(e, _)))
+            if matches!(e.code, ReadOnly | DatabaseBusy | DatabaseLocked) =>
+        {
+            Ok(None)
+        }
+        Err(e) => Err(e),
+    }
+}
+
+fn upgrade_header(
+    conn: &mut Connection,
+    kek: &SecretKey,
+    params: KdfParams,
+    salt: &[u8],
+    vault_key: &SecretKey,
+) -> Result<()> {
+    let rewrapped = crypto::seal(
+        kek,
+        &header_aad(FORMAT_VERSION, params, salt),
+        vault_key.as_ref(),
+    )?;
+    let tx = conn.transaction()?;
+    tx.execute(
+        "UPDATE meta SET value = ?1 WHERE key = 'wrapped_key'",
+        params![rewrapped],
+    )?;
+    tx.execute(
+        "UPDATE meta SET value = ?1 WHERE key = 'format_version'",
+        params![FORMAT_VERSION],
+    )?;
+    tx.commit()?;
+    Ok(())
+}
+
 fn connect(path: &Path) -> Result<Connection> {
     let conn = Connection::open_with_flags(
         path,
         OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )?;
+    // Wait briefly for another stash process instead of failing at once.
+    conn.busy_timeout(std::time::Duration::from_secs(5))?;
     // Overwrite deleted rows with zeros instead of leaving them in free pages.
     conn.execute_batch("PRAGMA secure_delete = ON;")?;
     Ok(conn)
@@ -489,15 +558,34 @@ fn encode_secret(name: &str, value: &[u8]) -> Zeroizing<Vec<u8>> {
 
 /// `0xFFFF || u16 name length (LE) || name || JSON`.
 fn encode_structured(name: &str, item: &Item) -> Result<Zeroizing<Vec<u8>>> {
-    let json = Zeroizing::new(
-        serde_json::to_vec(item).map_err(|e| Error::Corrupt(format!("encoding item: {e}")))?,
-    );
+    // Size the buffer up front so it never reallocates, which would leave
+    // un-wiped copies of the JSON behind.
+    let estimate = 256
+        + item.notes.len() * 6
+        + item
+            .fields
+            .iter()
+            .map(|f| 64 + (f.label.len() + f.value.len()) * 6)
+            .sum::<usize>();
+    let mut json = Zeroizing::new(Vec::with_capacity(estimate));
+    serde_json::to_writer(&mut *json, item)
+        .map_err(|e| Error::Corrupt(format!("encoding item: {e}")))?;
     let mut out = Zeroizing::new(Vec::with_capacity(4 + name.len() + json.len()));
     out.extend_from_slice(&STRUCTURED);
     out.extend_from_slice(&name_header(name));
     out.extend_from_slice(name.as_bytes());
     out.extend_from_slice(&json);
     Ok(out)
+}
+
+/// Just the name, without parsing the contents.
+fn decode_name(payload: &[u8]) -> Result<&str> {
+    let corrupt = || Error::Corrupt("malformed item".into());
+    let payload = payload.strip_prefix(&STRUCTURED).unwrap_or(payload);
+    let (len, rest) = payload.split_first_chunk::<2>().ok_or_else(corrupt)?;
+    let len = usize::from(u16::from_le_bytes(*len));
+    let name = rest.get(..len).ok_or_else(corrupt)?;
+    std::str::from_utf8(name).map_err(|_| corrupt())
 }
 
 fn decode_item(payload: &[u8]) -> Result<(String, Stored)> {
@@ -784,28 +872,45 @@ mod tests {
     }
 
     #[test]
-    fn editing_an_item_keeps_its_creation_time() {
+    fn editing_keeps_the_creation_time_but_replacing_resets_it() {
         let (_dir, _path, mut vault) = new_vault();
-        vault.put("github", &github_login(), false).unwrap();
-        let created = vault.item("github").unwrap().created;
+        let mut original = github_login();
+        original.created = 1_000;
+        vault.put("github", &original, false).unwrap();
+
         let mut edited = vault.item("github").unwrap();
         edited.set("password", crate::FieldKind::Concealed, "new!");
-        edited.created = 0;
         vault.put("github", &edited, true).unwrap();
         let after = vault.item("github").unwrap();
-        assert_eq!(after.created, created);
+        assert_eq!(after.created, 1_000);
         assert_eq!(after.primary(), Some("new!"));
+
+        // A brand-new item put over the old one (`add --force`) is new.
+        vault.put("github", &github_login(), true).unwrap();
+        assert!(vault.item("github").unwrap().created > 1_000);
     }
 
     #[test]
-    fn version_1_vaults_open_and_upgrade_on_password_unlock() {
-        let (_dir, path, mut vault) = new_vault();
-        vault.add("old", b"value", false).unwrap();
-        let key = *vault.key();
-        // Rewrite the header exactly as v0.1–v0.5 wrote it.
+    fn secrets_with_notes_or_extra_fields_are_not_truncated() {
+        // Regression: these used to be saved as plain secrets, silently
+        // dropping the notes and extra fields.
+        let (_dir, _path, mut vault) = new_vault();
+        let mut item = Item::secret("tok");
+        item.notes = "rotate every 90 days".into();
+        item.set("scope", crate::FieldKind::Text, "read-only");
+        vault.put("api/key", &item, false).unwrap();
+        let back = vault.item("api/key").unwrap();
+        assert_eq!(back.kind, Kind::Secret);
+        assert_eq!(back.notes, "rotate every 90 days");
+        assert_eq!(back.labeled("scope").unwrap().value, "read-only");
+        assert_eq!(value(&vault, "api/key"), b"tok");
+    }
+
+    /// Rewrite the header exactly as v0.1–v0.5 wrote it.
+    fn downgrade_to_v1(vault: &Vault) {
         let salt: Vec<u8> = meta(&vault.conn, "kdf_salt").unwrap();
         let kek = crypto::derive_kek(b"correct horse", &salt, FAST).unwrap();
-        let wrapped = crypto::seal(&kek, &header_aad(1, FAST, &salt), &key).unwrap();
+        let wrapped = crypto::seal(&kek, &header_aad(1, FAST, &salt), vault.key()).unwrap();
         vault
             .conn
             .execute(
@@ -817,6 +922,50 @@ mod tests {
             .conn
             .execute("UPDATE meta SET value = 1 WHERE key = 'format_version'", [])
             .unwrap();
+    }
+
+    #[test]
+    fn version_1_vaults_refuse_structured_items_until_upgraded() {
+        // Regression: a v1 vault opened by key (Touch ID / session) used to
+        // accept logins, which older versions of stash then misread.
+        let (_dir, path, vault) = new_vault();
+        let key = *vault.key();
+        downgrade_to_v1(&vault);
+        drop(vault);
+
+        let mut by_key = Vault::open_with_key(&path, &key).unwrap();
+        assert!(!by_key.is_current());
+        assert!(matches!(
+            by_key.put("github", &github_login(), false),
+            Err(Error::NeedsUpgrade)
+        ));
+        // Plain secrets still work, in the encoding every version reads.
+        by_key.add("tok", b"v", false).unwrap();
+        drop(by_key);
+
+        let mut by_password = Vault::open(&path, b"correct horse").unwrap();
+        assert!(by_password.is_current());
+        by_password.put("github", &github_login(), false).unwrap();
+    }
+
+    #[test]
+    fn a_read_only_vault_still_opens_without_upgrading() {
+        use std::os::unix::fs::PermissionsExt;
+        let (_dir, path, vault) = new_vault();
+        downgrade_to_v1(&vault);
+        drop(vault);
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o400)).unwrap();
+        let opened = Vault::open(&path, b"correct horse");
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(!opened.unwrap().is_current());
+    }
+
+    #[test]
+    fn version_1_vaults_open_and_upgrade_on_password_unlock() {
+        let (_dir, path, mut vault) = new_vault();
+        vault.add("old", b"value", false).unwrap();
+        let key = *vault.key();
+        downgrade_to_v1(&vault);
         drop(vault);
 
         // Touch ID / session keys still open it, without upgrading.

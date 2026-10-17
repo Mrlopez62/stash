@@ -88,11 +88,22 @@ impl Totp {
 
         totp.secret =
             base32_decode(&secret).ok_or_else(|| invalid("the secret isn't valid base32"))?;
+        if totp.secret.is_empty() {
+            return Err(invalid("the secret is empty"));
+        }
+        Ok(totp)
+    }
+
+    /// Like [`Totp::parse`], but also rejects secrets too short to be real,
+    /// which are almost always a typo or the wrong paste. Use this for new
+    /// input. Stored secrets go through `parse`, so items saved before this
+    /// check existed keep working.
+    pub fn parse_new(value: &str) -> Result<Self, Error> {
+        let totp = Self::parse(value)?;
         // RFC 4226 asks for at least 128 bits; authenticator apps accept 80.
-        // Anything shorter is almost certainly a typo or the wrong paste.
         if totp.secret.len() < MIN_SECRET_BYTES {
-            return Err(invalid(
-                "the secret is too short (expected at least 16 base32 characters)",
+            return Err(Error::InvalidOtp(
+                "the secret is too short (expected at least 16 base32 characters)".into(),
             ));
         }
         Ok(totp)
@@ -251,8 +262,6 @@ mod tests {
         for bad in [
             "",
             "not base32!",
-            "not a secret",
-            "JBSWY3DPEHPK3PX",
             "otpauth://hotp/X?secret=JBSWY3DP",
             "otpauth://totp/X?issuer=NoSecret",
             "otpauth://totp/X?secret=JBSWY3DP&digits=4",
@@ -264,5 +273,18 @@ mod tests {
                 "{bad:?}"
             );
         }
+    }
+
+    #[test]
+    fn new_secrets_must_be_long_enough_but_stored_ones_still_work() {
+        for short in ["not a secret", "JBSWY3DPEHPK3PX"] {
+            assert!(
+                matches!(Totp::parse_new(short), Err(Error::InvalidOtp(_))),
+                "{short}"
+            );
+            // Regression: short secrets saved by v0.5 must keep producing codes.
+            assert_eq!(Totp::parse(short).unwrap().code_at(59).len(), 6);
+        }
+        assert!(Totp::parse_new("JBSWY3DPEHPK3PXP").is_ok());
     }
 }

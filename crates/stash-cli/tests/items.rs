@@ -254,3 +254,155 @@ fn login_flags_need_login_and_one_piped_secret() {
         .failure()
         .stderr(predicate::str::contains("not both"));
 }
+
+// ---- regressions from the v0.6 security review ----
+
+#[test]
+fn notes_added_to_a_plain_secret_are_kept() {
+    let dir = init();
+    stash(&dir)
+        .args(["add", "api/key"])
+        .write_stdin("tok")
+        .assert()
+        .success();
+    stash(&dir)
+        .args(["edit", "api/key", "--notes"])
+        .write_stdin("rotate every 90 days")
+        .assert()
+        .success();
+    let shown = out(&dir, &["show", "api/key", "--reveal"]);
+    assert!(shown.contains("rotate every 90 days"), "{shown}");
+    assert_eq!(out(&dir, &["get", "api/key"]), "tok");
+}
+
+#[test]
+fn set_refuses_secret_fields_so_they_stay_out_of_shell_history() {
+    let dir = init();
+    github(&dir);
+    for label in ["password", "Password", "one-time password", "otp", "notes"] {
+        stash(&dir)
+            .args(["edit", "github", "--set", &format!("{label}=leaked")])
+            .assert()
+            .failure()
+            .stderr(predicate::str::contains("shell history"));
+    }
+    // Nothing was changed.
+    assert_eq!(out(&dir, &["get", "github"]), "hunter2!");
+
+    // Visible fields keep their type: the website is still a URL.
+    stash(&dir)
+        .args(["edit", "github", "--set", "website=https://github.example"])
+        .assert()
+        .success();
+    let listing = out(&dir, &["ls", "--long"]);
+    assert!(listing.contains("https://github.example"), "{listing}");
+}
+
+#[test]
+fn a_secrets_only_value_cant_be_unset_and_empty_input_is_refused() {
+    let dir = init();
+    stash(&dir)
+        .args(["add", "api/key"])
+        .write_stdin("tok")
+        .assert()
+        .success();
+    stash(&dir)
+        .args(["edit", "api/key", "--unset", "value"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("stash rm api/key"));
+    assert_eq!(out(&dir, &["get", "api/key"]), "tok");
+
+    stash(&dir)
+        .args(["add", "empty", "--login"])
+        .write_stdin("")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("value is empty"));
+    stash(&dir)
+        .args(["add", "empty"])
+        .write_stdin("\n")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("value is empty"));
+}
+
+#[test]
+fn existing_items_are_reported_before_asking_for_a_password() {
+    let dir = init();
+    github(&dir);
+    // No stdin at all: if it tried to read a password first, it would fail
+    // with "value is empty" instead.
+    stash(&dir)
+        .args(["add", "github", "--login"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("github already exists"));
+}
+
+#[test]
+fn short_2fa_secrets_from_older_versions_keep_working() {
+    let dir = init();
+    // 15 base32 characters (75 bits): accepted by v0.5, too short for new input.
+    stash(&dir)
+        .args(["add", "old/2fa"])
+        .write_stdin("JBSWY3DPEHPK3PX")
+        .assert()
+        .success();
+    let code = out(&dir, &["otp", "old/2fa"]);
+    assert_eq!(code.len(), 6, "{code}");
+
+    github(&dir);
+    stash(&dir)
+        .args(["edit", "github", "--otp"])
+        .write_stdin("JBSWY3DPEHPK3PX")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("too short"));
+}
+
+#[test]
+fn changing_a_secrets_value_or_making_it_a_login_keeps_its_notes() {
+    // Regression from the fix re-check: `edit --password` on a secret used
+    // to replace the whole item, wiping its notes.
+    let dir = init();
+    stash(&dir)
+        .args(["add", "api/key"])
+        .write_stdin("old")
+        .assert()
+        .success();
+    stash(&dir)
+        .args(["edit", "api/key", "--notes"])
+        .write_stdin("rotate every 90 days")
+        .assert()
+        .success();
+    stash(&dir)
+        .args(["edit", "api/key", "--password"])
+        .write_stdin("new")
+        .assert()
+        .success();
+    assert_eq!(out(&dir, &["get", "api/key"]), "new");
+    assert!(out(&dir, &["show", "api/key", "--reveal"]).contains("rotate every 90 days"));
+
+    stash(&dir)
+        .args(["edit", "api/key", "--username", "svc"])
+        .assert()
+        .success();
+    let shown = out(&dir, &["show", "api/key", "--reveal"]);
+    assert!(shown.contains("(login)"), "{shown}");
+    assert!(shown.contains("rotate every 90 days"), "{shown}");
+    assert_eq!(out(&dir, &["get", "api/key"]), "new");
+}
+
+#[test]
+fn set_refuses_labels_that_look_like_secrets() {
+    let dir = init();
+    github(&dir);
+    for label in ["token", "API key", "client_secret", "pin"] {
+        stash(&dir)
+            .args(["edit", "github", "--set", &format!("{label}=leaked")])
+            .assert()
+            .failure()
+            .stderr(predicate::str::contains("looks like a secret"));
+    }
+}
