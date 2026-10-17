@@ -15,8 +15,8 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
-use secrecy::ExposeSecret;
-use stash_core::{Vault, reference};
+use stash_core::Vault;
+use stash_core::reference::{self, ReferenceBuf};
 use zeroize::Zeroizing;
 
 use crate::mask::Masker;
@@ -30,7 +30,7 @@ pub struct Options {
 
 enum Value {
     Plain(String),
-    Reference(String),
+    Reference(ReferenceBuf),
     /// An inherited `stash://` value that doesn't parse. It's only an error if
     /// nothing overrides it, so one stray variable can't break every run.
     Invalid(String),
@@ -63,7 +63,7 @@ fn collect_env(env_files: &[PathBuf]) -> Result<BTreeMap<String, Value>> {
             let entry = match reference::parse(&value)
                 .with_context(|| format!("{}: {key}", path.display()))?
             {
-                Some(name) => Value::Reference(name.to_owned()),
+                Some(r) => Value::Reference(r.to_owned()),
                 None => Value::Plain(value),
             };
             vars.insert(key, entry);
@@ -86,28 +86,30 @@ pub fn run(opts: Options, unlock: impl FnOnce(&str) -> Result<Vault>) -> Result<
     let references: Vec<_> = vars
         .iter()
         .filter_map(|(key, value)| match value {
-            Value::Reference(name) => Some((key.as_str(), name.as_str())),
+            Value::Reference(r) => Some((key.as_str(), r)),
             Value::Plain(_) | Value::Invalid(_) => None,
         })
         .collect();
     if !references.is_empty() {
-        let names: Vec<&str> = references.iter().map(|(_, name)| *name).collect();
+        let described: Vec<String> = references.iter().map(|(_, r)| r.describe()).collect();
+        let names: Vec<&str> = described.iter().map(String::as_str).collect();
         let vault = unlock(&format!(
             "run {} with {}",
             program.to_string_lossy(),
             summarize(&names)
         ))?;
-        for (key, name) in references {
-            let secret = vault
-                .get(name)
+        let now = crate::unix_now();
+        for (key, r) in references {
+            let bytes = vault
+                .resolve(&r.as_ref(), now)
                 .with_context(|| format!("resolving {key}"))?;
-            let bytes = secret.expose_secret();
             if bytes.contains(&0) {
                 bail!(
-                    "resolving {key}: the value of `{name}` contains a NUL byte and can't be an environment variable"
+                    "resolving {key}: the value of `{}` contains a NUL byte and can't be an environment variable",
+                    r.describe()
                 );
             }
-            resolved.push((key, Zeroizing::new(bytes.to_vec())));
+            resolved.push((key, bytes));
         }
         // Drop the vault (and its keys) before the child runs.
         drop(vault);

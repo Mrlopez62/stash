@@ -27,9 +27,9 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
-use secrecy::ExposeSecret;
 use serde_json::{Value, json};
-use stash_core::{Vault, reference};
+use stash_core::Vault;
+use stash_core::reference::{self, ReferenceBuf};
 use zeroize::Zeroizing;
 
 use crate::mask::Masker;
@@ -188,7 +188,9 @@ impl Server {
                 "name": "run_with_secrets",
                 "title": "Run a command with secrets",
                 "description": "Run a command with secrets in its environment. Set env values to \
-                    \"stash://<name>\" to inject a secret; other values are passed as-is. The user \
+                    \"stash://<name>\" to inject an item's main value (a login's password), or \
+                    \"stash://<name>#<field>\" for one field, e.g. #username or #otp for the current \
+                    2FA code; other values are passed as-is. The user \
                     approves each call with Touch ID. Returns the exit code and stdout/stderr, with \
                     any injected secret value replaced by <concealed by stash>. No shell is used: \
                     pass [\"sh\", \"-c\", \"...\"] if you need one.",
@@ -375,8 +377,17 @@ impl Server {
     ) -> Result<Value, Refusal> {
         let request =
             RunRequest::parse(args).map_err(|e| Refusal::new("error", format!("{e:#}")))?;
-        let names: Vec<&str> = request.references.iter().map(|(_, n)| n.as_str()).collect();
-        event.secrets = names.iter().map(|n| n.to_string()).collect();
+        let names: Vec<&str> = request
+            .references
+            .iter()
+            .map(|(_, r)| r.name.as_str())
+            .collect();
+        let described: Vec<String> = request
+            .references
+            .iter()
+            .map(|(_, r)| r.describe())
+            .collect();
+        event.secrets = described.clone();
         event.command = Some(request.display.clone());
         self.check_allowed(&names)?;
 
@@ -385,15 +396,19 @@ impl Server {
             let purpose = format!(
                 "run `{}` with {}",
                 request.display,
-                crate::run::summarize(&names)
+                crate::run::summarize(&described.iter().map(String::as_str).collect::<Vec<_>>())
             );
             let (vault, approved) = self.vault(&purpose)?;
-            for (key, name) in &request.references {
-                let value = vault.get(name)?;
-                if value.expose_secret().contains(&0) {
-                    return Err(Refusal::new("error", format!("{name} contains a NUL byte")));
+            let now = crate::unix_now();
+            for (key, r) in &request.references {
+                let value = vault.resolve(&r.as_ref(), now)?;
+                if value.contains(&0) {
+                    return Err(Refusal::new(
+                        "error",
+                        format!("{} contains a NUL byte", r.describe()),
+                    ));
                 }
-                resolved.push((key.clone(), Zeroizing::new(value.expose_secret().to_vec())));
+                resolved.push((key.clone(), value));
             }
             self.approve(&purpose, approved)?;
         }
@@ -432,19 +447,18 @@ impl Server {
             .get("name")
             .and_then(Value::as_str)
             .ok_or_else(|| Refusal::new("error", "missing `name`"))?;
-        let name = reference::parse(name)
+        let r = reference::parse_arg(name)
             .map_err(|e| Refusal::new("error", e.to_string()))?
-            .unwrap_or(name)
             .to_owned();
-        stash_core::validate_name(&name)?;
-        event.secrets = vec![name.clone()];
-        self.check_allowed(&[&name])?;
+        let shown = r.describe();
+        event.secrets = vec![shown.clone()];
+        self.check_allowed(&[&r.name])?;
 
-        let purpose = format!("see the value of {name}");
+        let purpose = format!("see the value of {shown}");
         let (vault, approved) = self.vault(&purpose)?;
-        let value = vault.get(&name)?;
-        let text = String::from_utf8(value.expose_secret().to_vec())
-            .map_err(|_| Refusal::new("error", format!("{name} isn't text")))?;
+        let value = vault.resolve(&r.as_ref(), crate::unix_now())?;
+        let text = String::from_utf8(value.to_vec())
+            .map_err(|_| Refusal::new("error", format!("{shown} isn't text")))?;
         self.approve(&purpose, approved)?;
         Ok(json!({ "content": [{ "type": "text", "text": text }] }))
     }
@@ -503,7 +517,7 @@ fn glob(pattern: &str, name: &str) -> bool {
 struct RunRequest {
     argv: Vec<String>,
     plain: BTreeMap<String, String>,
-    references: Vec<(String, String)>,
+    references: Vec<(String, ReferenceBuf)>,
     cwd: Option<PathBuf>,
     timeout: Duration,
     /// For prompts and the audit log.
@@ -535,7 +549,7 @@ impl RunRequest {
                     bail!("invalid environment variable name `{key}`");
                 }
                 match reference::parse(value).with_context(|| format!("env `{key}`"))? {
-                    Some(name) => references.push((key.clone(), name.to_owned())),
+                    Some(r) => references.push((key.clone(), r.to_owned())),
                     None => {
                         plain.insert(key.clone(), value.to_owned());
                     }
@@ -732,10 +746,9 @@ mod tests {
             "timeout_seconds": 5000,
         }))
         .unwrap();
-        assert_eq!(
-            r.references,
-            [("TOKEN".to_owned(), "github/token".to_owned())]
-        );
+        assert_eq!(r.references.len(), 1);
+        assert_eq!(r.references[0].0, "TOKEN");
+        assert_eq!(r.references[0].1.describe(), "github/token");
         assert_eq!(r.plain.get("PORT").unwrap(), "3000");
         assert_eq!(r.timeout, MAX_TIMEOUT);
         assert_eq!(r.display, "npm run 'a b'");

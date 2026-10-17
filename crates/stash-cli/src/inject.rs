@@ -8,7 +8,6 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
-use secrecy::ExposeSecret;
 use stash_core::{Vault, reference};
 use zeroize::Zeroizing;
 
@@ -47,7 +46,11 @@ pub fn inject(opts: Options, unlock: impl FnOnce(&str) -> Result<Vault>) -> Resu
     if placeholders.is_empty() {
         rendered.extend_from_slice(template.as_bytes());
     } else {
-        let names: Vec<&str> = placeholders.iter().map(|p| p.name).collect();
+        let described: Vec<String> = placeholders
+            .iter()
+            .map(|p| p.reference.describe())
+            .collect();
+        let names: Vec<&str> = described.iter().map(String::as_str).collect();
         let target = opts
             .output
             .as_ref()
@@ -56,13 +59,14 @@ pub fn inject(opts: Options, unlock: impl FnOnce(&str) -> Result<Vault>) -> Resu
             "inject {} into {target}",
             crate::run::summarize(&names)
         ))?;
+        let now = crate::unix_now();
         let mut last = 0;
         for placeholder in &placeholders {
             let value = vault
-                .get(placeholder.name)
-                .with_context(|| format!("resolving {{{{ stash://{} }}}}", placeholder.name))?;
+                .resolve(&placeholder.reference, now)
+                .with_context(|| format!("resolving {{{{ {} }}}}", placeholder.reference))?;
             rendered.extend_from_slice(&template.as_bytes()[last..placeholder.span.start]);
-            rendered.extend_from_slice(value.expose_secret());
+            rendered.extend_from_slice(&value);
             last = placeholder.span.end;
         }
         rendered.extend_from_slice(&template.as_bytes()[last..]);
