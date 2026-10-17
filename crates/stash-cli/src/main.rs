@@ -1,7 +1,9 @@
 mod agent;
+mod audit;
 mod envfile;
 mod inject;
 mod mask;
+mod mcp;
 mod procinfo;
 mod run;
 mod touchid;
@@ -94,6 +96,33 @@ enum Command {
         /// Overwrite the output file if it exists
         #[arg(long, short)]
         force: bool,
+    },
+    /// Serve MCP over stdio, so AI agents can use secrets without seeing them
+    ///
+    /// Agents can list secret names and run commands with secrets injected.
+    /// Each run (and each reveal, if allowed) needs your Touch ID approval,
+    /// and the prompt names the exact command and secrets. Every request is
+    /// written to the audit log (`stash audit`).
+    #[command(
+        after_help = "Add to Claude Code:\n  claude mcp add stash -- stash mcp --allow 'github/*'"
+    )]
+    Mcp {
+        /// Only let agents use secrets matching this pattern (`*` matches anything;
+        /// repeatable) [default: all secrets]
+        #[arg(long, value_name = "PATTERN")]
+        allow: Vec<String>,
+        /// Offer the request_secret tool, which returns raw values to the agent
+        #[arg(long)]
+        allow_reveal: bool,
+        /// Don't ask for Touch ID per request (headless use with STASH_PASSWORD only)
+        #[arg(long)]
+        no_approval: bool,
+    },
+    /// Show recent AI-agent requests from the audit log
+    Audit {
+        /// How many entries to show
+        #[arg(long, short = 'n', default_value_t = 20)]
+        limit: usize,
     },
     /// End the unlocked session, so the next command asks again
     Lock,
@@ -211,6 +240,34 @@ fn run(cli: Cli) -> Result<ExitCode> {
                 force,
             };
             inject::inject(opts, |purpose| unlock(&path, purpose))?;
+        }
+        Command::Mcp {
+            allow,
+            allow_reveal,
+            no_approval,
+        } => {
+            for pattern in &allow {
+                if pattern.is_empty() {
+                    bail!("--allow patterns can't be empty");
+                }
+            }
+            let opts = mcp::Options {
+                allow,
+                allow_reveal,
+                no_approval,
+                idle_timeout: session_timeout()?.unwrap_or(Duration::ZERO),
+            };
+            mcp::serve(path, opts)?;
+        }
+        Command::Audit { limit } => {
+            let events = audit::recent(&audit::path_for(&path), limit)?;
+            if events.is_empty() {
+                eprintln!("No AI-agent requests recorded yet.");
+            }
+            let mut out = io::stdout().lock();
+            for event in &events {
+                writeln!(out, "{}", audit::describe(event))?;
+            }
         }
         Command::Lock => {
             if agent::lock(&agent::default_socket()?) {
