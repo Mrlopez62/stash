@@ -2,6 +2,20 @@
 
 All notable changes to stash. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/) (pre-1.0: minor versions may change behavior).
 
+## [0.7.1] - 2026-10-17
+
+### Changed
+- **A redesigned Mac app.** It was rebuilt in the style of 1Password's app and reviewed twice by an independent UI-design agent.
+  - **Layout:** a sidebar with sections and counts (kinds, two-factor, and folders), a page title with one primary action, and a card holding a dense item table.
+  - **Table:** columns adapt to the window width and always leave room for names. Copy buttons appear on hover.
+  - **Inspector:** the selected item opens in a panel beside the table.
+  - **Editor:** rebuilt from the app's own components.
+- **Brand look throughout.** The app follows the system light or dark appearance, in the brand palette. It bundles JetBrains Mono and IBM Plex Sans (OFL), and keeps amber for the primary action, the selection, secrets, and 2FA timers.
+- **Quick Access.** Keycap hints, ⌥↩ to copy a 2FA code, and a no-results state.
+
+### Fixed
+- **Password generator** text was unreadable in light mode.
+
 ## [0.7.0] - 2026-10-17
 
 ### Added
@@ -67,6 +81,7 @@ Security and correctness fixes for 0.6.0, found by an independent security revie
 ### Added
 - **The first release:** an encrypted vault (Argon2id + XChaCha20-Poly1305) and the `init`, `add`, `get`, `ls`, and `rm` commands.
 
+[0.7.1]: https://github.com/Mrlopez62/stash/pull/11
 [0.7.0]: https://github.com/Mrlopez62/stash/pull/10
 [0.6.1]: https://github.com/Mrlopez62/stash/pull/9
 [0.6.0]: https://github.com/Mrlopez62/stash/pull/8
