@@ -5,6 +5,7 @@
 pub mod crypto;
 mod error;
 mod name;
+pub mod reference;
 mod vault;
 
 pub use crypto::KdfParams;
