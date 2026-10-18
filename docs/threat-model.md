@@ -16,6 +16,7 @@ The vault is a single SQLite file, `~/.stash/vault.db` by default.
 | Vault key | 32 random bytes from the operating system's random number generator, encrypted with the KEK using **XChaCha20-Poly1305**. The encryption is bound to the format version, the KDF parameters, and the salt, so none of them can be changed without being detected. |
 | Item names | Never stored in plaintext. Each row's id is `HMAC-SHA256(index_key, name)`, where `index_key` is derived from the vault key. The name is also encrypted along with the value. |
 | Item contents | Encrypted together with the name using XChaCha20-Poly1305 and the vault key. Each one gets a fresh random 24-byte nonce, and the row id is bound into the encryption, so an encrypted value can't be moved to a different row. |
+| Payment cards and bank accounts | They're stored like logins, encrypted per item. Lists, the app's item view, and `show` expose only the brand and last four digits. Numbers are validated and normalized on every save, so a typo can't be stored by any client. |
 | Logins and notes | Their fields (usernames, URLs, passwords, 2FA secrets, notes, timestamps) are JSON *inside* the same per-item encryption, so a copied vault doesn't reveal usernames or websites. Encrypted sizes are visible, and logins and notes are noticeably larger than plain secrets, so an item's size can hint at its kind. |
 | Deleted secrets | SQLite's `secure_delete` setting overwrites freed pages with zeros. |
 | File permissions | The vault file is created with mode `0600`, and new parent directories with `0700`. |
@@ -151,6 +152,7 @@ AI agents talk to `stash mcp` over stdio. The design assumes the agent may be co
 |---|---|---|
 | A prompt-injected agent quietly using secrets | ✅ | Every use needs a fingerprint, on a dialog that shows the command and secrets. |
 | An agent reading values from a command's output | Partial | Exact matches are masked. A command written to *transform* the secret (base64, reversing it) can leak it in that form, so read the command in the prompt before approving. |
+| An agent using payment cards or bank accounts | ✅ | Refused unless the server is started with `--allow-payments`. They're also left out of `list_secrets`, and the refusal comes before any approval prompt, so you're never asked to approve a payment use you didn't expect. |
 | An agent using secrets it shouldn't need | ✅ | `--allow` patterns. They work per **item**: allowing `github` also allows `github#notes`, custom fields, and live `#otp` codes. Keep 2FA and sensitive notes in separate items if an agent shouldn't reach them. |
 | An agent reading the vault through its own shell | ✅ | Its shell commands have no session (see sessions above), and any `stash` call they make shows its own prompt naming the process chain. |
 | Approving a request without reading it | ❌ | The prompt can only inform you. Check the command, especially `sh -c` scripts. |

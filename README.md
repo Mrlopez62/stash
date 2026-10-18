@@ -14,7 +14,7 @@
 
 A free, developer-first secrets manager for macOS. Unlock with Touch ID, pass API tokens into commands safely, and let AI agents use your secrets without ever seeing them.
 
-> **Status: early development (v0.7).** The **stash Mac app** (menu bar, Quick Access, vault browser and editor) and the full CLI work today: the encrypted vault, logins and notes, the password generator, Touch ID, sessions scoped to your shell, `stash://` references, `stash run`, `stash inject`, the MCP server for AI agents, clipboard copy, and 2FA codes. Don't trust it with production secrets until it has been reviewed.
+> **Status: early development (v0.8).** The **stash Mac app** (menu bar, Quick Access, vault browser and editor) and the full CLI work today: the encrypted vault, logins, notes, **payment cards and bank accounts**, the password generator, Touch ID, sessions scoped to your shell, `stash://` references, `stash run`, `stash inject`, the MCP server for AI agents, clipboard copy, and 2FA codes. Don't trust it with production secrets until it has been reviewed.
 
 ## The Mac app
 
@@ -149,6 +149,20 @@ If any reference is missing, nothing is written. Existing files are only overwri
 
 `stash get` also accepts a reference: `stash get stash://github/token`.
 
+### Payment cards and bank accounts
+
+```sh
+stash add cards/visa --card --cardholder "J Lopez" --expiry 08/27   # asks for the number and security code
+stash add banks/chase --bank --bank-name Chase --routing 021000021 --account-type checking
+stash get cards/visa            # the card number
+stash get cards/visa#cvv        # also #expiry, #name, #zip
+stash ls --long                 # "Visa •••• 4242 · 08/27"
+```
+
+- **Typos are caught before they're saved.** Card numbers must pass their Luhn checksum and match the brand's length, and expiry must be a real MM/YY. Routing numbers are checked with the ABA checksum and IBANs with mod-97.
+- **Last four only in lists.** `show`, `ls --long`, and the app show just the last four digits until you reveal. In the app, a card gets a card face.
+- **Off-limits to AI agents by default.** `stash mcp` won't list or use cards and bank accounts unless you start it with `--allow-payments`. Blocked attempts go in the audit log.
+
 ### Logins, notes, and passwords
 
 Items come in three kinds: a single **secret** (an API token), a **login** (username, password, website, optional 2FA), or a **note**.
@@ -218,6 +232,7 @@ claude mcp add stash -- stash mcp --allow 'github/*' --allow 'openai/*'
 |---|---|
 | `--allow <pattern>` | Only let agents touch matching items (`*` matches anything, repeatable). Anything else is refused before any prompt. An allowed login's fields are all reachable (`#username`, `#notes`, `#otp`), so keep anything an agent shouldn't see in a separate item |
 | `--allow-reveal` | Offer `request_secret`. Off by default; prefer `run_with_secrets` |
+| `--allow-payments` | Let agents use payment cards and bank accounts. Off by default; most agents never need them |
 | `--no-approval` | Skip the Touch ID approvals. Only for headless setups that use `STASH_PASSWORD` |
 
 More safeguards:
@@ -257,9 +272,12 @@ Rust handles everything that is security-critical and cross-platform. The Swift 
 | v0.5 ✅ | `stash get --copy` with a self-clearing clipboard, 2FA (TOTP) codes |
 | v0.6 ✅ | 1Password-style items: logins with username, password, URL, 2FA, and notes; `#field` references; password generator |
 | v0.7 ✅ | **The stash Mac app:** menu bar, Quick Access (⇧⌘Space), vault browser and editor, Touch ID, concealed clipboard. Ships the CLI and helpers inside `stash.app` |
-| v0.7.x | Bundled JetBrains Mono / IBM Plex fonts, a configurable Quick Access shortcut, launch at login, a signed and notarized download |
-| v0.8 | SSH agent, git commit signing |
-| Later | Encrypted sync (iCloud Drive or Git), browser extension, Linux support |
+| v0.7.1 ✅ | 1Password-style redesign, bundled brand fonts, 2FA QR scanning and authenticator QR export |
+| v0.8 ✅ | **Payment cards** (card face, brand and checksum validation) and **bank accounts** (routing and IBAN validation), kept away from AI agents by default |
+| v0.9 | SSH agent, git commit signing |
+| v0.10 | **Browser autofill for logins and payments**: Chrome and Firefox first, then Safari. See the [design](docs/design/autofill.md) |
+| v0.x | A configurable Quick Access shortcut, launch at login, a signed and notarized download |
+| Later | Encrypted sync (iCloud Drive or Git), Linux support |
 
 ## How it compares
 
