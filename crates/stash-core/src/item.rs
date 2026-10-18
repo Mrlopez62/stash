@@ -4,6 +4,8 @@
 //!   in the original encoding so any bytes work.
 //! - **login**: username, password, website, optional 2FA, notes.
 //! - **note**: free text.
+//! - **card**: a payment card (number, expiry, security code, PIN).
+//! - **bank**: a bank account (routing and account numbers, IBAN, SWIFT).
 //!
 //! An item is an ordered list of labeled fields, each with a type that says
 //! how to treat it (concealed fields are hidden by default, `otp` fields
@@ -15,12 +17,23 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroize;
 
+use crate::{Error, payment};
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Kind {
     Secret,
     Login,
     Note,
+    Card,
+    Bank,
+}
+
+impl Kind {
+    /// Cards and bank accounts: kept away from AI agents unless allowed.
+    pub fn is_payment(self) -> bool {
+        matches!(self, Kind::Card | Kind::Bank)
+    }
 }
 
 impl fmt::Display for Kind {
@@ -29,6 +42,8 @@ impl fmt::Display for Kind {
             Kind::Secret => "secret",
             Kind::Login => "login",
             Kind::Note => "note",
+            Kind::Card => "card",
+            Kind::Bank => "bank",
         })
     }
 }
@@ -131,6 +146,43 @@ pub const USERNAME: &str = "username";
 pub const PASSWORD: &str = "password";
 pub const WEBSITE: &str = "website";
 pub const ONE_TIME_PASSWORD: &str = "one-time password";
+pub const CARDHOLDER: &str = "cardholder";
+pub const CARD_NUMBER: &str = "number";
+pub const EXPIRY: &str = "expiry";
+pub const CVV: &str = "cvv";
+pub const PIN: &str = "pin";
+pub const BILLING_ZIP: &str = "billing zip";
+pub const BANK_NAME: &str = "bank";
+pub const ACCOUNT_HOLDER: &str = "account holder";
+pub const ACCOUNT_TYPE: &str = "account type";
+pub const ROUTING_NUMBER: &str = "routing number";
+pub const ACCOUNT_NUMBER: &str = "account number";
+pub const IBAN: &str = "iban";
+pub const SWIFT: &str = "swift";
+
+/// The parts of a payment card, as entered.
+#[derive(Default)]
+pub struct CardDetails<'a> {
+    pub cardholder: Option<&'a str>,
+    pub number: &'a str,
+    pub expiry: Option<&'a str>,
+    pub cvv: Option<&'a str>,
+    pub pin: Option<&'a str>,
+    pub billing_zip: Option<&'a str>,
+}
+
+/// The parts of a bank account, as entered.
+#[derive(Default)]
+pub struct BankDetails<'a> {
+    pub bank: Option<&'a str>,
+    pub holder: Option<&'a str>,
+    pub account_type: Option<&'a str>,
+    pub routing: Option<&'a str>,
+    pub account_number: Option<&'a str>,
+    pub iban: Option<&'a str>,
+    pub swift: Option<&'a str>,
+    pub pin: Option<&'a str>,
+}
 
 impl Item {
     pub fn secret(value: impl Into<String>) -> Self {
@@ -155,6 +207,169 @@ impl Item {
             fields.push(Field::new(WEBSITE, FieldKind::Url, url));
         }
         Self::with(Kind::Login, fields)
+    }
+
+    /// A payment card, validated and normalized: digits-only number,
+    /// expiry as MM/YY.
+    pub fn card(c: &CardDetails<'_>) -> Result<Self, Error> {
+        let mut fields = Vec::new();
+        let mut push = |label: &str, kind: FieldKind, value: Option<&str>| {
+            if let Some(v) = value.map(str::trim).filter(|v| !v.is_empty()) {
+                fields.push(Field::new(label, kind, v));
+            }
+        };
+        push(CARDHOLDER, FieldKind::Text, c.cardholder);
+        let number = payment::digits(c.number);
+        push(CARD_NUMBER, FieldKind::Concealed, Some(&number));
+        let expiry = c
+            .expiry
+            .map(payment::parse_expiry)
+            .transpose()?
+            .map(|(m, y)| payment::format_expiry(m, y));
+        push(EXPIRY, FieldKind::Text, expiry.as_deref());
+        push(CVV, FieldKind::Concealed, c.cvv);
+        push(PIN, FieldKind::Concealed, c.pin);
+        push(BILLING_ZIP, FieldKind::Text, c.billing_zip);
+        let item = Self::with(Kind::Card, fields);
+        item.validate()?;
+        Ok(item)
+    }
+
+    /// A bank account, validated: routing checksum and IBAN mod-97.
+    pub fn bank(b: &BankDetails<'_>) -> Result<Self, Error> {
+        let mut fields = Vec::new();
+        let mut push = |label: &str, kind: FieldKind, value: Option<&str>| {
+            if let Some(v) = value.map(str::trim).filter(|v| !v.is_empty()) {
+                fields.push(Field::new(label, kind, v));
+            }
+        };
+        push(BANK_NAME, FieldKind::Text, b.bank);
+        push(ACCOUNT_HOLDER, FieldKind::Text, b.holder);
+        push(ACCOUNT_TYPE, FieldKind::Text, b.account_type);
+        push(
+            ROUTING_NUMBER,
+            FieldKind::Text,
+            b.routing.map(payment::digits).as_deref(),
+        );
+        push(ACCOUNT_NUMBER, FieldKind::Concealed, b.account_number);
+        let iban = b.iban.map(|i| {
+            i.chars()
+                .filter(|c| !c.is_whitespace())
+                .collect::<String>()
+                .to_uppercase()
+        });
+        push(IBAN, FieldKind::Concealed, iban.as_deref());
+        push(
+            SWIFT,
+            FieldKind::Text,
+            b.swift.map(str::to_uppercase).as_deref(),
+        );
+        push(PIN, FieldKind::Concealed, b.pin);
+        let item = Self::with(Kind::Bank, fields);
+        item.validate()?;
+        Ok(item)
+    }
+
+    /// Put payment fields in their canonical form (digits-only card and
+    /// routing numbers, MM/YY expiry, compact uppercase IBAN). Done on every
+    /// save, so edits from any client end up the same as new items.
+    pub fn normalize(&mut self) {
+        if !self.kind.is_payment() {
+            return;
+        }
+        for field in &mut self.fields {
+            let normalized = match field.label.as_str() {
+                CARD_NUMBER | ROUTING_NUMBER => Some(payment::digits(&field.value)),
+                EXPIRY => payment::parse_expiry(&field.value)
+                    .ok()
+                    .map(|(m, y)| payment::format_expiry(m, y)),
+                IBAN => Some(
+                    field
+                        .value
+                        .chars()
+                        .filter(|c| !c.is_whitespace())
+                        .collect::<String>()
+                        .to_uppercase(),
+                ),
+                SWIFT => Some(field.value.trim().to_uppercase()),
+                _ => None,
+            };
+            if let Some(v) = normalized.filter(|v| *v != field.value) {
+                field.value.zeroize();
+                field.value = v;
+            }
+        }
+    }
+
+    /// Check a card's or bank account's fields. Other kinds always pass.
+    pub fn validate(&self) -> Result<(), Error> {
+        let value = |label: &str| self.labeled(label).map(|f| f.value.as_str());
+        match self.kind {
+            Kind::Card => {
+                let number = value(CARD_NUMBER)
+                    .ok_or_else(|| Error::InvalidPayment("a card needs its number".into()))?;
+                let brand = payment::validate_card_number(number)?;
+                if let Some(expiry) = value(EXPIRY) {
+                    payment::parse_expiry(expiry)?;
+                }
+                if let Some(cvv) = value(CVV) {
+                    payment::validate_cvv(cvv, brand)?;
+                }
+                Ok(())
+            }
+            Kind::Bank => {
+                if value(ACCOUNT_NUMBER).is_none() && value(IBAN).is_none() {
+                    return Err(Error::InvalidPayment(
+                        "a bank account needs an account number or an IBAN".into(),
+                    ));
+                }
+                if let Some(routing) = value(ROUTING_NUMBER) {
+                    payment::validate_routing(routing)?;
+                }
+                if let Some(iban) = value(IBAN) {
+                    payment::validate_iban(iban)?;
+                }
+                Ok(())
+            }
+            _ => Ok(()),
+        }
+    }
+
+    /// A one-line description with nothing sensitive in it, for lists:
+    /// "Visa •••• 4242 · 08/27", "Chase · Checking •••• 6789".
+    pub fn subtitle(&self) -> Option<String> {
+        let value = |label: &str| self.labeled(label).map(|f| f.value.as_str());
+        match self.kind {
+            Kind::Card => {
+                let number = value(CARD_NUMBER)?;
+                let mut s = format!(
+                    "{} •••• {}",
+                    payment::brand(number).name(),
+                    payment::last4(number)
+                );
+                if let Some(expiry) = value(EXPIRY) {
+                    s.push_str(&format!(" · {expiry}"));
+                }
+                Some(s)
+            }
+            Kind::Bank => {
+                let tail = value(ACCOUNT_NUMBER).or(value(IBAN)).map(payment::last4);
+                let parts: Vec<String> = [
+                    value(BANK_NAME).map(str::to_owned),
+                    match (value(ACCOUNT_TYPE), tail) {
+                        (Some(t), Some(l)) => Some(format!("{} •••• {l}", capitalize(t))),
+                        (None, Some(l)) => Some(format!("•••• {l}")),
+                        (Some(t), None) => Some(capitalize(t)),
+                        (None, None) => None,
+                    },
+                ]
+                .into_iter()
+                .flatten()
+                .collect();
+                (!parts.is_empty()).then(|| parts.join(" · "))
+            }
+            _ => None,
+        }
     }
 
     pub fn note(text: impl Into<String>) -> Self {
@@ -183,6 +398,11 @@ impl Item {
                 .or_else(|| self.fields.iter().find(|f| f.kind == FieldKind::Concealed))
                 .map(|f| f.value.as_str()),
             Kind::Secret => self.fields.first().map(|f| f.value.as_str()),
+            Kind::Card => self.labeled(CARD_NUMBER).map(|f| f.value.as_str()),
+            Kind::Bank => self
+                .labeled(ACCOUNT_NUMBER)
+                .or_else(|| self.labeled(IBAN))
+                .map(|f| f.value.as_str()),
         }
     }
 
@@ -198,6 +418,21 @@ impl Item {
             return Some(value_of(f));
         }
         let by_kind = |pred: fn(&Field) -> bool| self.fields.iter().find(|f| pred(f)).map(value_of);
+        // Common names for payment fields.
+        let alias = match wanted.as_str() {
+            "cardnumber" | "card" | "pan" => Some(CARD_NUMBER),
+            "cvc" | "csc" | "securitycode" | "cvv2" => Some(CVV),
+            "exp" | "expiration" | "expirationdate" | "expires" => Some(EXPIRY),
+            "name" | "nameoncard" | "holder" if self.kind == Kind::Card => Some(CARDHOLDER),
+            "zip" | "postcode" | "postalcode" => Some(BILLING_ZIP),
+            "account" | "accountno" => Some(ACCOUNT_NUMBER),
+            "routing" | "aba" | "routingno" => Some(ROUTING_NUMBER),
+            "bic" | "swiftcode" => Some(SWIFT),
+            _ => None,
+        };
+        if let Some(f) = alias.and_then(|label| self.labeled(label)) {
+            return Some(value_of(f));
+        }
         match wanted.as_str() {
             "password" => by_kind(|f| f.kind == FieldKind::Concealed),
             "username" | "user" | "email" => {
@@ -251,6 +486,12 @@ impl Item {
     pub fn has_otp(&self) -> bool {
         self.fields.iter().any(|f| f.kind == FieldKind::Otp)
     }
+}
+
+fn capitalize(s: &str) -> String {
+    let mut c = s.chars();
+    c.next()
+        .map_or_else(String::new, |f| f.to_uppercase().chain(c).collect())
 }
 
 fn value_of(f: &Field) -> FieldValue<'_> {
@@ -338,5 +579,108 @@ mod tests {
         let back: Item = serde_json::from_str(&json).unwrap();
         assert_eq!(back, item);
         assert!(json.contains(r#""kind":"login""#));
+    }
+
+    fn visa() -> Item {
+        Item::card(&CardDetails {
+            cardholder: Some("J Lopez"),
+            number: "4242 4242 4242 4242",
+            expiry: Some("8/2027"),
+            cvv: Some("123"),
+            ..Default::default()
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn cards_are_normalized_and_summarized_safely() {
+        let card = visa();
+        assert_eq!(card.primary(), Some("4242424242424242"));
+        assert_eq!(card.labeled(EXPIRY).unwrap().value, "08/27");
+        assert_eq!(card.subtitle().as_deref(), Some("Visa •••• 4242 · 08/27"));
+        let plain = |s: &str| match card.field(s) {
+            Some(FieldValue::Plain(v)) => v.to_owned(),
+            _ => panic!("{s}"),
+        };
+        assert_eq!(plain("cvc"), "123");
+        assert_eq!(plain("expiration"), "08/27");
+        assert_eq!(plain("card number"), "4242424242424242");
+        assert_eq!(plain("name"), "J Lopez");
+        assert!(!format!("{card:?}").contains("4242424242424242"));
+    }
+
+    #[test]
+    fn bad_cards_are_refused() {
+        let base = || CardDetails {
+            number: "4242424242424242",
+            ..Default::default()
+        };
+        assert!(
+            Item::card(&CardDetails {
+                number: "4242424242424241",
+                ..base()
+            })
+            .is_err()
+        );
+        assert!(
+            Item::card(&CardDetails {
+                expiry: Some("13/27"),
+                ..base()
+            })
+            .is_err()
+        );
+        assert!(
+            Item::card(&CardDetails {
+                cvv: Some("12"),
+                ..base()
+            })
+            .is_err()
+        );
+        assert!(Item::card(&base()).is_ok(), "expiry and cvv are optional");
+    }
+
+    #[test]
+    fn bank_accounts_validate_and_summarize() {
+        let us = Item::bank(&BankDetails {
+            bank: Some("Chase"),
+            account_type: Some("checking"),
+            routing: Some("021000021"),
+            account_number: Some("000123456789"),
+            ..Default::default()
+        })
+        .unwrap();
+        assert_eq!(us.primary(), Some("000123456789"));
+        assert_eq!(us.subtitle().as_deref(), Some("Chase · Checking •••• 6789"));
+
+        let eu = Item::bank(&BankDetails {
+            iban: Some("gb82 west 1234 5698 7654 32"),
+            ..Default::default()
+        })
+        .unwrap();
+        assert_eq!(eu.primary(), Some("GB82WEST12345698765432"));
+        assert_eq!(eu.subtitle().as_deref(), Some("•••• 5432"));
+
+        assert!(
+            Item::bank(&BankDetails {
+                bank: Some("Chase"),
+                ..Default::default()
+            })
+            .is_err()
+        );
+        assert!(
+            Item::bank(&BankDetails {
+                routing: Some("021000022"),
+                account_number: Some("1"),
+                ..Default::default()
+            })
+            .is_err()
+        );
+        assert!(
+            Item::bank(&BankDetails {
+                iban: Some("GB82WEST12345698765433"),
+                ..Default::default()
+            })
+            .is_err()
+        );
     }
 }

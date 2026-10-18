@@ -8,6 +8,7 @@ pub mod generate;
 pub mod item;
 mod name;
 pub mod otp;
+pub mod payment;
 pub mod reference;
 mod vault;
 

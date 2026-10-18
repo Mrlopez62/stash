@@ -50,6 +50,9 @@ pub struct Summary {
     pub url: Option<String>,
     pub has_otp: bool,
     pub updated: u64,
+    /// For cards and bank accounts: "Visa •••• 4242 · 08/27". Never more
+    /// than the last four digits.
+    pub subtitle: Option<String>,
 }
 
 const SCHEMA: &str = "
@@ -255,6 +258,11 @@ impl Vault {
     /// otherwise). `updated` is set to now, and `created` too if it's 0.
     pub fn put(&mut self, name: &str, item: &Item, overwrite: bool) -> Result<()> {
         validate_name(name)?;
+        // Normalized and checked here, not just in each client, so any edit
+        // is caught.
+        let mut item = item.clone();
+        item.normalize();
+        item.validate()?;
         let plain_secret =
             item.kind == Kind::Secret && item.fields.len() == 1 && item.notes.is_empty();
         if plain_secret {
@@ -265,7 +273,6 @@ impl Vault {
             return Err(self.upgrade_error());
         }
         let now = unix_now();
-        let mut item = item.clone();
         item.updated = now;
         if item.created == 0 {
             item.created = now;
@@ -404,6 +411,7 @@ impl Vault {
                     url: None,
                     has_otp: false,
                     updated: 0,
+                    subtitle: None,
                 },
                 Some(item) => Summary {
                     name,
@@ -412,6 +420,7 @@ impl Vault {
                     url: item.url().map(str::to_owned),
                     has_otp: item.has_otp(),
                     updated: item.updated,
+                    subtitle: item.subtitle(),
                 },
             });
         }
@@ -1050,5 +1059,53 @@ mod tests {
         for needle in [&b"octocat"[..], b"hunter2!", b"login", b"JBSWY3DP"] {
             assert!(!raw.windows(needle.len()).any(|w| w == needle));
         }
+    }
+
+    #[test]
+    fn cards_are_validated_on_every_save_and_summarized_safely() {
+        let (_dir, path, mut vault) = new_vault();
+        let card = Item::card(&crate::item::CardDetails {
+            number: "5555 5555 5555 4444",
+            expiry: Some("01/30"),
+            cvv: Some("321"),
+            ..Default::default()
+        })
+        .unwrap();
+        vault.put("cards/work", &card, false).unwrap();
+        let s = &vault.summaries().unwrap()[0];
+        assert_eq!(s.kind, Kind::Card);
+        assert_eq!(s.subtitle.as_deref(), Some("Mastercard •••• 4444 · 01/30"));
+        assert_eq!(value(&vault, "cards/work"), b"5555555555554444");
+
+        // Edits are normalized like new items...
+        let mut spaced = vault.item("cards/work").unwrap();
+        spaced.set(
+            crate::item::CARD_NUMBER,
+            crate::FieldKind::Concealed,
+            "4242 4242 4242 4242",
+        );
+        spaced.set(crate::item::EXPIRY, crate::FieldKind::Text, "3/2031");
+        vault.put("cards/work", &spaced, true).unwrap();
+        let saved = vault.item("cards/work").unwrap();
+        assert_eq!(saved.primary(), Some("4242424242424242"));
+        assert_eq!(saved.labeled(crate::item::EXPIRY).unwrap().value, "03/31");
+
+        // ...and an edit that breaks the number is refused, whoever makes it.
+        let mut broken = vault.item("cards/work").unwrap();
+        broken.set(
+            crate::item::CARD_NUMBER,
+            crate::FieldKind::Concealed,
+            "5555555555554445",
+        );
+        assert!(matches!(
+            vault.put("cards/work", &broken, true),
+            Err(Error::InvalidPayment(_))
+        ));
+        drop(vault);
+        let raw = fs::read(&path).unwrap();
+        assert!(
+            !raw.windows(16).any(|w| w == b"5555555555554444"),
+            "card numbers are encrypted"
+        );
     }
 }
