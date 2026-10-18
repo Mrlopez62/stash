@@ -6,6 +6,7 @@
 //! - **note**: free text.
 //! - **card**: a payment card (number, expiry, security code, PIN).
 //! - **bank**: a bank account (routing and account numbers, IBAN, SWIFT).
+//! - **ssh**: an Ed25519 SSH key, for the SSH agent and git signing.
 //!
 //! An item is an ordered list of labeled fields, each with a type that says
 //! how to treat it (concealed fields are hidden by default, `otp` fields
@@ -17,7 +18,7 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroize;
 
-use crate::{Error, payment};
+use crate::{Error, payment, ssh};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -27,6 +28,7 @@ pub enum Kind {
     Note,
     Card,
     Bank,
+    Ssh,
 }
 
 impl Kind {
@@ -44,6 +46,7 @@ impl fmt::Display for Kind {
             Kind::Note => "note",
             Kind::Card => "card",
             Kind::Bank => "bank",
+            Kind::Ssh => "ssh",
         })
     }
 }
@@ -159,6 +162,9 @@ pub const ROUTING_NUMBER: &str = "routing number";
 pub const ACCOUNT_NUMBER: &str = "account number";
 pub const IBAN: &str = "iban";
 pub const SWIFT: &str = "swift";
+pub const PRIVATE_KEY: &str = "private key";
+pub const PUBLIC_KEY: &str = "public key";
+pub const FINGERPRINT: &str = "fingerprint";
 
 /// The parts of a payment card, as entered.
 #[derive(Default)]
@@ -270,10 +276,37 @@ impl Item {
         Ok(item)
     }
 
+    /// An SSH key item. Its public key and fingerprint are derived from the
+    /// private key (on every save, too), so they can't disagree.
+    pub fn ssh_key(pair: &ssh::KeyPair) -> Self {
+        let mut item = Self::with(
+            Kind::Ssh,
+            vec![Field::new(
+                PRIVATE_KEY,
+                FieldKind::Concealed,
+                pair.to_openssh().as_str(),
+            )],
+        );
+        item.normalize();
+        item
+    }
+
+    /// The key pair in an SSH key item.
+    pub fn ssh_key_pair(&self) -> Result<ssh::KeyPair, Error> {
+        let text = self
+            .labeled(PRIVATE_KEY)
+            .ok_or_else(|| Error::InvalidSshKey("an SSH key item needs its private key".into()))?;
+        ssh::KeyPair::from_openssh(&text.value, None)
+    }
+
     /// Put payment fields in their canonical form (digits-only card and
     /// routing numbers, MM/YY expiry, compact uppercase IBAN). Done on every
     /// save, so edits from any client end up the same as new items.
     pub fn normalize(&mut self) {
+        if self.kind == Kind::Ssh {
+            self.derive_ssh_fields();
+            return;
+        }
         if !self.kind.is_payment() {
             return;
         }
@@ -301,7 +334,27 @@ impl Item {
         }
     }
 
-    /// Check a card's or bank account's fields. Other kinds always pass.
+    fn derive_ssh_fields(&mut self) {
+        let Ok(pair) = self.ssh_key_pair() else {
+            return;
+        };
+        let derived = [
+            (PUBLIC_KEY, pair.public_line()),
+            (FINGERPRINT, pair.fingerprint()),
+        ];
+        for (label, value) in derived {
+            match self.fields.iter_mut().find(|f| f.label == label) {
+                Some(f) => {
+                    f.kind = FieldKind::Text;
+                    f.value = value;
+                }
+                None => self.fields.push(Field::new(label, FieldKind::Text, value)),
+            }
+        }
+    }
+
+    /// Check a card's, bank account's, or SSH key's fields. Other kinds
+    /// always pass.
     pub fn validate(&self) -> Result<(), Error> {
         let value = |label: &str| self.labeled(label).map(|f| f.value.as_str());
         match self.kind {
@@ -331,6 +384,7 @@ impl Item {
                 }
                 Ok(())
             }
+            Kind::Ssh => self.ssh_key_pair().map(|_| ()),
             _ => Ok(()),
         }
     }
@@ -368,6 +422,10 @@ impl Item {
                 .collect();
                 (!parts.is_empty()).then(|| parts.join(" · "))
             }
+            Kind::Ssh => {
+                let fp = value(FINGERPRINT)?;
+                Some(format!("Ed25519 · {}…", &fp[..fp.len().min(19)]))
+            }
             _ => None,
         }
     }
@@ -403,6 +461,7 @@ impl Item {
                 .labeled(ACCOUNT_NUMBER)
                 .or_else(|| self.labeled(IBAN))
                 .map(|f| f.value.as_str()),
+            Kind::Ssh => self.labeled(PRIVATE_KEY).map(|f| f.value.as_str()),
         }
     }
 
@@ -682,5 +741,27 @@ mod tests {
             })
             .is_err()
         );
+    }
+
+    #[test]
+    fn ssh_keys_derive_their_public_halves() {
+        let pair = crate::ssh::KeyPair::generate("me@laptop").unwrap();
+        let mut item = Item::ssh_key(&pair);
+        assert_eq!(item.kind, Kind::Ssh);
+        let public = |item: &Item| item.labeled(PUBLIC_KEY).unwrap().value.clone();
+        assert_eq!(public(&item), pair.public_line());
+        assert!(item.labeled(PRIVATE_KEY).unwrap().kind.is_sensitive());
+        assert!(item.subtitle().unwrap().starts_with("Ed25519 · SHA256:"));
+        // A tampered public key is put back on save.
+        item.fields
+            .iter_mut()
+            .find(|f| f.label == PUBLIC_KEY)
+            .unwrap()
+            .value = "ssh-ed25519 AAAAforged".into();
+        item.normalize();
+        assert_eq!(public(&item), pair.public_line());
+        assert!(item.validate().is_ok());
+        item.fields[0].value = "not a key".into();
+        assert!(item.validate().is_err());
     }
 }
