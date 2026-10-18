@@ -198,6 +198,13 @@ final class AppModel: ObservableObject {
         return code
     }
 
+    func otpLink() async -> OTPLink? {
+        guard let name = detail?.name else { return nil }
+        var link: OTPLink?
+        await run { link = try await backend?.otpLink(name) }
+        return link
+    }
+
     func copySecret(_ field: String, label: String) async {
         guard let value = await reveal(field) else { return }
         Clipboard.copySecret(value)
@@ -311,6 +318,9 @@ final class MockBackend: VaultBackend {
     }
     func reveal(_ name: String, field: String) async throws -> String { "correct-horse-battery" }
     func otp(_ name: String) async throws -> OTPCode { .init(code: "482913", remaining: 18, period: 30) }
+    func otpLink(_ name: String) async throws -> OTPLink {
+        .init(uri: "otpauth://totp/\(name):octocat?secret=JBSWY3DPEHPK3PXP&issuer=\(name)", issuer: name, account: "octocat")
+    }
     func save(_ request: SaveRequest) async throws {}
     func delete(_ name: String) async throws {}
     func generate(length: Int, symbols: Bool) async throws -> String { "q7#Vd!xP2m@Kz9&Lw4$Rt8" }

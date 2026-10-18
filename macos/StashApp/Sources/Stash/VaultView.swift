@@ -1,23 +1,52 @@
 import SwiftUI
 
+/// Widths the main window is built from.
+enum VaultLayout {
+    static let sidebar: CGFloat = 232
+    static let itemsMin: CGFloat = 500
+    static let inspector: CGFloat = 340
+    static let minWindowWidth = sidebar + 1 + itemsMin
+    /// Below this the inspector floats over the table instead of sitting beside it.
+    static let dockedInspectorWidth = minWindowWidth + 1 + inspector
+}
+
 /// The main window: sidebar, item table, and an inspector for the selection.
 struct VaultView: View {
     @EnvironmentObject var model: AppModel
 
     var body: some View {
-        HStack(spacing: 0) {
-            Sidebar(newItem: { model.editor = .new($0) })
-                .frame(width: 232)
-            Rectangle().fill(Color.line).frame(width: 1)
-            ItemsPane(newItem: { model.editor = .new($0) })
-                .frame(minWidth: 520, maxWidth: .infinity)
-            if let detail = model.detail {
-                Rectangle().fill(Color.line).frame(width: 1)
-                InspectorView(detail: detail, onEdit: { model.editor = .edit(detail) })
-                    .frame(width: 340)
-                    .id(detail.name)
-                    .transition(.move(edge: .trailing).combined(with: .opacity))
+        GeometryReader { geo in
+            let width = geo.size.width
+            let open = model.detail != nil
+            // Room for everything: sidebar, table, inspector side by side.
+            // Less room: tuck the sidebar away while an item is open (it
+            // comes back when you close it). Least room: float the inspector.
+            let showSidebar = !open || width >= VaultLayout.dockedInspectorWidth
+            let docked = width >= (showSidebar ? VaultLayout.dockedInspectorWidth
+                                                : VaultLayout.itemsMin + 1 + VaultLayout.inspector)
+            ZStack(alignment: .trailing) {
+                HStack(spacing: 0) {
+                    if showSidebar {
+                        Sidebar(newItem: { model.editor = .new($0) })
+                            .frame(width: VaultLayout.sidebar)
+                            .transition(.move(edge: .leading))
+                        Rectangle().fill(Color.line).frame(width: 1)
+                    }
+                    ItemsPane(newItem: { model.editor = .new($0) })
+                        .frame(minWidth: VaultLayout.itemsMin, maxWidth: .infinity)
+                    if docked, let detail = model.detail {
+                        Rectangle().fill(Color.line).frame(width: 1)
+                        inspector(detail)
+                    }
+                }
+                // The narrowest windows: float the inspector over the table.
+                if !docked, let detail = model.detail {
+                    inspector(detail)
+                        .overlay(alignment: .leading) { Rectangle().fill(Color.line).frame(width: 1) }
+                        .shadow(color: .black.opacity(0.35), radius: 28, x: -8)
+                }
             }
+            .animation(.easeOut(duration: 0.18), value: showSidebar)
         }
         .background(Color.canvas)
         .animation(.easeOut(duration: 0.18), value: model.detail?.name)
@@ -34,6 +63,15 @@ struct VaultView: View {
 }
 
 // MARK: - Sidebar
+
+extension VaultView {
+    fileprivate func inspector(_ detail: ItemDetail) -> some View {
+        InspectorView(detail: detail, onEdit: { model.editor = .edit(detail) })
+            .frame(width: VaultLayout.inspector)
+            .id(detail.name)
+            .transition(.move(edge: .trailing).combined(with: .opacity))
+    }
+}
 
 struct Sidebar: View {
     @EnvironmentObject var model: AppModel

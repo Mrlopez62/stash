@@ -19,8 +19,11 @@ All notable changes to stash. The format follows [Keep a Changelog](https://keep
   - Decoding is local, with Vision, and captures stay in memory.
   - New logins get their name and username filled in from the code.
 
+- **Authenticator QR codes.** The QR button on a login's one-time password shows a code that phone authenticator apps can scan, built from the stored secret (setup keys work too). It's never shown as text, and it closes itself after 60 seconds.
+
 ### Fixed
 - **Password generator** text was unreadable in light mode.
+- **Cut-off window.** The window could be resized smaller than its content, which clipped the sidebar and inspector. It now has a real minimum size. At medium widths the sidebar tucks away while an item is open, and at the narrowest the inspector floats over the table.
 
 ## [0.7.0] - 2026-10-17
 

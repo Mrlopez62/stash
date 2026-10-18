@@ -1,3 +1,4 @@
+import CoreImage
 import SwiftUI
 
 /// The selected item, in a panel beside the table.
@@ -167,6 +168,7 @@ struct FieldRow: View {
     @ViewState private var code: OTPCode?
     @ViewState private var fetchedAt = Date()
     @ViewState private var hovering = false
+    @ViewState private var showQR = false
 
     var body: some View {
         HStack(alignment: .center, spacing: 10) {
@@ -235,6 +237,10 @@ struct FieldRow: View {
 
     @ViewBuilder private var actions: some View {
         HStack(spacing: 0) {
+            if field.kind == .otp {
+                IconButton("qrcode", help: "Show a QR code for your authenticator app") { showQR = true }
+                    .popover(isPresented: $showQR, arrowEdge: .bottom) { AuthenticatorQR() }
+            }
             if field.kind == .concealed {
                 IconButton(revealed == nil ? "eye" : "eye.slash", help: revealed == nil ? "Reveal" : "Hide") {
                     if revealed == nil {
@@ -286,5 +292,71 @@ struct CountdownRing: View {
                 .animation(.linear(duration: 1), value: fraction)
         }
         .frame(width: 15, height: 15)
+    }
+}
+
+/// A QR code for adding this item's 2FA to an authenticator app.
+///
+/// The code itself carries the 2FA secret (that's how authenticator apps
+/// import it), so it's fetched only when this opens, never shown as text,
+/// and closes by itself after a minute.
+struct AuthenticatorQR: View {
+    @EnvironmentObject var model: AppModel
+    @Environment(\.dismiss) private var dismiss
+    @ViewState private var link: OTPLink?
+    @ViewState private var image: NSImage?
+
+    var body: some View {
+        VStack(spacing: 14) {
+            Text("Add to an authenticator app")
+                .font(.plex(14, weight: .semibold))
+                .foregroundStyle(Color.ink)
+            ZStack {
+                RoundedRectangle(cornerRadius: 12, style: .continuous).fill(.white)
+                if let image {
+                    Image(nsImage: image)
+                        .interpolation(.none)
+                        .resizable()
+                        .aspectRatio(1, contentMode: .fit)
+                        .padding(14)
+                } else {
+                    ProgressView()
+                }
+            }
+            .frame(width: 220, height: 220)
+            .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Color.line))
+            if let link {
+                Text("\(link.issuer) · \(link.account)")
+                    .font(.mono(12))
+                    .foregroundStyle(Color.inkSecondary)
+            }
+            Text("Scan with Google Authenticator, Authy, or your phone's Passwords app. Anyone who sees this code can make your 2FA codes, so close it when you're done.")
+                .font(.plex(11.5))
+                .foregroundStyle(Color.inkTertiary)
+                .multilineTextAlignment(.center)
+                .frame(width: 250)
+        }
+        .padding(20)
+        .background(Color.surface)
+        .task {
+            link = await model.otpLink()
+            image = link.flatMap { qrImage($0.uri) }
+            try? await Task.sleep(for: .seconds(60))
+            dismiss()
+        }
+        .onDisappear {
+            link = nil
+            image = nil
+        }
+    }
+
+    /// A crisp QR image from CoreImage (scaled with nearest-neighbor).
+    private func qrImage(_ text: String) -> NSImage? {
+        guard let filter = CIFilter(name: "CIQRCodeGenerator") else { return nil }
+        filter.setValue(Data(text.utf8), forKey: "inputMessage")
+        filter.setValue("M", forKey: "inputCorrectionLevel")
+        guard let output = filter.outputImage?.transformed(by: CGAffineTransform(scaleX: 10, y: 10)),
+              let cg = CIContext().createCGImage(output, from: output.extent) else { return nil }
+        return NSImage(cgImage: cg, size: NSSize(width: output.extent.width, height: output.extent.height))
     }
 }

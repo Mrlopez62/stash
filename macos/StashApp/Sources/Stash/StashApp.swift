@@ -10,11 +10,14 @@ struct StashApp: App {
         Window("stash", id: "main") {
             RootView()
                 .environmentObject(delegate.model)
-                .frame(minWidth: 1000, minHeight: 600)
+                .frame(minWidth: VaultLayout.minWindowWidth, minHeight: 520)
                 .tint(.keyholeAmber)
                 .font(.plex(13))
         }
         .windowStyle(.hiddenTitleBar)
+        // The window can't shrink below what its content needs, so nothing
+        // is ever clipped.
+        .windowResizability(.contentMinSize)
         .defaultSize(width: 1240, height: 760)
         .commands {
             CommandGroup(after: .appInfo) {
@@ -251,7 +254,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         try? await Task.sleep(for: .seconds(1.0))
         if !options.quickAccessSnapshot, let w = NSApp.windows.first(where: { $0.title == "stash" }) {
-            w.setContentSize(NSSize(width: 1240, height: 760))
+            w.setContentSize(options.size ?? NSSize(width: 1240, height: 760))
             try? await Task.sleep(for: .seconds(0.6))
         }
         let main = NSApp.windows.first { $0.title == "stash" && $0.isVisible }
@@ -277,6 +280,8 @@ struct LaunchOptions {
     var appearance: String?
     /// `new`, or `edit` (with --select).
     var editor: String?
+    /// `--size 900x600`, for checking narrow layouts.
+    var size: NSSize?
 
     static func parse() -> LaunchOptions {
         var o = LaunchOptions()
@@ -291,6 +296,9 @@ struct LaunchOptions {
             case "--selftest": o.selftest = true
             case "--appearance": o.appearance = args.next()
             case "--editor": o.editor = args.next()
+            case "--size":
+                let parts = (args.next() ?? "").split(separator: "x").compactMap { Double($0) }
+                if parts.count == 2 { o.size = NSSize(width: parts[0], height: parts[1]) }
             default: break
             }
         }

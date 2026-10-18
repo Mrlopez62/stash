@@ -129,6 +129,7 @@ After an unlock, `stash` starts `stash agent` in the background. The agent keeps
 |---|---|---|
 | Other apps reading the vault through the app | ✅ | No IPC endpoint exists. The backend is a private child process. |
 | Secrets lingering in the app's memory | Partial | Only values you revealed or copied ever reach the app, and revealed values hide again after 30 seconds. Swift strings can't be reliably wiped, so a revealed value may stay in the app's memory until it's reused. |
+| Showing a 2FA QR code for an authenticator app | Partial | The QR code contains the 2FA secret, because that's how authenticator apps import it, so anyone who sees or photographs it can generate your codes. It's fetched only when you click the QR button, is never shown as text, and closes after 60 seconds. |
 | Scanning a 2FA QR code from the screen | ✅ | Scanning needs macOS's Screen Recording permission, which you grant once in System Settings. It runs only when you choose **Scan QR**. The capture leaves out stash's own windows, is decoded locally with Vision, and stays in memory: it's never written to disk or sent anywhere. Only an `otpauth://totp` code is used, and the backend validates it like a pasted one. Pasting or dropping an image needs no permission. |
 | A modified `stash.app` | ❌ | The app is ad-hoc signed, so macOS can't vouch for who built it. Build it yourself from source, or wait for a signed and notarized release. |
 
