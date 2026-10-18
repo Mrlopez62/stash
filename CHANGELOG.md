@@ -9,6 +9,10 @@ All notable changes to stash. The format follows [Keep a Changelog](https://keep
 - **The stash SSH agent** (`stash ssh agent`, or `stash ssh install` to run it at login with launchd):
   - Every signature asks for Touch ID, on a prompt naming the key, its purpose (an SSH login as a user, or a git commit signature), and the process asking.
   - Public keys stay listed while the vault is locked, so `ssh` picks a key without a prompt.
+  - When the vault is locked, the unlock prompt names the signature it approves; an unlock for anything else never counts as approval.
+  - Text from the requesting program (user names, namespaces) appears in the prompt only if short and plain.
+  - After a declined prompt, signing is refused for 10 seconds, so a process can't keep asking.
+  - Keys added while the agent runs are offered right away.
   - Requests to add, remove, or lock keys are refused.
   - Each signature is written to the audit log.
 - **Git commit signing:** `stash ssh git-setup <key> [--global]` configures git to sign commits and tags through the agent, and records your key in an allowed-signers file so `git log --show-signature` verifies them.
@@ -16,6 +20,7 @@ All notable changes to stash. The format follows [Keep a Changelog](https://keep
 
 ### Changed
 - **`stash mcp` refuses SSH keys** (they're not listed, and references to them are blocked), since commands that need them get them through the agent.
+- **`stash ls --long`'s third column is now DETAILS:** a login's username, or a card's, bank account's, or SSH key's summary, sized to fit.
 - **Snapshot mode exits directly** instead of hanging when an editor sheet is open.
 
 ## [0.8.0] - 2026-10-17

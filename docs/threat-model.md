@@ -162,10 +162,15 @@ AI agents talk to `stash mcp` over stdio. The design assumes the agent may be co
 
 The agent serves the vault's SSH keys over the standard agent protocol on `~/.stash/ssh-agent.sock` (mode `0600`, in a `0700` directory). It answers only processes running as the same user.
 
-- **Every signature needs Touch ID.** The prompt names the key, what the data is for, and the requesting process chain (for example "sign a git commit with SSH key “ssh/github”, for ssh-keygen ← git ← zsh"). The purpose is read from the data being signed: an SSH login names the remote user, and an `ssh-keygen -Y sign` signature names its namespace (`git` for commits). A fingerprint that unlocks the vault also approves the signature it was unlocked for.
-- **Listing isn't secret.** After the first unlock, public keys stay listed even when the vault relocks (after `--lock-after`, 10 minutes by default), so `ssh` can choose a key without a prompt. The list lives only in the agent's memory.
+- **Every signature needs Touch ID, on a prompt that names it.** The prompt says the key, what the data is for, and the requesting process chain (for example "sign a git commit or tag with SSH key “ssh/github”, for ssh-keygen ← git ← zsh").
+  - The purpose is read from the data being signed: an SSH login names the remote user, and an `ssh-keygen -Y sign` signature names its namespace (`git` for commits). An `SSHSIG` signature can't double as a login, so the purpose can't be faked to get a login signed.
+  - The user name and namespace come from the requesting program, so they're shown only if short and plain (letters, digits, `._@-`). Anything else is left out instead of being allowed to dress up the prompt.
+  - When the vault is locked, the unlock prompt *is* the signature's prompt, so there's one prompt, not two. An unlock done for anything else, like listing keys, never approves a signature.
+  - **Process names can be faked.** They come from the executable's name, so a program named `git` shows as `git`. Treat a prompt you didn't cause as suspicious whatever it says.
+- **Declining pauses signing.** For 10 seconds after a declined prompt, every signature is refused without a prompt (logged as `blocked`), so a process can't keep asking until a prompt is approved out of habit.
+- **Listing isn't secret.** After the first unlock, public keys stay listed even when the vault relocks (after `--lock-after`, 10 minutes by default), so `ssh` can choose a key without a prompt. The list is refreshed whenever the vault is unlocked, and lives only in the agent's memory.
 - **No changes from outside.** Requests to add, remove, or lock keys, and protocol extensions, are refused. A compromised process can't plant its own key or wipe yours.
-- **Keys stay in the vault.** Each signature decrypts the key, signs, and drops it. Keys are stored unencrypted *inside* the encrypted vault, so the agent never needs a passphrase. Imports read a passphrase only to decrypt the file.
+- **Keys stay in the vault.** Each signature decrypts the key, signs, and drops it. Keys are stored unencrypted *inside* the encrypted vault, so the agent never needs a passphrase. Imports read a passphrase only to decrypt the file, and refuse files asking for more than 2,000 bcrypt rounds (`ssh-keygen` uses 16), so a crafted file can't hang the import.
 - **AI agents can't get private keys.** `stash mcp` doesn't list SSH items and refuses references to them before any prompt.
 - **Audit log:** each signature, approved, declined, or failed, is logged by key name and purpose.
 

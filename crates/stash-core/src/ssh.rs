@@ -26,6 +26,8 @@ const PEM_BEGIN: &str = "-----BEGIN OPENSSH PRIVATE KEY-----";
 const PEM_END: &str = "-----END OPENSSH PRIVATE KEY-----";
 const AUTH_MAGIC: &[u8] = b"openssh-key-v1\0";
 const SSHSIG_MAGIC: &[u8] = b"SSHSIG";
+/// About a minute of bcrypt on a laptop. `ssh-keygen -a` defaults to 16.
+const MAX_KDF_ROUNDS: u32 = 2_000;
 
 fn invalid(why: impl Into<String>) -> Error {
     Error::InvalidSshKey(why.into())
@@ -185,6 +187,12 @@ impl KeyPair {
                 let mut opts = Reader::new(&kdf_options);
                 let salt = opts.string()?.to_vec();
                 let rounds = opts.u32()?;
+                // ssh-keygen uses 16; a huge count would hang the import.
+                if rounds == 0 || rounds > MAX_KDF_ROUNDS {
+                    return Err(invalid(format!(
+                        "the key file asks for {rounds} key-derivation rounds; stash allows 1–{MAX_KDF_ROUNDS}"
+                    )));
+                }
                 let mut key_iv = Zeroizing::new([0u8; 48]);
                 bcrypt_pbkdf::bcrypt_pbkdf(passphrase, &salt, rounds, key_iv.as_mut())
                     .map_err(|_| invalid("the key file's encryption settings are invalid"))?;
@@ -458,5 +466,28 @@ mod tests {
             SignPurpose::Unknown
         );
         assert_eq!(SignPurpose::of(b""), SignPurpose::Unknown);
+    }
+
+    #[test]
+    fn refuses_absurd_kdf_round_counts_without_hanging() {
+        let pair = KeyPair::generate("").unwrap();
+        let mut opts = Vec::new();
+        put_string(&mut opts, b"0123456789abcdef");
+        opts.extend_from_slice(&u32::MAX.to_be_bytes());
+        let mut file = AUTH_MAGIC.to_vec();
+        put_string(&mut file, b"aes256-ctr");
+        put_string(&mut file, b"bcrypt");
+        put_string(&mut file, &opts);
+        file.extend_from_slice(&1u32.to_be_bytes());
+        put_string(&mut file, &pair.public_blob());
+        put_string(&mut file, &[0u8; 16]);
+        let pem = format!("{PEM_BEGIN}\n{}\n{PEM_END}\n", STANDARD.encode(file));
+        let started = std::time::Instant::now();
+        let err = KeyPair::from_openssh(&pem, Some(b"pw"))
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(err.contains("key-derivation rounds"), "{err}");
+        assert!(started.elapsed().as_secs() < 2);
     }
 }

@@ -297,7 +297,7 @@ fn the_agent_asks_touch_id_for_every_signature() {
 }
 
 #[test]
-fn a_locked_agent_unlocks_and_signs_with_one_prompt() {
+fn a_locked_agent_signs_after_one_prompt_naming_the_signature() {
     let f = Fixture::new();
     let public = f.generate("ssh/github");
     let mut agent = f.agent();
@@ -309,8 +309,9 @@ fn a_locked_agent_unlocks_and_signs_with_one_prompt() {
     assert!(agent.sign(&blob, &sshsig).is_some());
     let prompts = f.prompts();
     assert_eq!(prompts.len(), 1, "{prompts:?}");
+    // The one prompt names the signature it approves, not just "unlock".
     assert!(
-        prompts[0].starts_with("unwrap: unlock stash to list SSH keys"),
+        prompts[0].starts_with("unwrap: sign a git commit or tag with an SSH key, for "),
         "{prompts:?}"
     );
 }

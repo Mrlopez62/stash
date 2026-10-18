@@ -99,17 +99,20 @@ struct Listed {
     blob: Vec<u8>,
 }
 
+/// After a declined prompt, signing is refused for this long, so a process
+/// can't keep asking until a prompt gets approved out of habit.
+const DENIAL_COOLDOWN: Duration = Duration::from_secs(10);
+
 pub struct Agent<G: Gate> {
     vault_path: PathBuf,
     audit_log: PathBuf,
     lock_after: Duration,
     gate: G,
     unlocked: Option<(Vault, Instant)>,
-    /// Public keys from the last unlock, so listing never needs a prompt.
+    /// Public keys, refreshed whenever the vault is unlocked and kept while
+    /// it's locked, so listing never needs a prompt after the first time.
     listed: Option<Vec<Listed>>,
-    /// Set when the user was just asked to unlock, which also approves the
-    /// signature that needed it.
-    fresh_unlock: bool,
+    last_denial: Option<Instant>,
 }
 
 impl<G: Gate> Agent<G> {
@@ -121,12 +124,12 @@ impl<G: Gate> Agent<G> {
             gate,
             unlocked: None,
             listed: None,
-            fresh_unlock: false,
+            last_denial: None,
         }
     }
 
-    /// The unlocked vault, unlocking (and so approving `reason`) if needed.
-    fn vault(&mut self, reason: &str) -> Result<&Vault, String> {
+    /// Forget the vault key once it has gone unused for `lock_after`.
+    fn expire(&mut self) {
         if self
             .unlocked
             .as_ref()
@@ -134,88 +137,161 @@ impl<G: Gate> Agent<G> {
         {
             self.unlocked = None;
         }
-        if self.unlocked.is_none() {
-            let vault = self.gate.unlock(&self.vault_path, reason)?;
-            self.listed = Some(list(&vault).map_err(|e| e.to_string())?);
-            self.unlocked = Some((vault, Instant::now()));
-            self.fresh_unlock = true;
+    }
+
+    /// Unlock with a prompt saying `reason`.
+    fn unlock(&mut self, reason: &str) -> Result<(), String> {
+        let vault = self.gate.unlock(&self.vault_path, reason)?;
+        self.unlocked = Some((vault, Instant::now()));
+        Ok(())
+    }
+
+    /// Re-read the key list from the unlocked vault, so keys added since
+    /// the last unlock show up.
+    fn refresh(&mut self) {
+        if let Some((vault, _)) = &self.unlocked {
+            match list(vault) {
+                Ok(keys) => self.listed = Some(keys),
+                Err(e) => eprintln!("stash ssh agent: could not list keys: {e}"),
+            }
         }
-        let (vault, _) = self.unlocked.as_ref().expect("unlocked above");
-        Ok(vault)
     }
 
     fn identities(&mut self, client: &str) -> Vec<Listed> {
-        if self.listed.is_none() {
+        self.expire();
+        if self.unlocked.is_none() && self.listed.is_none() {
             let reason = format!("unlock stash to list SSH keys for {client}");
-            if let Err(why) = self.vault(&reason) {
+            if let Err(why) = self.unlock(&reason) {
                 eprintln!("stash ssh agent: not listing keys: {why}");
             }
         }
+        self.refresh();
         self.listed.clone().unwrap_or_default()
     }
 
-    fn sign(&mut self, blob: &[u8], data: &[u8], client: &str) -> Option<Vec<u8>> {
-        self.fresh_unlock = false;
-        let listed = self.identities(client);
-        let name = listed.iter().find(|k| k.blob == blob)?.name.clone();
-        let purpose = SignPurpose::of(data);
-        let what = match &purpose {
-            SignPurpose::Login { user } => format!("use SSH key “{name}” to log in as {user}"),
-            SignPurpose::File { namespace } if namespace == "git" => {
-                format!("sign a git commit or tag with SSH key “{name}”")
-            }
-            SignPurpose::File { namespace } => {
-                format!("sign {namespace} data with SSH key “{name}”")
-            }
-            SignPurpose::Unknown => format!("sign with SSH key “{name}”"),
-        };
-        let reason = format!("{what}, for {client}");
+    fn name_of(&self, blob: &[u8]) -> Option<String> {
+        self.listed
+            .as_ref()?
+            .iter()
+            .find(|k| k.blob == blob)
+            .map(|k| k.name.clone())
+    }
 
+    fn sign(&mut self, blob: &[u8], data: &[u8], client: &str) -> Option<Vec<u8>> {
+        self.expire();
+        let purpose = SignPurpose::of(data);
         let mut event = audit::Event {
             time: audit::now_rfc3339(),
             client: client.to_owned(),
             tool: "ssh-sign".into(),
-            secrets: vec![name.clone()],
+            secrets: Vec::new(),
             command: None,
             outcome: "approved".into(),
             exit_code: None,
-            detail: Some(what),
+            detail: None,
         };
-        let result = (|| {
-            self.vault(&reason)?;
-            if !std::mem::take(&mut self.fresh_unlock) {
-                self.gate.approve(&reason)?;
-            }
-            // The vault that was just checked, even if the approval dialog
-            // outlasted the idle timeout.
-            let (vault, _) = self.unlocked.as_ref().ok_or("locked")?;
-            let item = vault.item(&name).map_err(|e| e.to_string())?;
-            let pair = item.ssh_key_pair().map_err(|e| e.to_string())?;
-            if pair.public_blob() != blob {
-                return Err("the key changed since it was listed".to_owned());
-            }
-            Ok(pair.sign(data))
-        })();
-        // Approval resets the idle clock.
-        if let Some((_, at)) = self.unlocked.as_mut() {
-            *at = Instant::now();
-        }
+        let result = self.approve_and_sign(blob, data, &purpose, client, &mut event);
         if let Err(why) = &result {
-            event.outcome = if why == "cancelled" {
-                "denied"
-            } else {
-                "error"
+            event.outcome = match why {
+                Refused::Denied => "denied",
+                Refused::Cooldown | Refused::UnknownKey => "blocked",
+                Refused::Failed(_) => "error",
             }
             .into();
+            let why = match why {
+                Refused::Denied => "declined".to_owned(),
+                Refused::Cooldown => "refused for a few seconds after a declined prompt".to_owned(),
+                Refused::UnknownKey => "not a stash key".to_owned(),
+                Refused::Failed(why) => why.clone(),
+            };
             event.detail = Some(format!(
                 "{}: {why}",
                 event.detail.take().unwrap_or_default()
             ));
         }
-        if let Err(e) = audit::record(&self.audit_log, &event) {
+        // Signing (or trying to) resets the idle clock.
+        if let Some((_, at)) = self.unlocked.as_mut() {
+            *at = Instant::now();
+        }
+        // Unknown keys are routine (ssh tries keys from other agents too),
+        // so only stash keys are logged.
+        if !matches!(result, Err(Refused::UnknownKey))
+            && let Err(e) = audit::record(&self.audit_log, &event)
+        {
             eprintln!("stash ssh agent: could not write the audit log: {e:#}");
         }
         result.ok()
+    }
+
+    /// The approval rule: the prompt the user approves always names this
+    /// signature. A locked vault is unlocked with that prompt (one prompt,
+    /// not two); an unlocked one asks for a fingerprint. An unlock done
+    /// earlier for any other reason, like listing keys, never counts.
+    fn approve_and_sign(
+        &mut self,
+        blob: &[u8],
+        data: &[u8],
+        purpose: &SignPurpose,
+        client: &str,
+        event: &mut audit::Event,
+    ) -> Result<Vec<u8>, Refused> {
+        if self
+            .last_denial
+            .is_some_and(|at| at.elapsed() < DENIAL_COOLDOWN)
+        {
+            event.detail = Some(describe_purpose(purpose, self.name_of(blob).as_deref()));
+            event.secrets = self.name_of(blob).into_iter().collect();
+            return Err(Refused::Cooldown);
+        }
+        let mut approved = false;
+        if self.unlocked.is_none() {
+            // Only a key we've listed can be named; otherwise "an SSH key".
+            if self.listed.is_some() && self.name_of(blob).is_none() {
+                return Err(Refused::UnknownKey);
+            }
+            let reason = format!(
+                "{}, for {client}",
+                describe_purpose(purpose, self.name_of(blob).as_deref())
+            );
+            event.detail = Some(describe_purpose(purpose, self.name_of(blob).as_deref()));
+            self.unlock(&reason).map_err(|why| self.refusal(why))?;
+            approved = true;
+        }
+        self.refresh();
+        let name = self.name_of(blob).ok_or(Refused::UnknownKey)?;
+        let what = describe_purpose(purpose, Some(&name));
+        event.secrets = vec![name.clone()];
+        event.detail = Some(what.clone());
+        if !approved {
+            self.gate
+                .approve(&format!("{what}, for {client}"))
+                .map_err(|why| self.refusal(why))?;
+        }
+        let (vault, _) = self
+            .unlocked
+            .as_ref()
+            .ok_or(Refused::Failed("locked".into()))?;
+        let item = vault
+            .item(&name)
+            .map_err(|e| Refused::Failed(e.to_string()))?;
+        let pair = item
+            .ssh_key_pair()
+            .map_err(|e| Refused::Failed(e.to_string()))?;
+        if pair.public_blob() != blob {
+            return Err(Refused::Failed(
+                "the key changed since it was listed".into(),
+            ));
+        }
+        Ok(pair.sign(data))
+    }
+
+    fn refusal(&mut self, why: String) -> Refused {
+        if why == "cancelled" {
+            self.last_denial = Some(Instant::now());
+            Refused::Denied
+        } else {
+            Refused::Failed(why)
+        }
     }
 
     /// Answer one agent message (its type byte and contents).
@@ -253,6 +329,43 @@ impl<G: Gate> Agent<G> {
             _ => failure,
         }
     }
+}
+
+enum Refused {
+    Denied,
+    Cooldown,
+    UnknownKey,
+    Failed(String),
+}
+
+/// What a signature is for, in the prompt's words. The user name and
+/// namespace come from the requesting program, so only short, plain values
+/// are shown; anything else could dress up the prompt.
+fn describe_purpose(purpose: &SignPurpose, key: Option<&str>) -> String {
+    let key = key.map_or_else(|| "an SSH key".to_owned(), |k| format!("SSH key “{k}”"));
+    match purpose {
+        SignPurpose::Login { user } => match plain(user) {
+            Some(user) => format!("use {key} to log in as {user}"),
+            None => format!("use {key} to log in"),
+        },
+        SignPurpose::File { namespace } if namespace == "git" => {
+            format!("sign a git commit or tag with {key}")
+        }
+        SignPurpose::File { namespace } => match plain(namespace) {
+            Some(ns) => format!("sign {ns} data with {key}"),
+            None => format!("sign data with {key}"),
+        },
+        SignPurpose::Unknown => format!("sign with {key}"),
+    }
+}
+
+/// `s` if it's short and made only of letters, digits, and `._@-`.
+fn plain(s: &str) -> Option<&str> {
+    let ok = !s.is_empty()
+        && s.len() <= 32
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '@' | '-'));
+    ok.then_some(s)
 }
 
 /// Every SSH key item's name and public blob.
@@ -293,6 +406,12 @@ fn client_of(stream: &UnixStream) -> String {
 
 /// Run the agent in the foreground.
 pub fn serve<G: Gate + 'static>(socket: &Path, agent: Agent<G>) -> Result<()> {
+    if UnixStream::connect(socket).is_ok() {
+        // Not an error: launchd, or a second shell, found one already
+        // running. Exiting successfully keeps launchd from retrying.
+        eprintln!("stash ssh agent is already running at {}", socket.display());
+        return Ok(());
+    }
     let listener = bind(socket)?;
     eprintln!("stash ssh agent listening on {}", socket.display());
     let agent = Arc::new(Mutex::new(agent));
@@ -370,20 +489,24 @@ mod tests {
         unlocks: usize,
         approvals: usize,
         allow: bool,
+        /// Every prompt's text, in order.
+        reasons: Vec<String>,
     }
 
     impl Gate for &'static Mutex<TestGate> {
-        fn unlock(&mut self, vault: &Path, _: &str) -> Result<Vault, String> {
+        fn unlock(&mut self, vault: &Path, reason: &str) -> Result<Vault, String> {
             let mut g = self.lock().unwrap();
             g.unlocks += 1;
+            g.reasons.push(format!("unlock: {reason}"));
             if !g.allow {
                 return Err("cancelled".into());
             }
             Vault::open(vault, b"pw").map_err(|e| e.to_string())
         }
-        fn approve(&mut self, _: &str) -> Result<(), String> {
+        fn approve(&mut self, reason: &str) -> Result<(), String> {
             let mut g = self.lock().unwrap();
             g.approvals += 1;
+            g.reasons.push(format!("approve: {reason}"));
             if g.allow {
                 Ok(())
             } else {
@@ -414,6 +537,7 @@ mod tests {
             unlocks: 0,
             approvals: 0,
             allow: true,
+            reasons: Vec::new(),
         })));
         (dir, path, pair, gate)
     }
@@ -521,6 +645,108 @@ mod tests {
         assert_eq!(
             agent.respond(&[SIGN_REQUEST, 0, 0, 0, 9], "t"),
             vec![FAILURE]
+        );
+    }
+
+    fn reasons(gate: &Mutex<TestGate>) -> Vec<String> {
+        gate.lock().unwrap().reasons.clone()
+    }
+
+    fn login(user: &[u8]) -> Vec<u8> {
+        let mut d = Vec::new();
+        ssh::put_string(&mut d, b"session");
+        d.push(50);
+        ssh::put_string(&mut d, user);
+        ssh::put_string(&mut d, b"ssh-connection");
+        ssh::put_string(&mut d, b"publickey");
+        d
+    }
+
+    #[test]
+    fn a_listing_unlock_never_approves_a_signature() {
+        let (_dir, path, pair, gate) = setup();
+        let mut agent = Agent::new(path, Duration::from_secs(60), gate);
+        agent.respond(&[REQUEST_IDENTITIES], "ssh");
+        let reply = agent.respond(&sign_request(&pair.public_blob(), &login(b"git")), "ssh");
+        assert_eq!(reply[0], SIGN_RESPONSE);
+        let r = reasons(gate);
+        assert_eq!(r.len(), 2, "{r:?}");
+        assert!(
+            r[0].starts_with("unlock: unlock stash to list SSH keys"),
+            "{r:?}"
+        );
+        assert_eq!(
+            r[1],
+            "approve: use SSH key “ssh/github” to log in as git, for ssh"
+        );
+    }
+
+    #[test]
+    fn a_locked_agent_unlocks_with_a_prompt_naming_the_signature() {
+        let (_dir, path, pair, gate) = setup();
+        let mut agent = Agent::new(path, Duration::from_secs(60), gate);
+        let reply = agent.respond(&sign_request(&pair.public_blob(), &login(b"git")), "ssh");
+        assert_eq!(reply[0], SIGN_RESPONSE);
+        assert_eq!(
+            reasons(gate),
+            vec!["unlock: use an SSH key to log in as git, for ssh".to_owned()]
+        );
+    }
+
+    #[test]
+    fn requester_text_cant_dress_up_the_prompt() {
+        let (_dir, path, pair, gate) = setup();
+        let mut agent = Agent::new(path, Duration::from_secs(60), gate);
+        agent.respond(&[REQUEST_IDENTITIES], "evil");
+        let mut sshsig = b"SSHSIG".to_vec();
+        ssh::put_string(
+            &mut sshsig,
+            "x with SSH key “ssh/github”, for git ← zsh\n\n\n".as_bytes(),
+        );
+        agent.respond(&sign_request(&pair.public_blob(), &sshsig), "evil");
+        agent.respond(
+            &sign_request(&pair.public_blob(), &login(b"root\nfor git")),
+            "evil",
+        );
+        let r = reasons(gate);
+        assert_eq!(
+            r[1],
+            "approve: sign data with SSH key “ssh/github”, for evil"
+        );
+        assert_eq!(
+            r[2],
+            "approve: use SSH key “ssh/github” to log in, for evil"
+        );
+    }
+
+    #[test]
+    fn new_keys_are_offered_without_restarting() {
+        let (_dir, path, _pair, gate) = setup();
+        let mut agent = Agent::new(path.clone(), Duration::from_secs(60), gate);
+        agent.respond(&[REQUEST_IDENTITIES], "ssh");
+        let mut vault = Vault::open(&path, b"pw").unwrap();
+        let fresh = KeyPair::generate("new").unwrap();
+        vault.put("ssh/new", &Item::ssh_key(&fresh), false).unwrap();
+        let reply = agent.respond(&[REQUEST_IDENTITIES], "ssh");
+        assert_eq!(Reader::new(&reply[1..]).u32().unwrap(), 2);
+        assert_eq!(counts(gate).0, 1, "no new prompt");
+    }
+
+    #[test]
+    fn a_declined_prompt_pauses_signing() {
+        let (_dir, path, pair, gate) = setup();
+        let mut agent = Agent::new(path, Duration::from_secs(60), gate);
+        agent.respond(&[REQUEST_IDENTITIES], "ssh");
+        gate.lock().unwrap().allow = false;
+        agent.respond(&sign_request(&pair.public_blob(), b"x"), "evil");
+        gate.lock().unwrap().allow = true;
+        let reply = agent.respond(&sign_request(&pair.public_blob(), b"x"), "evil");
+        assert_eq!(reply, vec![FAILURE], "refused during the cooldown");
+        assert_eq!(counts(gate).1, 1, "without another prompt");
+        agent.last_denial = Some(Instant::now() - DENIAL_COOLDOWN);
+        assert_eq!(
+            agent.respond(&sign_request(&pair.public_blob(), b"x"), "me")[0],
+            SIGN_RESPONSE
         );
     }
 }
