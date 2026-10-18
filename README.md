@@ -18,7 +18,12 @@ A free, developer-first secrets manager for macOS. Unlock with Touch ID, pass AP
 
 ## The Mac app
 
-<p align="center"><img src="docs/screenshots/vault.png" alt="The stash vault browser showing a GitHub login with a live 2FA code" width="760"></p>
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/vault-dark.png">
+    <img src="docs/screenshots/vault.png" alt="The stash vault: sidebar with categories and folders, a table of items, and an inspector showing a GitHub login with a live 2FA code" width="820">
+  </picture>
+</p>
 <p align="center"><img src="docs/screenshots/quick-access.png" alt="Quick Access search panel" width="560"></p>
 
 ```sh
@@ -30,6 +35,8 @@ open ~/Applications/stash.app
 - **Vault browser.** Search, logins, secrets, and notes, with copy buttons for every field and live 2FA codes with a countdown.
 - **Quick Access** with **⇧⌘Space** from anywhere. Type a few letters, press Return, and the password is on your clipboard.
 - **Menu bar icon.** Quick Access, lock and unlock, open stash.
+- **Set up 2FA from the QR code.** In a login's Two-factor field, choose **Scan QR**: stash reads the code straight off your screen, even from a window behind stash. You can also paste or drop a screenshot. It fills in the item's name and username from the code.
+- **Add a login's 2FA to your phone.** The QR button on the one-time password shows a code that Google Authenticator, Authy, or the iOS Passwords app can scan. It never shows the secret as text, and it closes itself after a minute.
 - **Touch ID unlock** and a built-in **password generator**. The app locks itself after 10 idle minutes.
 - **Safer copies.** They're marked concealed, so clipboard-history apps skip them. They stay on this Mac (no Universal Clipboard) and are cleared after 30 seconds.
 - **The same vault as the CLI.** Everything you add in the app works with `stash run`, `stash inject`, and the MCP server, and the other way round.

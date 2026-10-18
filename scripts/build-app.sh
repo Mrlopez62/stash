@@ -21,6 +21,9 @@ cp macos/StashApp/.build/release/Stash "$app/Contents/MacOS/Stash"
 cp target/release/stash "$app/Contents/Helpers/stash"
 cp swift/stash-touchid/.build/release/stash-touchid "$app/Contents/Helpers/stash-touchid"
 cp macos/StashApp/Resources/AppIcon.icns "$app/Contents/Resources/AppIcon.icns"
+# Brand fonts (SIL Open Font License; the licenses ship alongside).
+mkdir -p "$app/Contents/Resources/Fonts"
+cp macos/StashApp/Sources/Stash/Fonts/* "$app/Contents/Resources/Fonts/"
 
 cat > "$app/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>

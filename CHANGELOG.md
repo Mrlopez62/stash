@@ -2,6 +2,30 @@
 
 All notable changes to stash. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/) (pre-1.0: minor versions may change behavior).
 
+## [0.7.1] - 2026-10-17
+
+### Changed
+- **A redesigned Mac app.** It was rebuilt in the style of 1Password's app and reviewed twice by an independent UI-design agent.
+  - **Layout:** a sidebar with sections and counts (kinds, two-factor, and folders), a page title with one primary action, and a card holding a dense item table.
+  - **Table:** columns adapt to the window width and always leave room for names. Copy buttons appear on hover.
+  - **Inspector:** the selected item opens in a panel beside the table.
+  - **Editor:** rebuilt from the app's own components.
+- **No "Two-Factor" sidebar filter.** It duplicated the table's 2FA column. The 2FA field and codes are unchanged.
+- **Brand look throughout.** The app follows the system light or dark appearance, in the brand palette. It bundles JetBrains Mono and IBM Plex Sans (OFL), and keeps amber for the primary action, the selection, secrets, and 2FA timers.
+- **Quick Access.** Keycap hints, ⌥↩ to copy a 2FA code, and a no-results state.
+
+### Added
+- **Scan 2FA QR codes** in the editor's Two-factor field.
+  - Read the code from the screen (stash's own windows are left out of the capture), paste a screenshot, choose an image, or drop one onto the field.
+  - Decoding is local, with Vision, and captures stay in memory.
+  - New logins get their name and username filled in from the code.
+
+- **Authenticator QR codes.** The QR button on a login's one-time password shows a code that phone authenticator apps can scan, built from the stored secret (setup keys work too). It's never shown as text, and it closes itself after 60 seconds.
+
+### Fixed
+- **Password generator** text was unreadable in light mode.
+- **Cut-off window.** The window could be resized smaller than its content, which clipped the sidebar and inspector. It now has a real minimum size. At medium widths the sidebar tucks away while an item is open, and at the narrowest the inspector floats over the table.
+
 ## [0.7.0] - 2026-10-17
 
 ### Added
@@ -67,6 +91,7 @@ Security and correctness fixes for 0.6.0, found by an independent security revie
 ### Added
 - **The first release:** an encrypted vault (Argon2id + XChaCha20-Poly1305) and the `init`, `add`, `get`, `ls`, and `rm` commands.
 
+[0.7.1]: https://github.com/Mrlopez62/stash/pull/11
 [0.7.0]: https://github.com/Mrlopez62/stash/pull/10
 [0.6.1]: https://github.com/Mrlopez62/stash/pull/9
 [0.6.0]: https://github.com/Mrlopez62/stash/pull/8

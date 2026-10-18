@@ -8,7 +8,12 @@ let package = Package(
         .executableTarget(
             name: "Stash",
             path: "Sources/Stash",
-            linkerSettings: [.linkedFramework("Carbon")]
+            exclude: ["Fonts"],
+            linkerSettings: [
+                .linkedFramework("Carbon"),
+                .linkedFramework("ScreenCaptureKit"),
+                .linkedFramework("Vision"),
+            ]
         )
     ]
 )

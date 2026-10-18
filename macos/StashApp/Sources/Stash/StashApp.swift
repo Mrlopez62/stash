@@ -10,11 +10,15 @@ struct StashApp: App {
         Window("stash", id: "main") {
             RootView()
                 .environmentObject(delegate.model)
-                .frame(minWidth: 780, minHeight: 520)
-                .preferredColorScheme(.dark)
+                .frame(minWidth: VaultLayout.minWindowWidth, minHeight: 520)
                 .tint(.keyholeAmber)
+                .font(.plex(13))
         }
-        .defaultSize(width: 980, height: 640)
+        .windowStyle(.hiddenTitleBar)
+        // The window can't shrink below what its content needs, so nothing
+        // is ever clipped.
+        .windowResizability(.contentMinSize)
+        .defaultSize(width: 1240, height: 760)
         .commands {
             CommandGroup(after: .appInfo) {
                 Button("Quick Access") { delegate.quickAccess?.toggle() }
@@ -32,7 +36,6 @@ struct StashApp: App {
         Settings {
             SettingsView()
                 .environmentObject(delegate.model)
-                .preferredColorScheme(.dark)
                 .tint(.keyholeAmber)
         }
     }
@@ -45,7 +48,7 @@ struct RootView: View {
         Group {
             switch model.screen {
             case .starting:
-                ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity).background(Color.vaultInk)
+                ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity).background(Color.canvas)
             case .createVault:
                 CreateVaultView()
             case .locked:
@@ -55,11 +58,11 @@ struct RootView: View {
             case .failed(let message):
                 VStack(spacing: 16) {
                     StashMark(size: 56)
-                    Text(message).foregroundStyle(Color.secondaryText).multilineTextAlignment(.center)
+                    Text(message).font(.plex(14)).foregroundStyle(Color.inkSecondary).multilineTextAlignment(.center)
                 }
                 .padding(40)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background(Color.vaultInk)
+                .background(Color.canvas)
             }
         }
         .task { await model.start() }
@@ -155,6 +158,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let options = LaunchOptions.parse()
 
     override init() {
+        BrandFonts.register()
         if options.mock {
             model = AppModel(backend: MockBackend(locked: options.locked))
         } else {
@@ -164,6 +168,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        switch options.appearance {
+        case "light": NSApp.appearance = NSAppearance(named: .aqua)
+        case "dark": NSApp.appearance = NSAppearance(named: .darkAqua)
+        default: break
+        }
         quickAccess = QuickAccessController(model: model)
         hotKey = HotKey(keyCode: UInt32(kVK_Space), modifiers: UInt32(cmdKey | shiftKey), id: 1) { [weak self] in
             self?.quickAccess?.toggle()
@@ -236,10 +245,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         try? await Task.sleep(for: .seconds(1.5))
         if let name = options.select { await model.select(name) }
         if options.quickAccessSnapshot { quickAccess?.show() }
+        if let name = options.editor {
+            if name == "new" {
+                model.editor = .new(.login)
+            } else if let detail = model.detail {
+                model.editor = .edit(detail)
+            }
+        }
         try? await Task.sleep(for: .seconds(1.0))
+        if !options.quickAccessSnapshot, let w = NSApp.windows.first(where: { $0.title == "stash" }) {
+            w.setContentSize(options.size ?? NSSize(width: 1240, height: 760))
+            try? await Task.sleep(for: .seconds(0.6))
+        }
+        let main = NSApp.windows.first { $0.title == "stash" && $0.isVisible }
         let window = options.quickAccessSnapshot
             ? NSApp.windows.first { $0 is QuickAccessPanel }
-            : NSApp.windows.first { $0.title == "stash" && $0.isVisible }
+            : (options.editor != nil ? main?.attachedSheet : main)
         if let view = window?.contentView?.superview ?? window?.contentView,
            let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
             view.cacheDisplay(in: view.bounds, to: rep)
@@ -256,6 +277,11 @@ struct LaunchOptions {
     var select: String?
     var quickAccessSnapshot = false
     var selftest = false
+    var appearance: String?
+    /// `new`, or `edit` (with --select).
+    var editor: String?
+    /// `--size 900x600`, for checking narrow layouts.
+    var size: NSSize?
 
     static func parse() -> LaunchOptions {
         var o = LaunchOptions()
@@ -268,6 +294,11 @@ struct LaunchOptions {
             case "--select": o.select = args.next()
             case "--quick-access": o.quickAccessSnapshot = true
             case "--selftest": o.selftest = true
+            case "--appearance": o.appearance = args.next()
+            case "--editor": o.editor = args.next()
+            case "--size":
+                let parts = (args.next() ?? "").split(separator: "x").compactMap { Double($0) }
+                if parts.count == 2 { o.size = NSSize(width: parts[0], height: parts[1]) }
             default: break
             }
         }

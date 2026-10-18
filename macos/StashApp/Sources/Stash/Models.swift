@@ -71,6 +71,13 @@ struct ItemDetail: Decodable {
     var updated: Int
 }
 
+/// An otpauth:// link for an authenticator app. Shown only as a QR code.
+struct OTPLink: Decodable {
+    var uri: String
+    var issuer: String
+    var account: String
+}
+
 struct OTPCode: Decodable {
     var code: String
     var remaining: Int

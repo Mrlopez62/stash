@@ -129,6 +129,27 @@ impl Totp {
         format!("{code:0width$}", width = self.digits as usize)
     }
 
+    /// A standard `otpauth://totp/...` link for this secret, which
+    /// authenticator apps import (usually as a QR code). It contains the
+    /// secret, so treat it like one.
+    pub fn to_uri(&self, issuer: &str, account: &str) -> Zeroizing<String> {
+        let algorithm = match self.algorithm {
+            Algorithm::Sha1 => "SHA1",
+            Algorithm::Sha256 => "SHA256",
+            Algorithm::Sha512 => "SHA512",
+        };
+        let secret = base32_encode(&self.secret);
+        Zeroizing::new(format!(
+            "otpauth://totp/{}:{}?secret={}&issuer={}&algorithm={algorithm}&digits={}&period={}",
+            percent_encode(issuer),
+            percent_encode(account),
+            secret.as_str(),
+            percent_encode(issuer),
+            self.digits,
+            self.period,
+        ))
+    }
+
     /// Seconds until the code for `unix_secs` changes.
     pub fn remaining(&self, unix_secs: u64) -> u64 {
         self.period - unix_secs % self.period
@@ -142,6 +163,38 @@ where
     let mut mac = <Hmac<D> as KeyInit>::new_from_slice(key).expect("HMAC accepts any key length");
     mac.update(data);
     Zeroizing::new(mac.finalize().into_bytes().to_vec())
+}
+
+/// RFC 4648 base32, uppercase, without padding (as otpauth links use).
+fn base32_encode(data: &[u8]) -> Zeroizing<String> {
+    const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+    let mut out = Zeroizing::new(String::with_capacity(data.len().div_ceil(5) * 8));
+    let (mut buffer, mut bits) = (0u32, 0u32);
+    for &b in data {
+        buffer = (buffer << 8) | u32::from(b);
+        bits += 8;
+        while bits >= 5 {
+            bits -= 5;
+            out.push(ALPHABET[((buffer >> bits) & 31) as usize] as char);
+        }
+        buffer &= (1 << bits) - 1;
+    }
+    if bits > 0 {
+        out.push(ALPHABET[((buffer << (5 - bits)) & 31) as usize] as char);
+    }
+    out
+}
+
+/// Percent-encode everything but RFC 3986 unreserved characters.
+fn percent_encode(s: &str) -> String {
+    s.bytes()
+        .map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                (b as char).to_string()
+            }
+            _ => format!("%{b:02X}"),
+        })
+        .collect()
 }
 
 /// RFC 4648 base32, case-insensitive, ignoring spaces, hyphens, and padding.
@@ -286,5 +339,36 @@ mod tests {
             assert_eq!(Totp::parse(short).unwrap().code_at(59).len(), 6);
         }
         assert!(Totp::parse_new("JBSWY3DPEHPK3PXP").is_ok());
+    }
+
+    #[test]
+    fn exports_a_uri_authenticator_apps_can_import() {
+        let original = Totp::parse(
+            "otpauth://totp/X?secret=JBSWY3DPEHPK3PXP&algorithm=SHA256&digits=8&period=60",
+        )
+        .unwrap();
+        let uri = original.to_uri("Acme Corp", "me@example.com");
+        assert!(
+            uri.starts_with("otpauth://totp/Acme%20Corp:me%40example.com?secret=JBSWY3DPEHPK3PXP&")
+        );
+        assert!(uri.contains("issuer=Acme%20Corp"));
+        // Round trip: the exported link produces the same codes.
+        let back = Totp::parse(&uri).unwrap();
+        assert_eq!(
+            (back.digits, back.period, back.algorithm),
+            (8, 60, Algorithm::Sha256)
+        );
+        assert_eq!(back.issuer.as_deref(), Some("Acme Corp"));
+        for t in [0, 59, 1_234_567_890] {
+            assert_eq!(back.code_at(t), original.code_at(t));
+        }
+        // A bare setup key exports with the defaults.
+        let bare = Totp::parse("JBSW Y3DP EHPK 3PXP")
+            .unwrap()
+            .to_uri("github", "octocat");
+        assert_eq!(
+            bare.as_str(),
+            "otpauth://totp/github:octocat?secret=JBSWY3DPEHPK3PXP&issuer=github&algorithm=SHA1&digits=6&period=30"
+        );
     }
 }

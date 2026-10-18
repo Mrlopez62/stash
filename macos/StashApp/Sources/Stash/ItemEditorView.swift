@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 enum EditorTarget: Identifiable {
     case new(ItemKind)
@@ -36,125 +37,270 @@ struct ItemEditorView: View {
     @ViewState private var secretLabel = "value"
     @ViewState private var showGenerator = false
     @ViewState private var showSecret = false
+    /// The result of the last QR scan, shown under the 2FA field.
+    @ViewState private var qrStatus: QRStatus?
+    @ViewState private var dropTargeted = false
 
     private var isNew: Bool { if case .new = target { true } else { false } }
     private var original: ItemDetail? { if case .edit(let d) = target { d } else { nil } }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
+        VStack(spacing: 0) {
             HStack(spacing: 12) {
-                ItemIcon(kind: kind, size: 36)
+                ItemIcon(kind: kind, size: 34)
                 Text(isNew ? "New \(kind.title)" : "Edit \(original?.name ?? "")")
-                    .font(.system(size: 17, weight: .semibold))
-            }
-            .padding(20)
-
-            Form {
-                TextField("Name", text: $name, prompt: Text("e.g. github or work/aws"))
-                    .font(.mono(13))
-
-                if kind == .login {
-                    TextField("Username", text: $username)
-                }
-                if kind != .note {
-                    LabeledContent(kind == .login ? "Password" : "Value") {
-                        HStack {
-                            Group {
-                                if showSecret {
-                                    TextField("", text: $secret, prompt: Text(isNew ? "" : "Unchanged"))
-                                } else {
-                                    SecureField("", text: $secret, prompt: Text(isNew ? "" : "Unchanged"))
-                                }
-                            }
-                            .font(.mono(13))
-                            Button { showSecret.toggle() } label: {
-                                Image(systemName: showSecret ? "eye.slash" : "eye")
-                            }
-                            .buttonStyle(.borderless)
-                            if kind == .login {
-                                Button { showGenerator = true } label: {
-                                    Image(systemName: "dice")
-                                }
-                                .buttonStyle(.borderless)
-                                .help("Generate a password")
-                                .popover(isPresented: $showGenerator) {
-                                    GeneratorView { secret = $0; showSecret = true; showGenerator = false }
-                                }
-                            }
-                        }
-                    }
-                }
-                if kind == .login {
-                    TextField("Website", text: $website, prompt: Text("https://"))
-                    LabeledContent("2FA") {
-                        if hadOTP && !removeOTP {
-                            HStack {
-                                SecureField("", text: $otp, prompt: Text("Unchanged"))
-                                Button("Remove") { removeOTP = true; otp = "" }
-                                    .buttonStyle(.borderless)
-                            }
-                        } else {
-                            SecureField("", text: $otp, prompt: Text("otpauth:// URI or setup key (optional)"))
-                        }
-                    }
-                }
-
-                Section("Notes") {
-                    if hadNotes && !notesLoaded {
-                        Button("Edit notes…") {
-                            Task {
-                                notes = await model.reveal("notes") ?? ""
-                                notesLoaded = true
-                            }
-                        }
-                    } else {
-                        TextEditor(text: $notes)
-                            .font(.system(size: 13))
-                            .frame(minHeight: kind == .note ? 160 : 60)
-                    }
-                }
-
-                if kind != .note {
-                    Section("More fields") {
-                        ForEach($custom) { $field in
-                            HStack {
-                                TextField("Label", text: $field.label).frame(width: 140)
-                                TextField("Value", text: $field.value)
-                                Button { custom.removeAll { $0.id == field.id } } label: {
-                                    Image(systemName: "minus.circle")
-                                }
-                                .buttonStyle(.borderless)
-                            }
-                        }
-                        ForEach(keptHidden) { f in
-                            LabeledContent(f.label) { Text("hidden · kept").foregroundStyle(.secondary) }
-                        }
-                        Button("Add field") { custom.append(CustomField()) }
-                            .buttonStyle(.borderless)
-                    }
-                }
-            }
-            .formStyle(.grouped)
-
-            if let error = model.error {
-                Text(error).font(.callout).foregroundStyle(.red).padding(.horizontal, 20)
-            }
-            HStack {
-                if let problem {
-                    Text(problem).font(.caption).foregroundStyle(.secondary)
-                }
+                    .font(.plex(17, weight: .semibold))
+                    .foregroundStyle(Color.ink)
                 Spacer()
-                Button("Cancel") { dismiss() }
-                    .keyboardShortcut(.cancelAction)
-                Button(isNew ? "Create" : "Save") { Task { await save() } }
-                    .keyboardShortcut(.defaultAction)
-                    .buttonStyle(AmberButtonStyle())
-                    .disabled(problem != nil || model.busy)
             }
-            .padding(20)
+            .padding(.horizontal, 24)
+            .padding(.top, 22)
+            .padding(.bottom, 16)
+
+            ScrollView {
+                VStack(spacing: 16) {
+                    Card(padding: 16, fill: true) {
+                        VStack(alignment: .leading, spacing: 14) {
+                            LabeledInput("Name", hint: "Use a slash for folders, like work/aws") {
+                                FieldBox {
+                                    TextField("", text: $name, prompt: Text("github").foregroundStyle(Color.inkTertiary))
+                                }
+                            }
+                            if kind == .login {
+                                LabeledInput("Username") {
+                                    FieldBox(mono: false) {
+                                        TextField("", text: $username, prompt: Text("you@example.com").foregroundStyle(Color.inkTertiary))
+                                    }
+                                }
+                            }
+                            if kind != .note { secretInput }
+                            if kind == .login {
+                                LabeledInput("Website") {
+                                    FieldBox(mono: false) {
+                                        TextField("", text: $website, prompt: Text("https://").foregroundStyle(Color.inkTertiary))
+                                    }
+                                }
+                                otpInput
+                            }
+                        }
+                    }
+
+                    Card(padding: 16, fill: true) {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Notes").font(.plex(11.5, weight: .medium)).foregroundStyle(Color.inkTertiary)
+                            if hadNotes && !notesLoaded {
+                                Button {
+                                    Task {
+                                        notes = await model.reveal("notes") ?? ""
+                                        notesLoaded = true
+                                    }
+                                } label: {
+                                    Label("Edit notes", systemImage: "eye")
+                                }
+                                .buttonStyle(SecondaryButtonStyle())
+                            } else {
+                                TextEditor(text: $notes)
+                                    .font(.plex(13.5))
+                                    .scrollContentBackground(.hidden)
+                                    .padding(8)
+                                    .frame(minHeight: kind == .note ? 180 : 72)
+                                    .background(Color.surfaceRaised, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                                    .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(Color.line))
+                            }
+                        }
+                    }
+
+                    if kind != .note {
+                        Card(padding: 16, fill: true) {
+                            VStack(alignment: .leading, spacing: 10) {
+                                Text("More fields").font(.plex(11.5, weight: .medium)).foregroundStyle(Color.inkTertiary)
+                                ForEach($custom) { $field in
+                                    HStack(spacing: 8) {
+                                        FieldBox(mono: false) {
+                                            TextField("", text: $field.label, prompt: Text("Label").foregroundStyle(Color.inkTertiary))
+                                        }
+                                        .frame(width: 150)
+                                        FieldBox {
+                                            TextField("", text: $field.value, prompt: Text("Value").foregroundStyle(Color.inkTertiary))
+                                        } trailing: {
+                                            IconButton("trash", help: "Remove field") {
+                                                custom.removeAll { $0.id == field.id }
+                                            }
+                                        }
+                                    }
+                                }
+                                ForEach(keptHidden) { f in
+                                    HStack {
+                                        Text(displayLabel(f.label)).font(.plex(13)).foregroundStyle(Color.ink)
+                                        Spacer()
+                                        Text("Hidden, kept as is").font(.plex(12)).foregroundStyle(Color.inkTertiary)
+                                    }
+                                }
+                                Button { custom.append(CustomField()) } label: {
+                                    Label("Add field", systemImage: "plus")
+                                }
+                                .buttonStyle(SecondaryButtonStyle())
+                                Text("For visible details like a recovery email. Keep secrets in their own item.")
+                                    .font(.plex(11.5))
+                                    .foregroundStyle(Color.inkTertiary)
+                            }
+                        }
+                    }
+                }
+                .padding(.horizontal, 24)
+                .padding(.bottom, 20)
+            }
+
+            VStack(spacing: 0) {
+                // A hint that the form scrolls under the footer.
+                LinearGradient(colors: [Color.canvas.opacity(0), Color.canvas], startPoint: .top, endPoint: .bottom)
+                    .frame(height: 14)
+                    .offset(y: -14)
+                    .padding(.bottom, -14)
+                    .allowsHitTesting(false)
+                Rectangle().fill(Color.line).frame(height: 1)
+                HStack(spacing: 10) {
+                    if let error = model.error {
+                        Label(error, systemImage: "exclamationmark.circle")
+                            .font(.plex(12))
+                            .foregroundStyle(Color.danger)
+                            .lineLimit(2)
+                    } else if let problem {
+                        Text(problem).font(.plex(12)).foregroundStyle(Color.inkTertiary)
+                    }
+                    Spacer()
+                    Button("Cancel") { dismiss() }
+                        .buttonStyle(SecondaryButtonStyle())
+                        .keyboardShortcut(.cancelAction)
+                    Button(isNew ? "Create" : "Save") { Task { await save() } }
+                        .buttonStyle(PrimaryButtonStyle())
+                        .keyboardShortcut(.defaultAction)
+                        .disabled(problem != nil || model.busy)
+                }
+                .padding(.horizontal, 24)
+                .padding(.vertical, 14)
+            }
+            .background(Color.surface)
         }
-        .frame(width: 520, height: 600)
+        .frame(width: 540)
+        .frame(minHeight: 420, idealHeight: kind == .login ? 760 : 560, maxHeight: 820)
+        .background(Color.canvas)
         .onAppear(perform: load)
+    }
+
+    private var secretInput: some View {
+        LabeledInput(kind == .login ? "Password" : "Value") {
+            FieldBox {
+                Group {
+                    if showSecret {
+                        TextField("", text: $secret, prompt: Text(isNew ? "" : "Unchanged").foregroundStyle(Color.inkTertiary))
+                    } else {
+                        SecureField("", text: $secret, prompt: Text(isNew ? "" : "Unchanged").foregroundStyle(Color.inkTertiary))
+                    }
+                }
+            } trailing: {
+                IconButton(showSecret ? "eye.slash" : "eye", help: showSecret ? "Hide" : "Show") { showSecret.toggle() }
+                if kind == .login {
+                    IconButton("dice", help: "Generate a password") { showGenerator = true }
+                        .popover(isPresented: $showGenerator, arrowEdge: .trailing) {
+                            GeneratorView { secret = $0; showSecret = true; showGenerator = false }
+                        }
+                }
+            }
+        }
+    }
+
+    private var otpInput: some View {
+        LabeledInput(
+            hadOTP && !removeOTP ? "Two-factor" : "Two-factor (optional)",
+            hint: qrStatus == nil ? "Scan the site's 2FA QR code, drop a screenshot of it here, or paste its setup key" : nil
+        ) {
+            VStack(alignment: .leading, spacing: 6) {
+                FieldBox {
+                    SecureField("", text: $otp, prompt: Text(hadOTP && !removeOTP ? "Unchanged" : "otpauth://… or setup key").foregroundStyle(Color.inkTertiary))
+                } trailing: {
+                    Menu {
+                        Button { Task { await scan { try await QRScanner.scanScreen() } } } label: {
+                            Label("Scan QR Code on Screen", systemImage: "qrcode.viewfinder")
+                        }
+                        Button { Task { await scan { try QRScanner.fromPasteboard() } } } label: {
+                            Label("Paste QR Code Image", systemImage: "doc.on.clipboard")
+                        }
+                        Button { Task { await scan { try QRScanner.chooseFile() } } } label: {
+                            Label("Choose Image…", systemImage: "photo")
+                        }
+                    } label: {
+                        Label("Scan QR", systemImage: "qrcode.viewfinder")
+                            .font(.plex(12, weight: .medium))
+                            .padding(.horizontal, 8)
+                            .frame(height: 26)
+                            .background(Color.surface, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                            .overlay(RoundedRectangle(cornerRadius: 6, style: .continuous).strokeBorder(Color.line))
+                    }
+                    .menuStyle(.borderlessButton)
+                    .menuIndicator(.hidden)
+                    .fixedSize()
+                    .tint(Color.inkSecondary)
+                    .foregroundStyle(Color.inkSecondary)
+                    .help("Set up 2FA from the site's QR code")
+                    if hadOTP && !removeOTP {
+                        IconButton("trash", help: "Remove two-factor") { removeOTP = true; otp = ""; qrStatus = nil }
+                    }
+                }
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .strokeBorder(Color.keyholeAmber, style: StrokeStyle(lineWidth: 1.5, dash: [5, 3]))
+                        .opacity(dropTargeted ? 1 : 0))
+                .onDrop(of: [.image, .fileURL], isTargeted: $dropTargeted, perform: dropped)
+                if let qrStatus {
+                    Label(qrStatus.text, systemImage: qrStatus.ok ? "checkmark.circle.fill" : "exclamationmark.circle")
+                        .font(.plex(11.5, weight: qrStatus.ok ? .medium : .regular))
+                        .foregroundStyle(qrStatus.ok ? Color.success : Color.danger)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+    }
+
+    /// Run a QR source and apply what it finds: the secret, plus a name and
+    /// username for new items that don't have them yet.
+    private func scan(_ source: () async throws -> OTPSetup?) async {
+        do {
+            guard let setup = try await source() else { return }
+            apply(setup)
+        } catch {
+            qrStatus = QRStatus(ok: false, text: error.localizedDescription)
+        }
+    }
+
+    private func apply(_ setup: OTPSetup) {
+        otp = setup.uri
+        removeOTP = false
+        if isNew && name.trimmingCharacters(in: .whitespaces).isEmpty, let suggested = setup.suggestedName {
+            name = suggested
+        }
+        if kind == .login && username.isEmpty, let account = setup.account {
+            username = account
+        }
+        let who = [setup.issuer, setup.account].compactMap { $0 }.joined(separator: " · ")
+        qrStatus = QRStatus(ok: true, text: who.isEmpty ? "Found a 2FA setup code" : "Found 2FA for \(who)")
+    }
+
+    private func dropped(_ providers: [NSItemProvider]) -> Bool {
+        guard let provider = providers.first else { return false }
+        if provider.canLoadObject(ofClass: URL.self) {
+            _ = provider.loadObject(ofClass: URL.self) { url, _ in
+                guard let url else { return }
+                Task { @MainActor in await scan { try QRScanner.fromFile(url) } }
+            }
+            return true
+        }
+        _ = provider.loadDataRepresentation(for: .image) { data, _ in
+            guard let data, let image = NSImage(data: data)?.cgImage(forProposedRect: nil, context: nil, hints: nil)
+            else { return }
+            Task { @MainActor in await scan { try QRScanner.setup(in: image) } }
+        }
+        return true
     }
 
     private var problem: String? {
@@ -237,6 +383,11 @@ struct ItemEditorView: View {
     }
 }
 
+struct QRStatus: Equatable {
+    var ok: Bool
+    var text: String
+}
+
 struct CustomField: Identifiable {
     let id = UUID()
     var label = ""
@@ -253,30 +404,59 @@ struct GeneratorView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
+            Text("Password generator").font(.plex(13, weight: .semibold)).foregroundStyle(Color.ink)
             Text(password.isEmpty ? " " : password)
-                .font(.mono(15, weight: .medium))
+                .font(.mono(14, weight: .medium))
+                .foregroundStyle(Color.ink)
                 .textSelection(.enabled)
                 .frame(width: 300, alignment: .leading)
                 .padding(10)
-                .background(Color.enclave, in: RoundedRectangle(cornerRadius: 8))
+                .background(Color.surfaceRaised, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(Color.line))
             HStack {
-                Text("Length \(Int(length))").font(.mono(12)).frame(width: 80, alignment: .leading)
+                Text("Length").font(.plex(12)).foregroundStyle(Color.inkSecondary)
                 Slider(value: $length, in: 12...64, step: 1)
+                Text("\(Int(length))").font(.mono(12)).foregroundStyle(Color.ink).frame(width: 24, alignment: .trailing)
             }
-            Toggle("Symbols", isOn: $symbols)
+            Toggle("Include symbols", isOn: $symbols).font(.plex(12.5))
             HStack {
-                Button("Regenerate") { Task { await regenerate() } }
+                Button { Task { await regenerate() } } label: { Label("Regenerate", systemImage: "arrow.clockwise") }
+                    .buttonStyle(SecondaryButtonStyle())
                 Spacer()
                 Button("Use Password") { use(password) }
-                    .buttonStyle(AmberButtonStyle())
+                    .buttonStyle(PrimaryButtonStyle())
                     .disabled(password.isEmpty)
             }
         }
         .padding(16)
+        .background(Color.surface)
         .task(id: "\(Int(length))-\(symbols)") { await regenerate() }
     }
 
     private func regenerate() async {
         password = await model.generate(length: Int(length), symbols: symbols) ?? ""
+    }
+}
+
+/// A label above an input, with an optional hint below.
+struct LabeledInput<Content: View>: View {
+    let label: String
+    var hint: String?
+    @ViewBuilder var content: Content
+
+    init(_ label: String, hint: String? = nil, @ViewBuilder content: () -> Content) {
+        self.label = label
+        self.hint = hint
+        self.content = content()
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(label).font(.plex(11.5, weight: .medium)).foregroundStyle(Color.inkTertiary)
+            content
+            if let hint {
+                Text(hint).font(.plex(11)).foregroundStyle(Color.inkTertiary)
+            }
+        }
     }
 }

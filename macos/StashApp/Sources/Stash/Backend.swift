@@ -26,6 +26,7 @@ protocol VaultBackend: AnyObject {
     func item(_ name: String) async throws -> ItemDetail
     func reveal(_ name: String, field: String) async throws -> String
     func otp(_ name: String) async throws -> OTPCode
+    func otpLink(_ name: String) async throws -> OTPLink
     func save(_ request: SaveRequest) async throws
     func delete(_ name: String) async throws
     func generate(length: Int, symbols: Bool) async throws -> String
@@ -167,6 +168,7 @@ final class RPCBackend: VaultBackend, @unchecked Sendable {
         return try await call("reveal", ["name": name, "field": field], as: Wrapper.self).value
     }
     func otp(_ name: String) async throws -> OTPCode { try await call("otp", ["name": name], as: OTPCode.self) }
+    func otpLink(_ name: String) async throws -> OTPLink { try await call("otp_uri", ["name": name], as: OTPLink.self) }
     func save(_ request: SaveRequest) async throws { _ = try await call("save", request.params) }
     func delete(_ name: String) async throws { _ = try await call("delete", ["name": name]) }
     func generate(length: Int, symbols: Bool) async throws -> String {
