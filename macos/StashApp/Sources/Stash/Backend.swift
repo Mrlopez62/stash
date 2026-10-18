@@ -12,6 +12,13 @@ struct BackendError: LocalizedError {
     var isLocked: Bool { code == -32001 }
     var isCancelled: Bool { code == -32004 }
     var isWrongPassword: Bool { code == -32003 }
+    var needsPassphrase: Bool { code == -32007 }
+}
+
+/// A new or imported SSH key's public half.
+struct SSHKeyInfo: Decodable {
+    var publicKey: String
+    var fingerprint: String
 }
 
 /// What the UI needs from a vault. `RPCBackend` is the real one; `MockBackend`
@@ -31,6 +38,8 @@ protocol VaultBackend: AnyObject {
     func delete(_ name: String) async throws
     func generate(length: Int, symbols: Bool) async throws -> String
     func enableTouchID(password: String) async throws
+    func sshGenerate(name: String, comment: String?) async throws -> SSHKeyInfo
+    func sshImport(name: String, key: String, passphrase: String?) async throws -> SSHKeyInfo
 }
 
 final class RPCBackend: VaultBackend, @unchecked Sendable {
@@ -176,6 +185,16 @@ final class RPCBackend: VaultBackend, @unchecked Sendable {
         return try await call("generate", ["length": length, "symbols": symbols], as: Wrapper.self).password
     }
     func enableTouchID(password: String) async throws { _ = try await call("enable_touch_id", ["password": password]) }
+    func sshGenerate(name: String, comment: String?) async throws -> SSHKeyInfo {
+        var params: [String: Any] = ["name": name]
+        if let comment { params["comment"] = comment }
+        return try await call("ssh_generate", params, as: SSHKeyInfo.self)
+    }
+    func sshImport(name: String, key: String, passphrase: String?) async throws -> SSHKeyInfo {
+        var params: [String: Any] = ["name": name, "key": key]
+        if let passphrase { params["passphrase"] = passphrase }
+        return try await call("ssh_import", params, as: SSHKeyInfo.self)
+    }
 }
 
 extension JSONDecoder {

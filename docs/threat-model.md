@@ -158,8 +158,32 @@ AI agents talk to `stash mcp` over stdio. The design assumes the agent may be co
 | Approving a request without reading it | ❌ | The prompt can only inform you. Check the command, especially `sh -c` scripts. |
 | `--no-approval` | ❌ | It turns off the main protection. It exists only for headless setups with `STASH_PASSWORD`. |
 
+## The SSH agent (`stash ssh agent`)
+
+The agent serves the vault's SSH keys over the standard agent protocol on `~/.stash/ssh-agent.sock` (mode `0600`, in a `0700` directory). It answers only processes running as the same user.
+
+- **Every signature needs Touch ID.** The prompt names the key, what the data is for, and the requesting process chain (for example "sign a git commit with SSH key “ssh/github”, for ssh-keygen ← git ← zsh"). The purpose is read from the data being signed: an SSH login names the remote user, and an `ssh-keygen -Y sign` signature names its namespace (`git` for commits). A fingerprint that unlocks the vault also approves the signature it was unlocked for.
+- **Listing isn't secret.** After the first unlock, public keys stay listed even when the vault relocks (after `--lock-after`, 10 minutes by default), so `ssh` can choose a key without a prompt. The list lives only in the agent's memory.
+- **No changes from outside.** Requests to add, remove, or lock keys, and protocol extensions, are refused. A compromised process can't plant its own key or wipe yours.
+- **Keys stay in the vault.** Each signature decrypts the key, signs, and drops it. Keys are stored unencrypted *inside* the encrypted vault, so the agent never needs a passphrase. Imports read a passphrase only to decrypt the file.
+- **AI agents can't get private keys.** `stash mcp` doesn't list SSH items and refuses references to them before any prompt.
+- **Audit log:** each signature, approved, declined, or failed, is logged by key name and purpose.
+
+| Threat | Protected? | How |
+|---|---|---|
+| Malware quietly using your key (to push code, or log in to servers) | ✅ | Every signature needs a fingerprint, on a dialog naming the purpose and the process. |
+| Stealing the key file | ✅ | There's no key file. Keys are only in the encrypted vault. |
+| A rogue process adding its own key to the agent | ✅ | Add, remove, and lock requests are refused. |
+| Agent forwarding (`ssh -A`) to a compromised server | Partial | The server can ask for signatures, but each one still needs your fingerprint, and the prompt shows the request came through `ssh`. Don't forward agents to hosts you don't trust. |
+| Approving a prompt without reading it | ❌ | The prompt can only inform you. An unexpected prompt, especially one you didn't cause, should be declined. |
+| `--no-approval` | ❌ | It turns off the main protection. It exists only for headless setups with `STASH_PASSWORD`. |
+
+Git signing uses a small wrapper (`~/.stash/git-ssh-sign`) that runs `ssh-keygen` with the agent's socket, so `SSH_AUTH_SOCK` doesn't have to change for the rest of the system.
+
 ## Planned features and their open questions
 
 - **Repeated approvals:** a prompt for every agent request is safe but can get tiring. A future option may let you approve one exact command for a few minutes.
 - **Programs started directly from the unlocked shell** can still use its session (see sessions above). Tighter options, like checking the requesting executable or binding sessions to a terminal device, are being considered.
-- **Linux:** there's no Touch ID equivalent yet, so `stash mcp` approvals only work on macOS for now.
+- **Linux:** there's no Touch ID equivalent yet, so `stash mcp` and SSH agent approvals only work on macOS for now.
+- **SSH approvals for a while:** a prompt per signature is the safe default. A future option may approve one key for one program for a few minutes, as 1Password does.
+- **More SSH key types:** RSA and ECDSA keys aren't supported yet; Ed25519 is what GitHub, GitLab, and `ssh-keygen` recommend.

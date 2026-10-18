@@ -163,6 +163,24 @@ stash ls --long                 # "Visa •••• 4242 · 08/27"
 - **Last four only in lists.** `show`, `ls --long`, and the app show just the last four digits until you reveal. In the app, a card gets a card face.
 - **Off-limits to AI agents by default.** `stash mcp` won't list or use cards and bank accounts unless you start it with `--allow-payments`. Blocked attempts go in the audit log.
 
+### SSH keys and git commit signing
+
+Keep SSH keys in the vault instead of `~/.ssh`. The stash SSH agent hands them to `ssh` and `git`, and every signature asks for Touch ID.
+
+```sh
+stash ssh generate ssh/github            # a new Ed25519 key; prints the public key for GitHub
+stash ssh import ssh/work ~/.ssh/id_ed25519   # or move an existing key in (asks for its passphrase)
+stash ssh install                        # run the agent at login, and print the ~/.ssh/config line
+stash ssh git-setup ssh/github --global  # sign every commit and tag with it
+```
+
+Then add the `IdentityAgent` line that `install` prints to the top of `~/.ssh/config`, and `ssh`, `git push`, and `git commit` use your stash keys.
+
+- **Touch ID per signature,** on a prompt that names the key, what it's for ("log in as git", "sign a git commit"), and the process asking.
+- **Private keys never leave stash.** Not to disk, not to AI agents: `stash mcp` refuses SSH keys outright, since commands that need them get them through the agent.
+- **Ed25519 keys,** in OpenSSH's format. Keys made by stash work with `ssh-keygen`, and `ssh-keygen` keys (including passphrase-protected ones) import into stash.
+- **Every signature is logged** in the audit log (`stash audit`), by key name.
+
 ### Logins, notes, and passwords
 
 Items come in three kinds: a single **secret** (an API token), a **login** (username, password, website, optional 2FA), or a **note**.
@@ -274,7 +292,7 @@ Rust handles everything that is security-critical and cross-platform. The Swift 
 | v0.7 ✅ | **The stash Mac app:** menu bar, Quick Access (⇧⌘Space), vault browser and editor, Touch ID, concealed clipboard. Ships the CLI and helpers inside `stash.app` |
 | v0.7.1 ✅ | 1Password-style redesign, bundled brand fonts, 2FA QR scanning and authenticator QR export |
 | v0.8 ✅ | **Payment cards** (card face, brand and checksum validation) and **bank accounts** (routing and IBAN validation), kept away from AI agents by default |
-| v0.9 | SSH agent, git commit signing |
+| v0.9 ✅ | **SSH keys:** an SSH agent with Touch ID per signature, git commit signing, Ed25519 generate and import |
 | v0.10 | **Browser autofill for logins and payments**: Chrome and Firefox first, then Safari. See the [design](docs/design/autofill.md) |
 | v0.x | A configurable Quick Access shortcut, launch at login, a signed and notarized download |
 | Later | Encrypted sync (iCloud Drive or Git), Linux support |
@@ -290,6 +308,7 @@ This compares stash's planned v1 with the other tools.
 | Secret references + `run` | ✅ | ✅ | Partial (Secrets Manager) | ❌ |
 | MCP / AI-agent support | ✅ built in, with per-use Touch ID approval | Limited | ❌ | ❌ |
 | Data stays local | ✅ | ❌ (cloud) | ❌ unless self-hosted | ✅ |
+| SSH agent + git signing | ✅ with Touch ID per signature | ✅ | ❌ | ❌ |
 | Browser autofill | Later | ✅ | ✅ | Via plugins |
 
 ## Brand

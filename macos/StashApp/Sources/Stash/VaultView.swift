@@ -96,6 +96,7 @@ struct Sidebar: View {
                         row(.kind(.note), ItemKind.note.symbol)
                         row(.kind(.card), ItemKind.card.symbol)
                         row(.kind(.bank), ItemKind.bank.symbol)
+                        row(.kind(.ssh), ItemKind.ssh.symbol)
                     }
                     if !model.folders.isEmpty {
                         SidebarSection(title: "Folders") {
@@ -447,12 +448,15 @@ struct RowActions: View {
                     case .login: "Copy password"
                     case .card: "Copy card number"
                     case .bank: "Copy account number"
+                    case .ssh: "Copy public key"
                     default: "Copy value"
                     }
                 }()) {
                     Task {
                         if await model.copyPrimary(item) {
-                            model.flash("Copied \(item.title) · clears in \(Int(Clipboard.clearAfter))s")
+                            model.flash(item.kind == .ssh
+                                ? "Copied \(item.title)'s public key"
+                                : "Copied \(item.title) · clears in \(Int(Clipboard.clearAfter))s")
                         }
                     }
                 }
@@ -480,6 +484,7 @@ struct KindBadge: View {
         case .note: Badge(text: "Note")
         case .card: Badge(text: "Card")
         case .bank: Badge(text: "Bank")
+        case .ssh: Badge(text: "SSH")
         }
     }
 }

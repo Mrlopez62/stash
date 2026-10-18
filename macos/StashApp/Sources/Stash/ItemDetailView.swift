@@ -61,6 +61,12 @@ struct InspectorView: View {
                             guard detail.fields.contains(where: { $0.label == "cvv" }) else { return nil }
                             return await model.reveal("cvv")
                         })
+                } else if detail.kind == .ssh,
+                          let fingerprint = detail.fields.first(where: { $0.label == "fingerprint" })?.value {
+                    let publicKey = detail.fields.first { $0.label == "public key" }?.value
+                    SSHKeyPanel(fingerprint: fingerprint, publicKey: publicKey) {
+                        if let publicKey { model.copyPlain(publicKey, label: "public key") }
+                    }
                 } else if detail.kind == .bank, let subtitle = detail.subtitle {
                     Label(subtitle, systemImage: "building.columns")
                         .font(.plex(13, weight: .medium))

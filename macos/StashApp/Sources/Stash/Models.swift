@@ -1,7 +1,7 @@
 import Foundation
 
 enum ItemKind: String, Codable, CaseIterable, Identifiable {
-    case login, secret, note, card, bank
+    case login, secret, note, card, bank, ssh
     var id: String { rawValue }
 
     var title: String {
@@ -11,6 +11,7 @@ enum ItemKind: String, Codable, CaseIterable, Identifiable {
         case .note: "Secure Note"
         case .card: "Payment Card"
         case .bank: "Bank Account"
+        case .ssh: "SSH Key"
         }
     }
 
@@ -23,6 +24,7 @@ enum ItemKind: String, Codable, CaseIterable, Identifiable {
         case .note: "note.text"
         case .card: "creditcard"
         case .bank: "building.columns"
+        case .ssh: "terminal"
         }
     }
 }
