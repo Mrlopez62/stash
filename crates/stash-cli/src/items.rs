@@ -371,6 +371,11 @@ pub fn edit(vault: &mut Vault, name: &str, args: &EditArgs) -> Result<()> {
             item.kind
         );
     }
+    if item.kind == Kind::Ssh && (touches_login || changes_password) {
+        bail!(
+            "{name} is an SSH key; to replace it, use `stash ssh generate` or `stash ssh import` with --force"
+        );
+    }
     if item.kind == Kind::Note && (changes_password || login.otp) {
         bail!("{name} is a note, which has no password or 2FA");
     }
