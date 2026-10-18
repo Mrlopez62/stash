@@ -248,6 +248,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let name = options.editor {
             if name == "new" {
                 model.editor = .new(.login)
+            } else if name.hasPrefix("new-"), let kind = ItemKind(rawValue: String(name.dropFirst(4))) {
+                model.editor = .new(kind)
             } else if let detail = model.detail {
                 model.editor = .edit(detail)
             }

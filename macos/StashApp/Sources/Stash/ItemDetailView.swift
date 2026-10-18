@@ -52,6 +52,17 @@ struct InspectorView: View {
                 }
                 .padding(.top, 36)
 
+                if let face = detail.card {
+                    CardFaceView(
+                        face: face,
+                        cardholder: detail.fields.first { $0.label == "cardholder" }?.value,
+                        expiry: detail.fields.first { $0.label == "expiry" }?.value)
+                } else if detail.kind == .bank, let subtitle = detail.subtitle {
+                    Label(subtitle, systemImage: "building.columns")
+                        .font(.plex(13, weight: .medium))
+                        .foregroundStyle(Color.inkSecondary)
+                }
+
                 if detail.binary {
                     Text("This secret holds binary data. Use `stash get \(detail.name)` in the terminal.")
                         .font(.plex(13))
@@ -63,7 +74,7 @@ struct InspectorView: View {
                         VStack(spacing: 0) {
                             ForEach(Array(detail.fields.enumerated()), id: \.element.id) { index, field in
                                 if index > 0 { Rectangle().fill(Color.line).frame(height: 1) }
-                                FieldRow(field: field)
+                                FieldRow(field: field, maskedPreview: maskedPreview(for: field))
                             }
                             if detail.hasNotes {
                                 if !detail.fields.isEmpty { Rectangle().fill(Color.line).frame(height: 1) }
@@ -117,6 +128,15 @@ struct InspectorView: View {
         }
     }
 
+    /// Card and account numbers show their last four while hidden, the way
+    /// a statement does.
+    private func maskedPreview(for field: FieldInfo) -> String? {
+        guard detail.kind.isPayment, ["number", "account number", "iban"].contains(field.label) else { return nil }
+        if field.label == "number", let last4 = detail.card?.last4 { return "•••• •••• •••• \(last4)" }
+        // "Chase · Checking •••• 6789" → "6789"
+        return detail.subtitle?.split(separator: " ").last.map { "•••• \($0)" }
+    }
+
     /// The icon already shows the kind, so only the folder needs saying.
     private var folder: String? {
         let folder = detail.name.split(separator: "/").dropLast().joined(separator: "/")
@@ -164,6 +184,8 @@ struct NotesRow: View {
 struct FieldRow: View {
     @EnvironmentObject var model: AppModel
     let field: FieldInfo
+    /// For card and account numbers: e.g. "•••• 4242" while hidden.
+    var maskedPreview: String?
     @ViewState private var revealed: String?
     @ViewState private var code: OTPCode?
     @ViewState private var fetchedAt = Date()
@@ -213,7 +235,7 @@ struct FieldRow: View {
                 Text("••• •••").font(.mono(19)).foregroundStyle(Color.inkTertiary)
             }
         case .concealed:
-            Text(revealed ?? concealedMask)
+            Text(revealed ?? maskedPreview ?? concealedMask)
                 .font(.mono(13.5, weight: revealed == nil ? .regular : .medium))
                 .foregroundStyle(Color.ink)
                 .textSelection(.enabled)
@@ -228,7 +250,7 @@ struct FieldRow: View {
                 Text(field.value ?? "").font(.plex(13.5)).foregroundStyle(Color.ink)
             }
         case .text, .email:
-            Text(field.value ?? "")
+            Text(displayValue(field.value ?? "", label: field.label))
                 .font(.plex(13.5))
                 .foregroundStyle(Color.ink)
                 .textSelection(.enabled)

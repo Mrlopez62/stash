@@ -37,6 +37,24 @@ struct ItemEditorView: View {
     @ViewState private var secretLabel = "value"
     @ViewState private var showGenerator = false
     @ViewState private var showSecret = false
+    // Payment cards. Sensitive values are empty unless being changed.
+    @ViewState private var cardholder = ""
+    @ViewState private var cardNumber = ""
+    @ViewState private var expiry = ""
+    @ViewState private var cvv = ""
+    @ViewState private var pin = ""
+    @ViewState private var billingZip = ""
+    @ViewState private var showCardNumber = false
+    /// Which sensitive payment fields the item already has (kept if untouched).
+    @ViewState private var storedSensitive: Set<String> = []
+    // Bank accounts.
+    @ViewState private var bankName = ""
+    @ViewState private var holder = ""
+    @ViewState private var accountType = "checking"
+    @ViewState private var routing = ""
+    @ViewState private var accountNumber = ""
+    @ViewState private var iban = ""
+    @ViewState private var swift = ""
     /// The result of the last QR scan, shown under the 2FA field.
     @ViewState private var qrStatus: QRStatus?
     @ViewState private var dropTargeted = false
@@ -63,7 +81,7 @@ struct ItemEditorView: View {
                         VStack(alignment: .leading, spacing: 14) {
                             LabeledInput("Name", hint: "Use a slash for folders, like work/aws") {
                                 FieldBox {
-                                    TextField("", text: $name, prompt: Text("github").foregroundStyle(Color.inkTertiary))
+                                    TextField("", text: $name, prompt: Text(namePlaceholder).foregroundStyle(Color.inkTertiary))
                                 }
                             }
                             if kind == .login {
@@ -73,7 +91,12 @@ struct ItemEditorView: View {
                                     }
                                 }
                             }
-                            if kind != .note { secretInput }
+                            switch kind {
+                            case .login, .secret: secretInput
+                            case .card: cardInputs
+                            case .bank: bankInputs
+                            case .note: EmptyView()
+                            }
                             if kind == .login {
                                 LabeledInput("Website") {
                                     FieldBox(mono: false) {
@@ -186,6 +209,118 @@ struct ItemEditorView: View {
         .frame(minHeight: 420, idealHeight: kind == .login ? 760 : 560, maxHeight: 820)
         .background(Color.canvas)
         .onAppear(perform: load)
+    }
+
+    private var namePlaceholder: String {
+        switch kind {
+        case .login: "github"
+        case .secret: "openai/api-key"
+        case .note: "notes/wifi"
+        case .card: "cards/visa"
+        case .bank: "banks/chase-checking"
+        }
+    }
+
+    private func keepPrompt(_ label: String, _ empty: String = "") -> Text {
+        Text(storedSensitive.contains(label) ? "Unchanged" : empty).foregroundStyle(Color.inkTertiary)
+    }
+
+    @ViewBuilder private var cardInputs: some View {
+        LabeledInput("Cardholder") {
+            FieldBox(mono: false) {
+                TextField("", text: $cardholder, prompt: Text("Name on the card").foregroundStyle(Color.inkTertiary))
+            }
+        }
+        LabeledInput("Card number") {
+            VStack(alignment: .leading, spacing: 6) {
+                FieldBox {
+                    Group {
+                        if showCardNumber {
+                            TextField("", text: $cardNumber, prompt: keepPrompt("number", "1234 5678 9012 3456"))
+                        } else {
+                            SecureField("", text: $cardNumber, prompt: keepPrompt("number", "1234 5678 9012 3456"))
+                        }
+                    }
+                } trailing: {
+                    IconButton(showCardNumber ? "eye.slash" : "eye", help: showCardNumber ? "Hide" : "Show") {
+                        showCardNumber.toggle()
+                    }
+                }
+                if let status = PaymentHints.cardStatus(cardNumber) {
+                    Label(status.text, systemImage: status.ok ? "checkmark.circle.fill" : "exclamationmark.circle")
+                        .font(.plex(11.5, weight: .medium))
+                        .foregroundStyle(status.ok ? Color.success : Color.danger)
+                }
+            }
+        }
+        HStack(alignment: .top, spacing: 12) {
+            LabeledInput("Expires") {
+                FieldBox {
+                    TextField("", text: $expiry, prompt: Text("MM/YY").foregroundStyle(Color.inkTertiary))
+                        .onChange(of: expiry) { _, new in
+                            let formatted = PaymentHints.formatExpiry(new)
+                            if !new.contains("/") && formatted != new { expiry = formatted }
+                        }
+                }
+            }
+            LabeledInput("Security code") {
+                FieldBox { SecureField("", text: $cvv, prompt: keepPrompt("cvv", "CVV")) }
+            }
+            LabeledInput("PIN") {
+                FieldBox { SecureField("", text: $pin, prompt: keepPrompt("pin", "Optional")) }
+            }
+        }
+        LabeledInput("Billing ZIP or postal code") {
+            FieldBox { TextField("", text: $billingZip, prompt: Text("Optional").foregroundStyle(Color.inkTertiary)) }
+        }
+    }
+
+    @ViewBuilder private var bankInputs: some View {
+        HStack(alignment: .top, spacing: 12) {
+            LabeledInput("Bank") {
+                FieldBox(mono: false) {
+                    TextField("", text: $bankName, prompt: Text("Chase").foregroundStyle(Color.inkTertiary))
+                }
+            }
+            LabeledInput("Account type") {
+                Picker("", selection: $accountType) {
+                    Text("Checking").tag("checking")
+                    Text("Savings").tag("savings")
+                    Text("Business").tag("business")
+                    Text("Other").tag("other")
+                }
+                .labelsHidden()
+                .pickerStyle(.menu)
+                .frame(width: 140)
+            }
+        }
+        LabeledInput("Account holder") {
+            FieldBox(mono: false) {
+                TextField("", text: $holder, prompt: Text("Name on the account").foregroundStyle(Color.inkTertiary))
+            }
+        }
+        LabeledInput("Routing number", hint: routingHint) {
+            FieldBox { TextField("", text: $routing, prompt: Text("9 digits (US)").foregroundStyle(Color.inkTertiary)) }
+        }
+        LabeledInput("Account number") {
+            FieldBox { SecureField("", text: $accountNumber, prompt: keepPrompt("account number")) }
+        }
+        HStack(alignment: .top, spacing: 12) {
+            LabeledInput("IBAN") {
+                FieldBox { SecureField("", text: $iban, prompt: keepPrompt("iban", "Optional, outside the US")) }
+            }
+            LabeledInput("SWIFT/BIC") {
+                FieldBox { TextField("", text: $swift, prompt: Text("Optional").foregroundStyle(Color.inkTertiary)) }
+            }
+            .frame(width: 150)
+        }
+    }
+
+    private var routingHint: String? {
+        let d = PaymentHints.digits(routing)
+        guard !d.isEmpty else { return nil }
+        if d.count < 9 { return nil }
+        return PaymentHints.routingOK(d) ? "Routing number checks out" : "That routing number doesn't check out; look for a typo"
     }
 
     private var secretInput: some View {
@@ -311,6 +446,18 @@ struct ItemEditorView: View {
             return kind == .login ? "Enter or generate a password." : "Enter the secret's value."
         }
         if kind == .note && notes.isEmpty && !(hadNotes && !notesLoaded) { return "Write the note." }
+        if kind == .card {
+            if isNew && cardNumber.isEmpty { return "Enter the card number." }
+            if !cardNumber.isEmpty && !PaymentHints.luhn(cardNumber) { return "Check the card number for a typo." }
+            if !expiry.isEmpty && expiry.range(of: #"^\d{1,2}/(\d{2}|\d{4})$"#, options: .regularExpression) == nil {
+                return "Use MM/YY for the expiry date."
+            }
+        }
+        if kind == .bank {
+            let hasStored = storedSensitive.contains("account number") || storedSensitive.contains("iban")
+            if accountNumber.isEmpty && iban.isEmpty && !hasStored { return "Enter an account number or an IBAN." }
+            if !routing.isEmpty && !PaymentHints.routingOK(routing) { return "Check the routing number for a typo." }
+        }
         if custom.contains(where: { $0.label.trimmingCharacters(in: .whitespaces).isEmpty }) {
             return "Every field needs a label."
         }
@@ -334,6 +481,17 @@ struct ItemEditorView: View {
                 case (.login, _) where f.kind == .otp && !hadOTP: hadOTP = true
                 case (.login, "password"): break
                 case (.secret, _) where i == 0: secretLabel = f.label
+                case (.card, "cardholder"): cardholder = f.value ?? ""
+                case (.card, "expiry"): expiry = f.value ?? ""
+                case (.card, "billing zip"): billingZip = f.value ?? ""
+                case (.card, "number"), (.card, "cvv"), (.card, "pin"),
+                     (.bank, "account number"), (.bank, "iban"), (.bank, "pin"):
+                    storedSensitive.insert(f.label)
+                case (.bank, "bank"): bankName = f.value ?? ""
+                case (.bank, "account holder"): holder = f.value ?? ""
+                case (.bank, "account type"): accountType = f.value ?? "checking"
+                case (.bank, "routing number"): routing = f.value ?? ""
+                case (.bank, "swift"): swift = f.value ?? ""
                 default:
                     if f.kind.isSensitive {
                         keptHidden.append(f)
@@ -362,6 +520,22 @@ struct ItemEditorView: View {
             }
         case .secret:
             fields.append(.init(label: secretLabel, kind: .concealed, value: isNew ? secret : keepOrNew(secret)))
+        case .card:
+            appendText("cardholder", cardholder, to: &fields)
+            appendSecret("number", cardNumber, to: &fields)
+            appendText("expiry", expiry, to: &fields)
+            appendSecret("cvv", cvv, to: &fields)
+            appendSecret("pin", pin, to: &fields)
+            appendText("billing zip", billingZip, to: &fields)
+        case .bank:
+            appendText("bank", bankName, to: &fields)
+            appendText("account holder", holder, to: &fields)
+            appendText("account type", accountType, to: &fields)
+            appendText("routing number", routing, to: &fields)
+            appendSecret("account number", accountNumber, to: &fields)
+            appendSecret("iban", iban, to: &fields)
+            appendText("swift", swift, to: &fields)
+            appendSecret("pin", pin, to: &fields)
         case .note:
             break
         }
@@ -378,7 +552,26 @@ struct ItemEditorView: View {
         if await model.save(request) {
             secret = ""
             otp = ""
+            cardNumber = ""
+            cvv = ""
+            pin = ""
+            accountNumber = ""
+            iban = ""
             dismiss()
+        }
+    }
+
+    private func appendText(_ label: String, _ value: String, to fields: inout [SaveField]) {
+        let v = value.trimmingCharacters(in: .whitespaces)
+        if !v.isEmpty { fields.append(.init(label: label, kind: .text, value: v)) }
+    }
+
+    /// A new value if typed; "keep" if the item already has one; else nothing.
+    private func appendSecret(_ label: String, _ value: String, to fields: inout [SaveField]) {
+        if !value.isEmpty {
+            fields.append(.init(label: label, kind: .concealed, value: value))
+        } else if storedSensitive.contains(label) {
+            fields.append(.init(label: label, kind: .concealed, value: nil))
         }
     }
 }
