@@ -94,7 +94,6 @@ struct Sidebar: View {
                         row(.kind(.login), ItemKind.login.symbol)
                         row(.kind(.secret), ItemKind.secret.symbol)
                         row(.kind(.note), ItemKind.note.symbol)
-                        row(.twoFactor, "clock.badge.checkmark")
                     }
                     if !model.folders.isEmpty {
                         SidebarSection(title: "Folders") {

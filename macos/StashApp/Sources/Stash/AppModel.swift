@@ -27,14 +27,12 @@ final class AppModel: ObservableObject {
     enum Filter: Hashable {
         case all
         case kind(ItemKind)
-        case twoFactor
         case folder(String)
 
         var title: String {
             switch self {
             case .all: "All Items"
             case .kind(let k): k == .note ? "Secure Notes" : "\(k.title)s"
-            case .twoFactor: "Two-Factor"
             case .folder(let f): f
             }
         }
@@ -49,7 +47,6 @@ final class AppModel: ObservableObject {
         switch filter {
         case .all: true
         case .kind(let k): item.kind == k
-        case .twoFactor: item.hasOtp
         case .folder(let f): item.folder?.split(separator: "/").first.map(String.init) == f
         }
     }

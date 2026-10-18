@@ -10,6 +10,7 @@ All notable changes to stash. The format follows [Keep a Changelog](https://keep
   - **Table:** columns adapt to the window width and always leave room for names. Copy buttons appear on hover.
   - **Inspector:** the selected item opens in a panel beside the table.
   - **Editor:** rebuilt from the app's own components.
+- **No "Two-Factor" sidebar filter.** It duplicated the table's 2FA column. The 2FA field and codes are unchanged.
 - **Brand look throughout.** The app follows the system light or dark appearance, in the brand palette. It bundles JetBrains Mono and IBM Plex Sans (OFL), and keeps amber for the primary action, the selection, secrets, and 2FA timers.
 - **Quick Access.** Keycap hints, ⌥↩ to copy a 2FA code, and a no-results state.
 
