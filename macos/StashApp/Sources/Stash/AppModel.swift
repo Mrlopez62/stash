@@ -270,6 +270,12 @@ final class MockBackend: VaultBackend {
             .init(name: "cloudflare/api-token", kind: .secret, username: nil, url: nil, hasOtp: false, updated: now - 26 * 86_400),
             .init(name: "linear", kind: .login, username: "joshua@acme.dev", url: "https://linear.app", hasOtp: false, updated: now - 40 * 86_400),
             .init(name: "notes/home-wifi", kind: .note, username: nil, url: nil, hasOtp: false, updated: now - 60 * 86_400),
+            .init(name: "cards/visa", kind: .card, username: nil, url: nil, hasOtp: false, updated: now - 4 * 86_400,
+                  subtitle: "Visa •••• 4242 · 08/27"),
+            .init(name: "cards/amex-business", kind: .card, username: nil, url: nil, hasOtp: false, updated: now - 30 * 86_400,
+                  subtitle: "American Express •••• 0005 · 11/28"),
+            .init(name: "banks/chase-checking", kind: .bank, username: nil, url: nil, hasOtp: false, updated: now - 14 * 86_400,
+                  subtitle: "Chase · Checking •••• 6789"),
             .init(name: "notes/recovery-codes", kind: .note, username: nil, url: nil, hasOtp: false, updated: now - 90 * 86_400),
         ]
     }()
@@ -309,11 +315,34 @@ final class MockBackend: VaultBackend {
             fields = [.init(label: "value", kind: .concealed, value: nil)]
         case .note:
             fields = []
+        case .card:
+            fields = [
+                .init(label: "cardholder", kind: .text, value: "Joshua Lopez"),
+                .init(label: "number", kind: .concealed, value: nil),
+                .init(label: "expiry", kind: .text, value: "08/27"),
+                .init(label: "cvv", kind: .concealed, value: nil),
+                .init(label: "billing zip", kind: .text, value: "78666"),
+            ]
+        case .bank:
+            fields = [
+                .init(label: "bank", kind: .text, value: "Chase"),
+                .init(label: "account holder", kind: .text, value: "Joshua Lopez"),
+                .init(label: "account type", kind: .text, value: "checking"),
+                .init(label: "routing number", kind: .text, value: "021000021"),
+                .init(label: "account number", kind: .concealed, value: nil),
+            ]
         }
-        return .init(name: name, kind: summary.kind, fields: fields,
-                     hasNotes: summary.kind != .secret, binary: false, created: summary.updated, updated: summary.updated)
+        let card = summary.kind == .card
+            ? CardFace(brand: summary.subtitle?.components(separatedBy: " •").first ?? "Card",
+                       last4: String(summary.subtitle?.split(separator: " ").dropLast(2).last ?? "4242"))
+            : nil
+        return .init(name: name, kind: summary.kind, subtitle: summary.subtitle, card: card, fields: fields,
+                     hasNotes: summary.kind == .login || summary.kind == .note, binary: false,
+                     created: summary.updated, updated: summary.updated)
     }
-    func reveal(_ name: String, field: String) async throws -> String { "correct-horse-battery" }
+    func reveal(_ name: String, field: String) async throws -> String {
+        field == "cvv" ? (name.contains("amex") ? "4321" : "123") : "correct-horse-battery"
+    }
     func otp(_ name: String) async throws -> OTPCode { .init(code: "482913", remaining: 18, period: 30) }
     func otpLink(_ name: String) async throws -> OTPLink {
         .init(uri: "otpauth://totp/\(name):octocat?secret=JBSWY3DPEHPK3PXP&issuer=\(name)", issuer: name, account: "octocat")

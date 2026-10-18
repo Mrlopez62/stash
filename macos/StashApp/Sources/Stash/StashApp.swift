@@ -248,6 +248,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let name = options.editor {
             if name == "new" {
                 model.editor = .new(.login)
+            } else if name.hasPrefix("new-"), let kind = ItemKind(rawValue: String(name.dropFirst(4))) {
+                model.editor = .new(kind)
             } else if let detail = model.detail {
                 model.editor = .edit(detail)
             }
@@ -266,7 +268,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             view.cacheDisplay(in: view.bounds, to: rep)
             try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: path))
         }
-        NSApp.terminate(nil)
+        // terminate(_:) waits on an attached sheet; snapshots hold only mock data.
+        exit(0)
     }
 }
 
@@ -296,6 +299,7 @@ struct LaunchOptions {
             case "--selftest": o.selftest = true
             case "--appearance": o.appearance = args.next()
             case "--editor": o.editor = args.next()
+            case "--card-back": PremiumCard.startFlipped = true
             case "--size":
                 let parts = (args.next() ?? "").split(separator: "x").compactMap { Double($0) }
                 if parts.count == 2 { o.size = NSSize(width: parts[0], height: parts[1]) }

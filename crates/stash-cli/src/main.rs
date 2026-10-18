@@ -43,7 +43,7 @@ enum Command {
     /// Store a secret, login, or note (secret values are read from stdin or
     /// a prompt without echo, never from flags)
     #[command(
-        after_help = "Examples:\n  stash add openai/api-key                     # a single secret\n  stash add github --login --username octocat --url https://github.com --generate\n  stash add github --login --otp               # asks for the password and 2FA secret\n  stash add notes/wifi --note"
+        after_help = "Examples:\n  stash add openai/api-key                     # a single secret\n  stash add github --login --username octocat --url https://github.com --generate\n  stash add github --login --otp               # asks for the password and 2FA secret\n  stash add notes/wifi --note\n  stash add cards/visa --card --cardholder 'J Lopez' --expiry 08/27\n  stash add banks/chase --bank --bank-name Chase --routing 021000021 --account-type checking"
     )]
     Add {
         /// Item name, e.g. `github/token`
@@ -52,13 +52,22 @@ enum Command {
         #[arg(long, short)]
         force: bool,
         /// Create a login (username, password, website, 2FA)
-        #[arg(long, conflicts_with = "note")]
+        #[arg(long, conflicts_with_all = ["note", "card", "bank"])]
         login: bool,
         /// Create a secure note
-        #[arg(long)]
+        #[arg(long, conflicts_with_all = ["card", "bank"])]
         note: bool,
+        /// Create a payment card (number and security code are asked for
+        /// without echo)
+        #[arg(long, conflicts_with = "bank")]
+        card: bool,
+        /// Create a bank account (account number is asked for without echo)
+        #[arg(long)]
+        bank: bool,
         #[command(flatten)]
         fields: items::LoginArgs,
+        #[command(flatten)]
+        payment: items::PaymentArgs,
     },
     /// Change an item's fields
     #[command(
@@ -178,6 +187,9 @@ enum Command {
         /// Offer the request_secret tool, which returns raw values to the agent
         #[arg(long)]
         allow_reveal: bool,
+        /// Let agents use payment cards and bank accounts (off by default)
+        #[arg(long)]
+        allow_payments: bool,
         /// Don't ask for Touch ID per request (headless use with STASH_PASSWORD only)
         #[arg(long)]
         no_approval: bool,
@@ -272,12 +284,19 @@ fn run(cli: Cli) -> Result<ExitCode> {
             force,
             login,
             note,
+            card,
+            bank,
             fields,
+            payment,
         } => {
             stash_core::validate_name(&name)?;
             let mut vault = unlock(&path, &format!("add {name}"))?;
             if login {
                 items::add_login(&mut vault, &name, &fields, force)?;
+            } else if card {
+                items::add_card(&mut vault, &name, &payment, force)?;
+            } else if bank {
+                items::add_bank(&mut vault, &name, &payment, force)?;
             } else if note {
                 items::add_note(&mut vault, &name, force)?;
             } else {
@@ -385,6 +404,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
         Command::Mcp {
             allow,
             allow_reveal,
+            allow_payments,
             no_approval,
         } => {
             for pattern in &allow {
@@ -395,6 +415,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
             let opts = mcp::Options {
                 allow,
                 allow_reveal,
+                allow_payments,
                 no_approval,
                 idle_timeout: session_timeout()?.unwrap_or(Duration::ZERO),
             };

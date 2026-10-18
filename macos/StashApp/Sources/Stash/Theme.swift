@@ -255,7 +255,20 @@ struct KeyHint: View {
 /// Field labels are stored lowercase ("one-time password"); show them
 /// sentence-case ("One-time password").
 func displayLabel(_ label: String) -> String {
-    label.prefix(1).uppercased() + label.dropFirst()
+    switch label {
+    case "cvv": "Security code"
+    case "number": "Card number"
+    case "billing zip": "Billing ZIP"
+    case "iban": "IBAN"
+    case "swift": "SWIFT/BIC"
+    case "pin": "PIN"
+    default: label.prefix(1).uppercased() + label.dropFirst()
+    }
+}
+
+/// Values shown as typed, except a few stored lowercase ("checking").
+func displayValue(_ value: String, label: String) -> String {
+    label == "account type" ? value.prefix(1).uppercased() + value.dropFirst() : value
 }
 
 /// The one way hidden values are shown.

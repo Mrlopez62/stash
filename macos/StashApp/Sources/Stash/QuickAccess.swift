@@ -159,8 +159,8 @@ struct QuickRow: View {
                 + Text(item.title).foregroundStyle(Color.ink))
                 .font(.mono(13.5, weight: .semibold))
                 .lineLimit(1)
-            if let user = item.username {
-                Text(user).font(.plex(12.5)).foregroundStyle(Color.inkTertiary)
+            if let detail = item.username ?? item.subtitle {
+                Text(detail).font(.plex(12.5)).foregroundStyle(Color.inkTertiary)
             }
             Spacer()
             if highlighted {

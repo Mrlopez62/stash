@@ -1,7 +1,7 @@
 import Foundation
 
 enum ItemKind: String, Codable, CaseIterable, Identifiable {
-    case login, secret, note
+    case login, secret, note, card, bank
     var id: String { rawValue }
 
     var title: String {
@@ -9,14 +9,20 @@ enum ItemKind: String, Codable, CaseIterable, Identifiable {
         case .login: "Login"
         case .secret: "Secret"
         case .note: "Secure Note"
+        case .card: "Payment Card"
+        case .bank: "Bank Account"
         }
     }
+
+    var isPayment: Bool { self == .card || self == .bank }
 
     var symbol: String {
         switch self {
         case .login: "person.badge.key"
         case .secret: "key.horizontal"
         case .note: "note.text"
+        case .card: "creditcard"
+        case .bank: "building.columns"
         }
     }
 }
@@ -43,6 +49,8 @@ struct ItemSummary: Decodable, Identifiable, Hashable {
     var url: String?
     var hasOtp: Bool
     var updated: Int
+    /// Cards and bank accounts: "Visa •••• 4242 · 08/27".
+    var subtitle: String? = nil
     var id: String { name }
 
     /// The last path segment, for display ("work/github" → "github").
@@ -61,9 +69,17 @@ struct FieldInfo: Decodable, Identifiable, Hashable {
     var id: String { label }
 }
 
+/// What's needed to draw a card face: never the full number.
+struct CardFace: Decodable, Hashable {
+    var brand: String
+    var last4: String
+}
+
 struct ItemDetail: Decodable {
     var name: String
     var kind: ItemKind
+    var subtitle: String?
+    var card: CardFace?
     var fields: [FieldInfo]
     var hasNotes: Bool
     var binary: Bool

@@ -10,7 +10,9 @@ use std::io::{self, Write};
 use anyhow::{Context, Result, bail};
 use clap::Args;
 use stash_core::generate::{self, Rules};
-use stash_core::item::{FieldValue, ONE_TIME_PASSWORD, PASSWORD, USERNAME, WEBSITE};
+use stash_core::item::{
+    ACCOUNT_NUMBER, CARD_NUMBER, FieldValue, IBAN, ONE_TIME_PASSWORD, PASSWORD, USERNAME, WEBSITE,
+};
 use stash_core::otp::Totp;
 use stash_core::{FieldKind, Item, Kind, Vault};
 use zeroize::{Zeroize, Zeroizing};
@@ -75,6 +77,29 @@ fn read_text(prompt: &str) -> Result<Zeroizing<String>> {
     Ok(Zeroizing::new(text))
 }
 
+/// "4242 4242 4242 4242", or 4-6-5 for American Express.
+fn group_card_number(number: &str) -> String {
+    let groups: &[usize] = if number.len() == 15 {
+        &[4, 6, 5]
+    } else {
+        &[4, 4, 4, 4, 4]
+    };
+    let mut out = Vec::new();
+    let mut rest = number;
+    for &g in groups {
+        if rest.is_empty() {
+            break;
+        }
+        let (head, tail) = rest.split_at(g.min(rest.len()));
+        out.push(head);
+        rest = tail;
+    }
+    if !rest.is_empty() {
+        out.push(rest);
+    }
+    out.join(" ")
+}
+
 fn new_password(login: &LoginArgs) -> Result<Zeroizing<String>> {
     if login.generate {
         let pw = generate::password(login.rules.rules())?;
@@ -121,6 +146,136 @@ pub fn add_login(vault: &mut Vault, name: &str, login: &LoginArgs, force: bool) 
     }
     vault.put(name, &item, force)?;
     eprintln!("Saved login {name}");
+    Ok(())
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct PaymentArgs {
+    /// Name on the card
+    #[arg(long, value_name = "NAME")]
+    pub cardholder: Option<String>,
+    /// Card expiry, MM/YY
+    #[arg(long, value_name = "MM/YY")]
+    pub expiry: Option<String>,
+    /// Billing ZIP or postal code
+    #[arg(long, value_name = "ZIP")]
+    pub zip: Option<String>,
+    /// Also store a PIN (asked for without echo)
+    #[arg(long)]
+    pub pin: bool,
+    /// Bank name
+    #[arg(long, value_name = "NAME")]
+    pub bank_name: Option<String>,
+    /// Account holder's name
+    #[arg(long, value_name = "NAME")]
+    pub holder: Option<String>,
+    /// Account type, e.g. checking or savings
+    #[arg(long, value_name = "TYPE")]
+    pub account_type: Option<String>,
+    /// US routing (ABA) number
+    #[arg(long, value_name = "NUMBER")]
+    pub routing: Option<String>,
+    /// SWIFT/BIC code
+    #[arg(long, value_name = "CODE")]
+    pub swift: Option<String>,
+    /// Store an IBAN (asked for without echo) instead of, or as well as, an
+    /// account number
+    #[arg(long)]
+    pub iban: bool,
+}
+
+/// Secret values for one command: hidden prompts on a terminal, otherwise
+/// one per line from stdin, in the order they're asked for.
+struct Secrets {
+    piped: Option<std::vec::IntoIter<Zeroizing<String>>>,
+}
+
+impl Secrets {
+    fn new() -> Result<Self> {
+        if stdin_is_terminal() {
+            return Ok(Self { piped: None });
+        }
+        let mut all = Zeroizing::new(String::new());
+        io::Read::read_to_string(&mut io::stdin(), &mut all)?;
+        let lines: Vec<Zeroizing<String>> = all
+            .lines()
+            .map(|l| Zeroizing::new(l.trim_end_matches('\r').to_owned()))
+            .collect();
+        Ok(Self {
+            piped: Some(lines.into_iter()),
+        })
+    }
+
+    /// The next value; empty or missing is `None`.
+    fn next(&mut self, prompt: &str) -> Result<Option<Zeroizing<String>>> {
+        let value = match &mut self.piped {
+            Some(lines) => lines.next(),
+            None => Some(Zeroizing::new(rpassword::prompt_password(prompt)?)),
+        };
+        Ok(value.filter(|v| !v.trim().is_empty()))
+    }
+
+    fn required(&mut self, prompt: &str, what: &str) -> Result<Zeroizing<String>> {
+        self.next(prompt)?
+            .with_context(|| format!("{what} is required"))
+    }
+}
+
+pub fn add_card(vault: &mut Vault, name: &str, p: &PaymentArgs, force: bool) -> Result<()> {
+    check_can_add(vault, name, force, true)?;
+    let mut secrets = Secrets::new()?;
+    let number = secrets.required("Card number: ", "the card number")?;
+    let brand = stash_core::payment::validate_card_number(&number)?;
+    let cvv = secrets.next(&format!(
+        "Security code ({} digits, Enter to skip): ",
+        brand.cvv_length()
+    ))?;
+    let pin = if p.pin { secrets.next("PIN: ")? } else { None };
+    let card = Item::card(&stash_core::item::CardDetails {
+        cardholder: p.cardholder.as_deref(),
+        number: &number,
+        expiry: p.expiry.as_deref(),
+        cvv: cvv.as_deref().map(String::as_str),
+        pin: pin.as_deref().map(String::as_str),
+        billing_zip: p.zip.as_deref(),
+    })?;
+    vault.put(name, &card, force)?;
+    eprintln!(
+        "Saved card {name} ({})",
+        card.subtitle().unwrap_or_default()
+    );
+    Ok(())
+}
+
+pub fn add_bank(vault: &mut Vault, name: &str, p: &PaymentArgs, force: bool) -> Result<()> {
+    check_can_add(vault, name, force, true)?;
+    let mut secrets = Secrets::new()?;
+    let account = secrets.next(if p.iban {
+        "Account number (Enter to skip): "
+    } else {
+        "Account number: "
+    })?;
+    let iban = if p.iban {
+        secrets.next("IBAN: ")?
+    } else {
+        None
+    };
+    let pin = if p.pin { secrets.next("PIN: ")? } else { None };
+    let bank = Item::bank(&stash_core::item::BankDetails {
+        bank: p.bank_name.as_deref(),
+        holder: p.holder.as_deref(),
+        account_type: p.account_type.as_deref(),
+        routing: p.routing.as_deref(),
+        account_number: account.as_deref().map(String::as_str),
+        iban: iban.as_deref().map(String::as_str),
+        swift: p.swift.as_deref(),
+        pin: pin.as_deref().map(String::as_str),
+    })?;
+    vault.put(name, &bank, force)?;
+    eprintln!(
+        "Saved bank account {name} ({})",
+        bank.subtitle().unwrap_or_default()
+    );
     Ok(())
 }
 
@@ -210,6 +365,12 @@ pub fn edit(vault: &mut Vault, name: &str, args: &EditArgs) -> Result<()> {
             first.kind = FieldKind::Concealed;
         }
     }
+    if item.kind.is_payment() && touches_login {
+        bail!(
+            "{name} is a {}, which has no username, website, or 2FA",
+            item.kind
+        );
+    }
     if item.kind == Kind::Note && (changes_password || login.otp) {
         bail!("{name} is a note, which has no password or 2FA");
     }
@@ -217,6 +378,16 @@ pub fn edit(vault: &mut Vault, name: &str, args: &EditArgs) -> Result<()> {
     if changes_password {
         let password = new_password(login)?;
         match item.kind {
+            Kind::Card => item.set(CARD_NUMBER, FieldKind::Concealed, password.as_str()),
+            Kind::Bank => {
+                let label =
+                    if item.labeled(ACCOUNT_NUMBER).is_none() && item.labeled(IBAN).is_some() {
+                        IBAN
+                    } else {
+                        ACCOUNT_NUMBER
+                    };
+                item.set(label, FieldKind::Concealed, password.as_str());
+            }
             // Replace the value in place, keeping notes and other fields.
             Kind::Secret => {
                 let label = item
@@ -283,6 +454,8 @@ fn check_settable(item: &Item, label: &str) -> Result<()> {
         .collect();
     let hint = match normalized.as_str() {
         "password" | "pass" | "pw" | "passcode" | "pin" => Some("--password or --generate"),
+        "number" | "cardnumber" | "cvv" | "cvc" | "csc" | "securitycode" | "accountnumber"
+        | "iban" => Some("--password (for the card or account number), or the Mac app"),
         // Labels that almost always hold a secret. Store those as their own
         // secret item instead (`stash add <name>`), and reference it.
         "token" | "secret" | "apikey" | "apisecret" | "privatekey" | "secretkey" | "accesskey"
@@ -329,7 +502,19 @@ pub fn show(vault: &Vault, name: &str, reveal: bool) -> Result<()> {
             (FieldKind::Otp, false) => {
                 format!("{HIDDEN}  (code with --reveal or `stash otp {name}`)")
             }
+            // Card and account numbers show their last four, like a statement.
+            (FieldKind::Concealed, false)
+                if item.kind.is_payment()
+                    && matches!(field.label.as_str(), CARD_NUMBER | ACCOUNT_NUMBER | IBAN) =>
+            {
+                format!("•••• {}", stash_core::payment::last4(&field.value))
+            }
             (FieldKind::Concealed, false) => HIDDEN.into(),
+            (FieldKind::Concealed, true)
+                if item.kind == Kind::Card && field.label == CARD_NUMBER =>
+            {
+                group_card_number(&field.value)
+            }
             _ => field.value.clone(),
         });
         writeln!(out, "  {:<width$}  {}", field.label, shown.as_str())?;
@@ -396,7 +581,10 @@ pub fn list_long(vault: &Vault) -> Result<()> {
             "{:<name_w$}  {:<6}  {:<user_w$}  {:<3}  {}",
             r.name,
             r.kind.to_string(),
-            r.username.as_deref().unwrap_or(""),
+            r.username
+                .as_deref()
+                .or(r.subtitle.as_deref())
+                .unwrap_or(""),
             if r.has_otp { "yes" } else { "" },
             r.url.as_deref().unwrap_or("")
         )?;

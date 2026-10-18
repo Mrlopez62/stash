@@ -319,3 +319,40 @@ fn missing_references_fail_before_any_approval_prompt() {
     // Only the unlock for list_secrets: no approval was asked for either run.
     assert_eq!(f.prompts().len(), 1, "{:?}", f.prompts());
 }
+
+#[test]
+fn payment_cards_are_off_limits_to_agents_unless_allowed() {
+    let f = Fixture::new();
+    f.cli()
+        .args(["add", "cards/visa", "--card"])
+        .write_stdin("4242424242424242\n123\n")
+        .assert()
+        .success();
+    let use_card = run_call(&["true"], json!({"N": "stash://cards/visa"}));
+    let results = f.mcp(
+        &[],
+        &[
+            json!({"name": "list_secrets", "arguments": {}}),
+            use_card.clone(),
+        ],
+    );
+    assert!(
+        !text(&results[0]).contains("cards/visa"),
+        "cards aren't listed"
+    );
+    assert_eq!(results[1]["isError"], true);
+    assert!(text(&results[1]).contains("payment card or bank account"));
+    assert!(f.audit_log().contains(r#""outcome":"blocked""#));
+    assert!(
+        !f.prompts().iter().any(|p| p.starts_with("confirm:")),
+        "no approval was ever requested: {:?}",
+        f.prompts()
+    );
+
+    let results = f.mcp(&["--allow-payments"], &[use_card]);
+    assert!(
+        results[0]["isError"].is_null() || results[0]["isError"] == false,
+        "{}",
+        results[0]
+    );
+}

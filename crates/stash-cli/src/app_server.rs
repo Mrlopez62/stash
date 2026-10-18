@@ -273,6 +273,7 @@ impl Server {
                     "url": s.url,
                     "has_otp": s.has_otp,
                     "updated": s.updated,
+                    "subtitle": s.subtitle,
                 })
             })
             .collect();
@@ -300,9 +301,21 @@ impl Server {
                 field
             })
             .collect();
+        // For drawing a card face: the brand and last four digits only.
+        let card = (item.kind == Kind::Card)
+            .then(|| item.primary())
+            .flatten()
+            .map(|number| {
+                json!({
+                    "brand": stash_core::payment::brand(number).name(),
+                    "last4": stash_core::payment::last4(number),
+                })
+            });
         Ok(json!({
             "name": name,
             "kind": item.kind,
+            "subtitle": item.subtitle(),
+            "card": card,
             "fields": fields,
             "has_notes": !item.notes.is_empty(),
             "binary": binary,
@@ -757,5 +770,42 @@ mod tests {
         assert_eq!(f.err("nope", json!({})).0, code::METHOD_NOT_FOUND);
         let g = f.ok("generate", json!({ "length": 30, "symbols": false }));
         assert_eq!(g["password"].as_str().unwrap().len(), 30);
+    }
+
+    #[test]
+    fn cards_show_brand_and_last_four_but_never_the_number() {
+        let mut f = Fixture::new();
+        f.ok(
+            "save",
+            json!({ "name": "visa", "kind": "card", "fields": [
+                { "label": "cardholder", "kind": "text", "value": "J Lopez" },
+                { "label": "number", "kind": "concealed", "value": "4242 4242 4242 4242" },
+                { "label": "expiry", "kind": "text", "value": "8/27" },
+                { "label": "cvv", "kind": "concealed", "value": "123" },
+            ]}),
+        );
+        let list = f.ok("list", json!({}));
+        assert_eq!(list["items"][0]["subtitle"], "Visa •••• 4242 · 08/27");
+        let item = f.ok("item", json!({ "name": "visa" }));
+        assert_eq!(item["card"]["brand"], "Visa");
+        assert_eq!(item["card"]["last4"], "4242");
+        let shown = format!("{list}{item}");
+        assert!(
+            !shown.contains("4242424242424242") && !shown.contains("\"123\""),
+            "{shown}"
+        );
+        assert_eq!(
+            f.ok("reveal", json!({ "name": "visa", "field": "number" }))["value"],
+            "4242424242424242"
+        );
+
+        // The backend validates whatever the app sends.
+        let (c, m) = f.err(
+            "save",
+            json!({ "name": "bad", "kind": "card", "fields": [
+            { "label": "number", "kind": "concealed", "value": "4242424242424241" } ]}),
+        );
+        assert_eq!(c, code::FAILED);
+        assert!(m.contains("typo"), "{m}");
     }
 }

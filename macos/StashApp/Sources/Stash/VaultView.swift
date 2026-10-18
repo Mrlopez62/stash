@@ -94,6 +94,8 @@ struct Sidebar: View {
                         row(.kind(.login), ItemKind.login.symbol)
                         row(.kind(.secret), ItemKind.secret.symbol)
                         row(.kind(.note), ItemKind.note.symbol)
+                        row(.kind(.card), ItemKind.card.symbol)
+                        row(.kind(.bank), ItemKind.bank.symbol)
                     }
                     if !model.folders.isEmpty {
                         SidebarSection(title: "Folders") {
@@ -381,9 +383,10 @@ struct ItemTableRow: View {
 
             if columns.kind { KindBadge(kind: item.kind).frame(width: Col.kind, alignment: .leading) }
             if columns.user {
-                Text(item.username ?? "—")
+                // Cards and bank accounts show "Visa •••• 4242" here.
+                Text(item.username ?? item.subtitle ?? "—")
                     .font(.plex(13))
-                    .foregroundStyle(item.username == nil ? Color.inkTertiary : Color.inkSecondary)
+                    .foregroundStyle(item.username == nil && item.subtitle == nil ? Color.inkTertiary : Color.inkSecondary)
                     .lineLimit(1)
                     .truncationMode(.middle)
                     .frame(width: Col.user, alignment: .leading)
@@ -439,7 +442,14 @@ struct RowActions: View {
                 IconButton("person.crop.circle", help: "Copy username") { model.copyPlain(username, label: "username") }
             }
             if item.kind != .note {
-                IconButton("doc.on.doc", help: item.kind == .login ? "Copy password" : "Copy value") {
+                IconButton("doc.on.doc", help: {
+                    switch item.kind {
+                    case .login: "Copy password"
+                    case .card: "Copy card number"
+                    case .bank: "Copy account number"
+                    default: "Copy value"
+                    }
+                }()) {
                     Task {
                         if await model.copyPrimary(item) {
                             model.flash("Copied \(item.title) · clears in \(Int(Clipboard.clearAfter))s")
@@ -468,6 +478,8 @@ struct KindBadge: View {
         // Neutral: the amber tile already marks a secret.
         case .secret: Badge(text: "Secret")
         case .note: Badge(text: "Note")
+        case .card: Badge(text: "Card")
+        case .bank: Badge(text: "Bank")
         }
     }
 }

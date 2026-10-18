@@ -439,3 +439,128 @@ fn custom_fields_on_a_secret_keep_it_a_secret() {
         .success();
     assert_eq!(out(&dir, &["get", "api/key"]), "sk_live_123");
 }
+
+// ---- payment cards and bank accounts ----
+
+fn visa(dir: &TempDir) {
+    stash(dir)
+        .args([
+            "add",
+            "cards/visa",
+            "--card",
+            "--cardholder",
+            "J Lopez",
+            "--expiry",
+            "8/2027",
+        ])
+        .write_stdin("4242 4242 4242 4242\n123\n")
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("Visa •••• 4242 · 08/27"));
+}
+
+#[test]
+fn cards_store_and_reference_their_fields() {
+    let dir = init();
+    visa(&dir);
+    assert_eq!(out(&dir, &["get", "cards/visa"]), "4242424242424242");
+    assert_eq!(out(&dir, &["get", "cards/visa#cvv"]), "123");
+    assert_eq!(out(&dir, &["get", "cards/visa#expiry"]), "08/27");
+    assert_eq!(out(&dir, &["get", "cards/visa#name"]), "J Lopez");
+
+    // Show and list reveal only the last four digits.
+    let shown = out(&dir, &["show", "cards/visa"]);
+    assert!(shown.contains("•••• 4242"), "{shown}");
+    assert!(
+        !shown.contains("4242424242424242") && !shown.contains("123\n"),
+        "{shown}"
+    );
+    let revealed = out(&dir, &["show", "cards/visa", "--reveal"]);
+    assert!(revealed.contains("4242 4242 4242 4242"), "{revealed}");
+    let listing = out(&dir, &["ls", "--long"]);
+    assert!(
+        listing.contains("card") && listing.contains("Visa •••• 4242"),
+        "{listing}"
+    );
+}
+
+#[test]
+fn mistyped_cards_are_refused_before_saving() {
+    let dir = init();
+    stash(&dir)
+        .args(["add", "cards/typo", "--card"])
+        .write_stdin("4242 4242 4242 4241\n")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("typo"));
+    stash(&dir)
+        .args(["add", "cards/amex", "--card", "--expiry", "13/27"])
+        .write_stdin("378282246310005\n1234\n")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("MM/YY"));
+    stash(&dir).args(["get", "cards/typo"]).assert().failure();
+}
+
+#[test]
+fn card_numbers_can_only_change_through_a_prompt() {
+    let dir = init();
+    visa(&dir);
+    for label in ["number", "cvv", "security code"] {
+        stash(&dir)
+            .args([
+                "edit",
+                "cards/visa",
+                "--set",
+                &format!("{label}=4111111111111111"),
+            ])
+            .assert()
+            .failure()
+            .stderr(predicate::str::contains("shell history"));
+    }
+    stash(&dir)
+        .args(["edit", "cards/visa", "--password"])
+        .write_stdin("5555 5555 5555 4444")
+        .assert()
+        .success();
+    assert_eq!(out(&dir, &["get", "cards/visa"]), "5555555555554444");
+    stash(&dir)
+        .args(["edit", "cards/visa", "--password"])
+        .write_stdin("5555 5555 5555 4445")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("typo"));
+    stash(&dir)
+        .args(["edit", "cards/visa", "--username", "me"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("no username"));
+}
+
+#[test]
+fn bank_accounts_validate_routing_numbers_and_ibans() {
+    let dir = init();
+    stash(&dir)
+        .args(["add", "banks/chase", "--bank", "--bank-name", "Chase"])
+        .args(["--routing", "021000021", "--account-type", "checking"])
+        .write_stdin("000123456789\n")
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("Chase · Checking •••• 6789"));
+    assert_eq!(out(&dir, &["get", "banks/chase"]), "000123456789");
+    assert_eq!(out(&dir, &["get", "banks/chase#routing"]), "021000021");
+
+    stash(&dir)
+        .args(["add", "banks/eu", "--bank", "--iban"])
+        .write_stdin("\nGB82 WEST 1234 5698 7654 32\n")
+        .assert()
+        .success();
+    assert_eq!(out(&dir, &["get", "banks/eu"]), "GB82WEST12345698765432");
+
+    stash(&dir)
+        .args(["add", "banks/typo", "--bank", "--routing", "021000022"])
+        .write_stdin("123\n")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("routing number"));
+}

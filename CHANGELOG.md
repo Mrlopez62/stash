@@ -2,6 +2,24 @@
 
 All notable changes to stash. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/) (pre-1.0: minor versions may change behavior).
 
+## [0.8.0] - 2026-10-17
+
+### Added
+- **Payment cards:** cardholder, number, expiry, security code, PIN, and billing ZIP.
+  - **Validation:** the number must pass the Luhn checksum and match the brand's length (Visa, Mastercard, Amex, Discover, JCB, Diners, UnionPay are detected), expiry must be MM/YY, and the security code must be 3–4 digits.
+  - **Display:** lists show "Visa •••• 4242 · 08/27". The app shows a 3D card:
+    - It tilts toward the pointer under a moving highlight, and a foil sheen crosses it when it opens.
+    - Clicking it turns it over to the security code, which is fetched only then. It turns back by itself after 30 seconds.
+    - The editor shows a live card that fills in as you type and turns over while you enter the security code.
+    - With Reduce Motion on, there's no tilt or sheen, and flips become fades.
+- **Bank accounts:** bank, holder, type, routing number (ABA checksum), account number, IBAN (mod-97), SWIFT/BIC, and PIN.
+- **Payment items in the CLI:** `stash add --card` and `--bank`. Numbers come only from hidden prompts (or one per line from stdin). New field aliases: `#cvv`, `#cvc`, `#expiry`, `#name`, `#zip`, `#routing`, `#account`.
+- **`stash mcp --allow-payments`:** without it, AI agents can't list or use payment items.
+- **Design doc for browser autofill** of logins and payments ([docs/design/autofill.md](docs/design/autofill.md)).
+
+### Changed
+- **Every save normalizes and validates payment fields** (card numbers, expiry, routing numbers, IBANs) in the core, so edits from the CLI, the app, and future clients are held to the same rules.
+
 ## [0.7.1] - 2026-10-17
 
 ### Changed
@@ -91,6 +109,7 @@ Security and correctness fixes for 0.6.0, found by an independent security revie
 ### Added
 - **The first release:** an encrypted vault (Argon2id + XChaCha20-Poly1305) and the `init`, `add`, `get`, `ls`, and `rm` commands.
 
+[0.8.0]: https://github.com/Mrlopez62/stash/pull/12
 [0.7.1]: https://github.com/Mrlopez62/stash/pull/11
 [0.7.0]: https://github.com/Mrlopez62/stash/pull/10
 [0.6.1]: https://github.com/Mrlopez62/stash/pull/9
