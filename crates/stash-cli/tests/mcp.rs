@@ -112,7 +112,19 @@ impl Fixture {
         responses[1..].iter().map(|r| r["result"].clone()).collect()
     }
 
+    /// Prompts without their "(requested via …)" ending, which names the
+    /// test runner and is checked on its own below.
     fn prompts(&self) -> Vec<String> {
+        self.raw_prompts()
+            .into_iter()
+            .map(|p| match p.find(" (requested via ") {
+                Some(i) => p[..i].to_owned(),
+                None => p,
+            })
+            .collect()
+    }
+
+    fn raw_prompts(&self) -> Vec<String> {
         std::fs::read_to_string(self.dir.path().join("prompts"))
             .unwrap_or_default()
             .lines()
@@ -170,8 +182,8 @@ fn agents_run_commands_with_secrets_they_never_see() {
         f.prompts(),
         [
             "unwrap: let mcp-test list your secret names",
-            "confirm: let mcp-test run `sh -c 'echo \"token=$T port=$PORT\"; exit 3'` with github/token",
-            "confirm: let mcp-test run `sh -c 'test \"$T\" = ghp_secret_123'` with github/token",
+            "confirm: let mcp-test run `sh -c 'echo \"token=$T port=$PORT\"; exit 3'` with github/token, for up to 120s",
+            "confirm: let mcp-test run `sh -c 'test \"$T\" = ghp_secret_123'` with github/token, for up to 120s",
         ]
     );
 }
@@ -185,7 +197,7 @@ fn the_unlock_prompt_counts_as_approval_for_the_first_request() {
     );
     assert_eq!(
         f.prompts(),
-        ["unwrap: let mcp-test run `true` with github/token"]
+        ["unwrap: let mcp-test run `true` with github/token, for up to 120s"]
     );
 }
 
@@ -355,4 +367,29 @@ fn payment_cards_are_off_limits_to_agents_unless_allowed() {
         "{}",
         results[0]
     );
+}
+
+#[test]
+fn prompts_name_the_real_launcher_and_risky_flags() {
+    let f = Fixture::new();
+    f.mcp(
+        &["--allow-reveal"],
+        &[json!({"name": "list_secrets", "arguments": {}})],
+    );
+    let prompt = &f.raw_prompts()[0];
+    // The client calls itself "mcp-test"; the kernel says who really
+    // started the server.
+    assert!(prompt.contains(" (requested via "), "{prompt}");
+    assert!(prompt.ends_with("; --allow-reveal on)"), "{prompt}");
+}
+
+#[test]
+fn no_approval_needs_the_password_in_the_environment() {
+    let f = Fixture::new();
+    f.base()
+        .args(["mcp", "--no-approval"])
+        .write_stdin("")
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("only for headless use"));
 }

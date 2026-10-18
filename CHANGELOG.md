@@ -2,6 +2,19 @@
 
 All notable changes to stash. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/) (pre-1.0: minor versions may change behavior).
 
+## [0.9.1] - 2026-10-18
+
+A security release, from a review of what a program running as you (an AI agent's shell, a malicious package script) could do.
+
+### Security
+- **The vault key goes only to the real session agent.** `stash` used to hand it to whatever listened on `~/.stash/agent.sock`; now it checks, through the kernel, that the listener runs the same `stash` executable, and warns if something else is there.
+- **The Touch ID helper can't be swapped.** Release builds no longer look for `stash-touchid` on `$PATH` or in `$STASH_TOUCHID_HELPER` (now honored only in debug builds for tests), and the helper refuses every caller except the `stash` installed next to it.
+- **`stash app-server` serves only the stash app it ships inside**, and the Mac app runs only its bundled backend (no `$STASH_BIN` or `$PATH` in release builds).
+- **`stash mcp --no-approval` now requires `STASH_PASSWORD`**, so an agent that edits its own MCP config can't turn approvals off.
+- **Prompts tell the truth about who's asking.** MCP prompts add the real process chain behind the server and any risky options (`--allow-reveal on`), say how long a command may run, and strip invisible Unicode formatting (bidirectional overrides, zero-width characters) that could disguise a command. Process names are cleaned the same way everywhere.
+- **No debugger attach or core dumps** for any `stash` process.
+- **The threat model has a new section** on programs running as you, including what's still possible (reading a running command's environment, the clipboard) and how to limit it.
+
 ## [0.9.0] - 2026-10-17
 
 ### Added
@@ -130,6 +143,7 @@ Security and correctness fixes for 0.6.0, found by an independent security revie
 ### Added
 - **The first release:** an encrypted vault (Argon2id + XChaCha20-Poly1305) and the `init`, `add`, `get`, `ls`, and `rm` commands.
 
+[0.9.1]: https://github.com/Mrlopez62/stash/pull/14
 [0.9.0]: https://github.com/Mrlopez62/stash/pull/13
 [0.8.0]: https://github.com/Mrlopez62/stash/pull/12
 [0.7.1]: https://github.com/Mrlopez62/stash/pull/11

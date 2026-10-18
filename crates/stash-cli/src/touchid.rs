@@ -23,19 +23,22 @@ pub fn blob_path(vault: &Path) -> PathBuf {
     PathBuf::from(path)
 }
 
-/// Find the helper: `$STASH_TOUCHID_HELPER`, then next to this binary, then `$PATH`.
+/// Find the helper: the `stash-touchid` installed next to this binary.
+///
+/// Never from `$PATH` or the environment in release builds: whoever picks
+/// the helper sees the vault key it returns, so a line in a shell profile
+/// pointing at a "helper" that relays to the real one would steal the key
+/// on your next, perfectly normal-looking, Touch ID unlock.
+/// `$STASH_TOUCHID_HELPER` works only in debug builds, for tests.
 pub fn helper() -> Option<PathBuf> {
-    if let Some(path) = std::env::var_os("STASH_TOUCHID_HELPER") {
+    if cfg!(debug_assertions)
+        && let Some(path) = std::env::var_os("STASH_TOUCHID_HELPER")
+    {
         return Some(PathBuf::from(path));
     }
-    let beside_exe = std::env::current_exe()
-        .ok()
-        .and_then(|exe| Some(exe.parent()?.join(HELPER_NAME)));
-    let on_path = std::env::var_os("PATH")
-        .into_iter()
-        .flat_map(|paths| std::env::split_paths(&paths).collect::<Vec<_>>())
-        .map(|dir| dir.join(HELPER_NAME));
-    beside_exe.into_iter().chain(on_path).find(|p| p.is_file())
+    let exe = std::env::current_exe().ok()?.canonicalize().ok()?;
+    let beside = exe.parent()?.join(HELPER_NAME);
+    beside.is_file().then_some(beside)
 }
 
 pub enum UnlockError {

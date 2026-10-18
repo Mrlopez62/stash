@@ -394,7 +394,7 @@ fn client_of(stream: &UnixStream) -> String {
         if p.pid <= 1 || names.len() == 3 {
             break;
         }
-        names.push(p.name.clone());
+        names.push(crate::text::clean(&p.name, 32));
         pid = Some(p.ppid);
     }
     if names.is_empty() {

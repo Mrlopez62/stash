@@ -15,7 +15,7 @@
 //!   `otp`) when you click to show or copy it.
 
 use std::io::{self, BufRead, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
@@ -84,7 +84,40 @@ impl From<anyhow::Error> for Failure {
 
 type Reply = std::result::Result<Value, Failure>;
 
+/// The stash app this backend belongs to: the app bundle it ships inside
+/// (`stash.app/Contents/Helpers/stash`, started by
+/// `stash.app/Contents/MacOS/Stash`).
+///
+/// Anything else that starts `stash app-server` is refused: after one
+/// unlock it can read the whole vault, so it must not be usable by any
+/// program that can run a command. Debug builds allow any parent, so the
+/// app can be developed against `cargo build`.
+fn started_by_our_app() -> bool {
+    let parent = std::os::unix::process::parent_id() as i32;
+    let Some(parent_exe) = crate::procinfo::exe_path(parent) else {
+        return false;
+    };
+    let Some(me) = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.canonicalize().ok())
+    else {
+        return false;
+    };
+    // .../stash.app/Contents/Helpers/stash → .../stash.app/Contents/MacOS/Stash
+    let Some(contents) = me.parent().and_then(Path::parent) else {
+        return false;
+    };
+    me.parent().is_some_and(|d| d.ends_with("Contents/Helpers"))
+        && parent_exe == contents.join("MacOS/Stash")
+}
+
 pub fn serve(vault_path: PathBuf, idle_timeout: Duration) -> Result<()> {
+    if !cfg!(debug_assertions) && !started_by_our_app() {
+        anyhow::bail!(
+            "stash app-server only serves the stash app it ships with (it was started by {})",
+            crate::procinfo::requester_chain(2)
+        );
+    }
     let mut server = Server {
         vault_path,
         idle_timeout,
@@ -235,15 +268,16 @@ impl Server {
                         "Touch ID unlock isn't turned on",
                     ));
                 }
-                let key = touchid::unlock(&helper, &self.vault_path, "unlock stash").map_err(
-                    |e| match e {
-                        touchid::UnlockError::Cancelled => {
-                            Failure::new(code::CANCELLED, "Touch ID was cancelled")
+                let key =
+                    touchid::unlock(&helper, &self.vault_path, &unlock_reason()).map_err(|e| {
+                        match e {
+                            touchid::UnlockError::Cancelled => {
+                                Failure::new(code::CANCELLED, "Touch ID was cancelled")
+                            }
+                            touchid::UnlockError::Unavailable(why)
+                            | touchid::UnlockError::Failed(why) => Failure::new(code::FAILED, why),
                         }
-                        touchid::UnlockError::Unavailable(why)
-                        | touchid::UnlockError::Failed(why) => Failure::new(code::FAILED, why),
-                    },
-                )?;
+                    })?;
                 Vault::open_with_key(&self.vault_path, &key)?
             }
             other => return Err(Failure::params(format!("unknown unlock method `{other}`"))),
@@ -565,6 +599,19 @@ fn string_param(params: &Value, key: &str) -> std::result::Result<String, Failur
         .and_then(Value::as_str)
         .map(str::to_owned)
         .ok_or_else(|| Failure::params(format!("missing `{key}`")))
+}
+
+/// The Touch ID prompt's reason. Names the requester unless it's verified
+/// to be the stash app.
+fn unlock_reason() -> String {
+    if started_by_our_app() {
+        "unlock stash in the stash app".to_owned()
+    } else {
+        format!(
+            "unlock stash for the app backend, requested by {}",
+            crate::procinfo::requester_chain(2)
+        )
+    }
 }
 
 fn name_param(params: &Value, key: &str) -> std::result::Result<String, Failure> {

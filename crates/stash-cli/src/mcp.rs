@@ -61,6 +61,7 @@ pub fn serve(vault_path: PathBuf, opts: Options) -> Result<()> {
         vault_path,
         opts,
         client: "unknown-client".into(),
+        launcher: crate::procinfo::requester_chain(2),
         unlocked: None,
     };
     let stdin = io::stdin().lock();
@@ -89,6 +90,10 @@ struct Server {
     audit_log: PathBuf,
     opts: Options,
     client: String,
+    /// The process chain that started this server (e.g. "claude ← zsh"),
+    /// from the kernel. The client's name is whatever it says it is; this
+    /// isn't.
+    launcher: String,
     unlocked: Option<Unlocked>,
 }
 
@@ -366,7 +371,19 @@ impl Server {
 
     /// Finishes the Touch ID dialog's sentence "stash-touchid is trying to …".
     fn reason(&self, purpose: &str) -> String {
-        format!("let {} {purpose}", self.client)
+        let mut risky = Vec::new();
+        if self.opts.allow_reveal {
+            risky.push("--allow-reveal on");
+        }
+        if self.opts.allow_payments {
+            risky.push("--allow-payments on");
+        }
+        let mut via = format!("requested via {}", self.launcher);
+        for flag in risky {
+            via.push_str("; ");
+            via.push_str(flag);
+        }
+        format!("let {} {purpose} ({via})", self.client)
     }
 
     fn list_secrets(&mut self) -> Result<Value, Refusal> {
@@ -414,9 +431,10 @@ impl Server {
         let mut resolved: Vec<(String, Zeroizing<Vec<u8>>)> = Vec::new();
         if !names.is_empty() {
             let purpose = format!(
-                "run `{}` with {}",
+                "run `{}` with {}, for up to {}s",
                 request.display,
-                crate::run::summarize(&described.iter().map(String::as_str).collect::<Vec<_>>())
+                crate::run::summarize(&described.iter().map(String::as_str).collect::<Vec<_>>()),
+                request.timeout.as_secs()
             );
             // Fail on missing items before bothering the user, but produce
             // values only after approval, so a 2FA code is fresh when the
@@ -568,17 +586,7 @@ fn error_response(id: Value, code: i64, message: &str) -> Value {
 
 /// Keep agent-supplied text readable and short in prompts and logs.
 fn sanitize(s: &str, max: usize) -> String {
-    let clean: String = s
-        .chars()
-        .map(|c| if c.is_control() { ' ' } else { c })
-        .collect();
-    if clean.chars().count() > max {
-        let mut cut: String = clean.chars().take(max - 1).collect();
-        cut.push('…');
-        cut
-    } else {
-        clean
-    }
+    crate::text::clean(s, max)
 }
 
 /// `*` matches any run of characters, including `/`.
@@ -864,6 +872,7 @@ mod tests {
     #[test]
     fn sanitizes_agent_text() {
         assert_eq!(sanitize("a\nb\x1b[31m", 40), "a b [31m");
+        assert_eq!(sanitize("run \u{202E}hs.live", 40), "run hs.live");
         assert_eq!(sanitize("abcdef", 4), "abc…");
     }
 
@@ -880,6 +889,7 @@ mod tests {
                 idle_timeout: Duration::from_secs(60),
             },
             client: "test".into(),
+            launcher: "test".into(),
             unlocked: None,
         }
     }

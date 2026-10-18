@@ -41,9 +41,30 @@ Because of this design, changing the master password (not yet available as a com
 | Secrets left lying around in memory | Partial | Keys, passwords, and values are wiped when they're no longer needed (`zeroize`). But temporary copies made by the OS, the terminal, or growing buffers can't all be guaranteed wiped. |
 | Weak master password | Partial | stash requires at least 8 characters and Argon2id slows guessing down. A short password can still be cracked offline. Use a long passphrase. |
 
+## Programs running as you (including AI agents)
+
+The most likely attacker on a developer's Mac isn't a stranger: it's a program running *as you*. That includes an AI coding agent with a shell, possibly steered by prompt injection, or a malicious package script. stash can't stop such a program from running commands, but it makes sure the vault key never reaches it without a prompt that tells the truth about who's asking.
+
+- **No key for impostors.** Before handing the vault key to the session agent, `stash` asks the kernel which program is listening on the socket and refuses unless it's the same `stash` executable. A look-alike listener on `~/.stash/agent.sock` gets nothing (`an_impostor_agent_never_gets_the_vault_key`).
+- **The Touch ID helper can't be swapped.** Release builds use only the `stash-touchid` installed next to `stash`, never `$PATH` or `$STASH_TOUCHID_HELPER` (honored only in debug builds, for tests). The helper itself serves only the `stash` next to it, so no other program can show a stash Touch ID prompt or receive a key from it.
+- **Backends serve only their owners.** `stash app-server`, which can read the whole vault once unlocked, refuses to run unless it was started by the stash app it ships inside. The Mac app runs only the backend sealed in its own bundle.
+- **Prompts name the real requester.** Requester names come from the kernel, not from what a program says about itself. `stash mcp` prompts show both the client's self-chosen name and the process chain that started the server, plus risky options in effect (`--allow-reveal on`). Invisible Unicode formatting characters (bidirectional overrides, zero-width characters) are stripped from everything shown in a prompt, so a command can't be disguised.
+- **`stash mcp --no-approval` needs `STASH_PASSWORD`.** Otherwise an agent that edits its own MCP configuration could turn off approvals.
+- **No debuggers or core dumps.** Every `stash` process denies debugger attach (`PT_DENY_ATTACH` on macOS, `PR_SET_DUMPABLE=0` on Linux) and disables core dumps, so another program running as you can't read keys from its memory.
+
+What stays possible for a program running as you, and how to limit it:
+
+| Risk | Why | What to do |
+|---|---|---|
+| Reading the environment of a running `stash run` (or MCP `run_with_secrets`) command | macOS and Linux let any process of the same user read another's environment (`ps eww`). Secrets passed as environment variables are visible while that command runs. | MCP prompts say how long a command may run; approve short commands. Run AI agents in a sandbox that can't inspect other processes. |
+| Reading the clipboard | Any app can read the clipboard while a copied secret is on it (up to 90 seconds). | Prefer `stash run` and `stash inject` while an AI agent is active. |
+| Typing into your unlocked terminal | With macOS Automation permission for your terminal, a program can run commands inside it (`osascript … do script`), reusing that shell's session. | Don't grant Automation access to terminals to agents; `stash lock` (or `STASH_SESSION_TIMEOUT=0`) while agents run. |
+| Replacing the `stash` binary or editing shell startup files | Files you can write, a program running as you can write. | Install `stash.app` in `/Applications` (admin-owned). Signed, notarized releases are planned. |
+| Editing the audit log | It's a file you own. | Treat the log as a record, not proof. |
+
 ## What stash does *not* protect against
 
-- **Malware running as your user.** It can read your keystrokes, read process memory, or just run `stash get`. No local password manager can fully defend against this.
+- **Malware running as your user,** beyond what the section above covers. It can read your keystrokes or simply run `stash get` and hope you approve the prompt. Read every prompt; decline anything you didn't cause. No local password manager can fully defend against this.
 - **`STASH_PASSWORD`.** If you set this environment variable, any process that can read your environment can read your master password. It's meant only for scripts and CI.
 - **Secrets after you use them.** Once `stash get` prints a value, stash can't control what your shell, terminal scrollback, or the receiving program does with it. The planned `stash run` reduces this exposure.
 - **Losing your master password.** There's no recovery. Without the password, the vault can't be opened.
@@ -63,7 +84,8 @@ To unlock, the helper asks for a fingerprint and then has the Secure Enclave do 
 | Someone copies `vault.db` and `vault.db.touchid` to another machine | ✅ | The Secure Enclave key can't leave this Mac's chip, so the `.touchid` file is useless elsewhere. They're left with the master-password protection described above. |
 | Someone with your unlocked Mac but not your finger | ✅ | The Secure Enclave won't use the key without a fingerprint match. |
 | Someone enrolls their own fingerprint on your Mac | ✅ | `biometryCurrentSet` makes the key unusable after any fingerprint change. Run `stash touchid enable` again (with the master password). |
-| Malware running as your user | ❌ | It can trigger the Touch ID prompt, so look closely at what the dialog says. The prompt comes from `stash-touchid`. |
+| Malware running as your user calling the helper directly | ✅ | The helper serves only the `stash` installed next to it (checked from the kernel's view of who started it). |
+| Malware running as your user running `stash` itself | Partial | `stash` shows a prompt naming the process chain behind the request, so read what the dialog says. |
 
 ## Unlocked sessions (the agent)
 
@@ -75,6 +97,7 @@ After an unlock, `stash` starts `stash agent` in the background. The agent keeps
 - **Anyone else unlocks for themselves.** The prompt names the request and the process chain behind it, so an unexpected prompt is visible.
 - **Timeout:** each key is forgotten after 10 minutes without use (`STASH_SESSION_TIMEOUT`). `stash lock` forgets all keys immediately. The agent exits once it holds no keys.
 - **Memory only:** keys are never written to disk and are wiped from memory when dropped.
+- **Only to the real agent:** `stash` hands a key only to a listener running the same `stash` executable, so a program listening on the socket path in its place never gets one.
 
 | Threat | Protected? | How |
 |---|---|---|

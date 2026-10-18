@@ -127,6 +127,42 @@ pub fn peer_pid(stream: &UnixStream) -> Option<i32> {
     (rc == 0 && cred.pid > 0).then_some(cred.pid)
 }
 
+/// The executable a process is running, with symlinks resolved.
+#[cfg(target_os = "macos")]
+pub fn exe_path(pid: i32) -> Option<std::path::PathBuf> {
+    let mut buf = vec![0u8; libc::PROC_PIDPATHINFO_MAXSIZE as usize];
+    // SAFETY: proc_pidpath writes at most `buf.len()` bytes.
+    let n = unsafe { libc::proc_pidpath(pid, buf.as_mut_ptr().cast(), buf.len() as u32) };
+    if n <= 0 {
+        return None;
+    }
+    buf.truncate(n as usize);
+    let path = std::path::PathBuf::from(String::from_utf8(buf).ok()?);
+    path.canonicalize().ok().or(Some(path))
+}
+
+/// The executable a process is running, with symlinks resolved.
+#[cfg(not(target_os = "macos"))]
+pub fn exe_path(pid: i32) -> Option<std::path::PathBuf> {
+    std::fs::read_link(format!("/proc/{pid}/exe")).ok()
+}
+
+/// Whether the process on the other end of `stream` runs this same
+/// executable. Used before trusting a socket with a key: any program can
+/// listen on a path, but only stash runs the stash binary.
+pub fn peer_is_this_program(stream: &UnixStream) -> bool {
+    let Some(peer) = peer_pid(stream).and_then(exe_path) else {
+        return false;
+    };
+    let Some(me) = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.canonicalize().ok())
+    else {
+        return false;
+    };
+    peer == me
+}
+
 /// "sh ← stash ← zsh": who started this process, for unlock prompts.
 pub fn requester_chain(depth: usize) -> String {
     let mut names = Vec::new();
@@ -134,7 +170,7 @@ pub fn requester_chain(depth: usize) -> String {
     for _ in 0..depth {
         match info(pid) {
             Some(p) if p.pid > 1 => {
-                names.push(p.name.clone());
+                names.push(crate::text::clean(&p.name, 32));
                 pid = p.ppid;
             }
             _ => break,
