@@ -48,6 +48,8 @@ pub struct Options {
     pub allow: Vec<String>,
     /// Offer `request_secret`, which returns raw values.
     pub allow_reveal: bool,
+    /// Let agents use payment cards and bank accounts (off by default).
+    pub allow_payments: bool,
     /// Skip the per-call Touch ID approval (for headless use only).
     pub no_approval: bool,
     pub idle_timeout: Duration,
@@ -368,9 +370,15 @@ impl Server {
     }
 
     fn list_secrets(&mut self) -> Result<Value, Refusal> {
+        let allow_payments = self.opts.allow_payments;
         let (vault, _) = self.vault("list your secret names")?;
-        let names = vault.names()?;
-        let names: Vec<String> = names.into_iter().filter(|n| self.allowed(n)).collect();
+        let summaries = vault.summaries()?;
+        let names: Vec<String> = summaries
+            .into_iter()
+            .filter(|s| allow_payments || !s.kind.is_payment())
+            .map(|s| s.name)
+            .filter(|n| self.allowed(n))
+            .collect();
         let text = if names.is_empty() {
             "No secrets available.".to_owned()
         } else {
@@ -413,10 +421,11 @@ impl Server {
             // Fail on missing items before bothering the user, but produce
             // values only after approval, so a 2FA code is fresh when the
             // command starts.
+            let allow_payments = self.opts.allow_payments;
             let approved = {
                 let (vault, approved) = self.vault(&purpose)?;
                 for (_, r) in &request.references {
-                    check_exists(vault, &r.as_ref())?;
+                    check_exists(vault, &r.as_ref(), allow_payments)?;
                 }
                 approved
             };
@@ -477,9 +486,10 @@ impl Server {
         self.check_allowed(&[&r.name])?;
 
         let purpose = format!("see the value of {shown}");
+        let allow_payments = self.opts.allow_payments;
         let approved = {
             let (vault, approved) = self.vault(&purpose)?;
-            check_exists(vault, &r.as_ref())?;
+            check_exists(vault, &r.as_ref(), allow_payments)?;
             approved
         };
         self.approve(&purpose, approved)?;
@@ -492,9 +502,31 @@ impl Server {
 }
 
 /// Does this reference point at something, without producing its value?
-fn check_exists(vault: &Vault, r: &reference::Reference) -> Result<(), Refusal> {
+/// Does this reference point at something an agent may use, without
+/// producing its value? Cards and bank accounts are refused unless the
+/// server was started with --allow-payments.
+fn check_exists(
+    vault: &Vault,
+    r: &reference::Reference,
+    allow_payments: bool,
+) -> Result<(), Refusal> {
     if !vault.contains(r.name)? {
         return Err(stash_core::Error::NotFound(r.name.to_owned()).into());
+    }
+    if !allow_payments
+        && vault
+            .summaries()?
+            .iter()
+            .any(|s| s.name == r.name && s.kind.is_payment())
+    {
+        return Err(Refusal::new(
+            "blocked",
+            format!(
+                "{} is a payment card or bank account, which AI agents can't use. \
+                 Ask the user to start the server with `stash mcp --allow-payments` if this is intended.",
+                r.name
+            ),
+        ));
     }
     if let Some(field) = r.field
         && vault.item(r.name)?.field(field).is_none()
@@ -833,6 +865,7 @@ mod tests {
             opts: Options {
                 allow: vec!["github/*".into()],
                 allow_reveal: false,
+                allow_payments: false,
                 no_approval: false,
                 idle_timeout: Duration::from_secs(60),
             },
