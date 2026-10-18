@@ -314,8 +314,9 @@ const SESSION_TIMEOUT_ENV: &str = "STASH_SESSION_TIMEOUT";
 const DEFAULT_SESSION_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 
 fn main() -> ExitCode {
-    harden::process();
-    match run(Cli::parse()) {
+    let cli = Cli::parse();
+    harden::process(matches!(cli.command, Command::Agent { .. }));
+    match run(cli) {
         Ok(code) => code,
         Err(err) => {
             eprintln!("stash: {err:#}");

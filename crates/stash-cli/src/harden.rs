@@ -11,8 +11,14 @@
 //!
 //! Root can still get around both; they stop same-user programs, which is
 //! the threat here (an AI agent's shell, a malicious package script).
+//!
+//! On Linux, a non-dumpable process also hides `/proc/<pid>/exe`, which
+//! `stash` reads to confirm the session agent is really stash before handing
+//! it a key. So the session agent stays dumpable there (`inspectable`), and
+//! relies on the kernel's Yama ptrace restrictions (on by default on
+//! Ubuntu and Fedora) against same-user debuggers.
 
-pub fn process() {
+pub fn process(inspectable: bool) {
     // SAFETY: plain syscalls with constant arguments.
     unsafe {
         let none = libc::rlimit {
@@ -26,8 +32,9 @@ pub fn process() {
             libc::ptrace(31, 0, std::ptr::null_mut(), 0);
         }
         #[cfg(target_os = "linux")]
-        {
+        if !inspectable {
             libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0);
         }
+        let _ = inspectable;
     }
 }

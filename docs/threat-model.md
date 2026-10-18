@@ -50,7 +50,7 @@ The most likely attacker on a developer's Mac isn't a stranger: it's a program r
 - **Backends serve only their owners.** `stash app-server`, which can read the whole vault once unlocked, refuses to run unless it was started by the stash app it ships inside. The Mac app runs only the backend sealed in its own bundle.
 - **Prompts name the real requester.** Requester names come from the kernel, not from what a program says about itself. `stash mcp` prompts show both the client's self-chosen name and the process chain that started the server, plus risky options in effect (`--allow-reveal on`). Invisible Unicode formatting characters (bidirectional overrides, zero-width characters) are stripped from everything shown in a prompt, so a command can't be disguised.
 - **`stash mcp --no-approval` needs `STASH_PASSWORD`.** Otherwise an agent that edits its own MCP configuration could turn off approvals.
-- **No debuggers or core dumps.** Every `stash` process denies debugger attach (`PT_DENY_ATTACH` on macOS, `PR_SET_DUMPABLE=0` on Linux) and disables core dumps, so another program running as you can't read keys from its memory.
+- **No debuggers or core dumps.** Every `stash` process denies debugger attach (`PT_DENY_ATTACH` on macOS, `PR_SET_DUMPABLE=0` on Linux) and disables core dumps, so another program running as you can't read keys from its memory. One exception on Linux: the session agent stays dumpable, because that's what lets `stash` confirm it's really stash before handing it a key; there it relies on the kernel's Yama ptrace restrictions (on by default on Ubuntu and Fedora).
 
 What stays possible for a program running as you, and how to limit it:
 
