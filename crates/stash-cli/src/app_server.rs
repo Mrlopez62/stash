@@ -41,6 +41,7 @@ mod code {
     pub const CANCELLED: i64 = -32004;
     pub const NEEDS_UPGRADE: i64 = -32005;
     pub const ALREADY_EXISTS: i64 = -32006;
+    pub const NEEDS_PASSPHRASE: i64 = -32007;
 }
 
 struct Failure {
@@ -68,6 +69,7 @@ impl From<Error> for Failure {
             Error::WrongPassword => code::WRONG_PASSWORD,
             Error::NeedsUpgrade | Error::UpgradeBlocked => code::NEEDS_UPGRADE,
             Error::AlreadyExists(_) => code::ALREADY_EXISTS,
+            Error::SshPassphrase => code::NEEDS_PASSPHRASE,
             _ => code::FAILED,
         };
         Failure::new(code, e.to_string())
@@ -146,6 +148,8 @@ impl Server {
             "otp_uri" => self.otp_uri(&params),
             "save" => self.save(&params),
             "delete" => self.delete(&params),
+            "ssh_generate" => self.ssh_generate(&params),
+            "ssh_import" => self.ssh_import(&params),
             "generate" => generate_password(&params),
             "enable_touch_id" => self.enable_touch_id(&params),
             _ => Err(Failure::new(
@@ -454,6 +458,43 @@ impl Server {
         }
         item.notes.clear();
         Ok(json!({}))
+    }
+
+    /// A new Ed25519 key. Returns only the public half.
+    fn ssh_generate(&mut self, params: &Value) -> Reply {
+        let name = name_param(params, "name")?;
+        let comment = params
+            .get("comment")
+            .and_then(Value::as_str)
+            .unwrap_or(&name)
+            .to_owned();
+        let pair = stash_core::ssh::KeyPair::generate(&comment)?;
+        self.save_ssh_key(&name, &pair)
+    }
+
+    /// An OpenSSH private key file's contents, with its passphrase if it
+    /// has one (`NEEDS_PASSPHRASE` asks for it).
+    fn ssh_import(&mut self, params: &Value) -> Reply {
+        let name = name_param(params, "name")?;
+        let text = Zeroizing::new(string_param(params, "key")?);
+        let passphrase = params
+            .get("passphrase")
+            .and_then(Value::as_str)
+            .map(|p| Zeroizing::new(p.to_owned()));
+        let pair = stash_core::ssh::KeyPair::from_openssh(
+            &text,
+            passphrase.as_ref().map(|p| p.as_bytes()),
+        )?;
+        self.save_ssh_key(&name, &pair)
+    }
+
+    fn save_ssh_key(&mut self, name: &str, pair: &stash_core::ssh::KeyPair) -> Reply {
+        let vault = self.vault()?;
+        if vault.contains(name)? {
+            return Err(Error::AlreadyExists(name.to_owned()).into());
+        }
+        vault.put(name, &Item::ssh_key(pair), false)?;
+        Ok(json!({ "public_key": pair.public_line(), "fingerprint": pair.fingerprint() }))
     }
 
     fn delete(&mut self, params: &Value) -> Reply {
@@ -807,5 +848,53 @@ mod tests {
         );
         assert_eq!(c, code::FAILED);
         assert!(m.contains("typo"), "{m}");
+    }
+
+    #[test]
+    fn makes_and_imports_ssh_keys() {
+        let mut f = Fixture::new();
+        let made = f.ok(
+            "ssh_generate",
+            json!({ "name": "ssh/github", "comment": "me@mac" }),
+        );
+        assert!(made["public_key"].as_str().unwrap().ends_with(" me@mac"));
+        let listed = f.ok("list", json!({}));
+        let row = listed["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|i| i["name"] == "ssh/github")
+            .unwrap()
+            .clone();
+        assert_eq!(row["kind"], "ssh");
+        assert!(
+            row["subtitle"]
+                .as_str()
+                .unwrap()
+                .starts_with("Ed25519 · SHA256:")
+        );
+        let item = f.ok("item", json!({ "name": "ssh/github" }));
+        let private = item["fields"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|x| x["label"] == "private key")
+            .unwrap()
+            .clone();
+        assert!(
+            private.get("value").is_none_or(Value::is_null),
+            "the private key isn't sent: {private}"
+        );
+
+        let encrypted = include_str!("../../stash-core/tests/data/ed25519-encrypted");
+        let needs = f.call("ssh_import", json!({ "name": "ssh/old", "key": encrypted }));
+        assert_eq!(needs["error"]["code"], code::NEEDS_PASSPHRASE);
+        let ok = f.ok(
+            "ssh_import",
+            json!({ "name": "ssh/old", "key": encrypted, "passphrase": "correct horse" }),
+        );
+        assert!(ok["fingerprint"].as_str().unwrap().starts_with("SHA256:"));
+        let dup = f.call("ssh_generate", json!({ "name": "ssh/old" }));
+        assert_eq!(dup["error"]["code"], code::ALREADY_EXISTS);
     }
 }

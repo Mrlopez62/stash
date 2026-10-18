@@ -371,6 +371,11 @@ pub fn edit(vault: &mut Vault, name: &str, args: &EditArgs) -> Result<()> {
             item.kind
         );
     }
+    if item.kind == Kind::Ssh && (touches_login || changes_password) {
+        bail!(
+            "{name} is an SSH key; to replace it, use `stash ssh generate` or `stash ssh import` with --force"
+        );
+    }
     if item.kind == Kind::Note && (changes_password || login.otp) {
         bail!("{name} is a note, which has no password or 2FA");
     }
@@ -563,17 +568,25 @@ pub fn otp_secret(vault: &Vault, name: &str) -> Result<Zeroizing<String>> {
 pub fn list_long(vault: &Vault) -> Result<()> {
     let rows = vault.summaries()?;
     let name_w = rows.iter().map(|r| r.name.len()).max().unwrap_or(4).max(4);
+    // A login's username, or a card's, account's, or key's summary.
+    let detail = |username: &Option<String>, subtitle: &Option<String>| -> String {
+        username
+            .as_deref()
+            .or(subtitle.as_deref())
+            .unwrap_or("")
+            .to_owned()
+    };
     let user_w = rows
         .iter()
-        .filter_map(|r| r.username.as_ref().map(|u| u.chars().count()))
+        .map(|r| detail(&r.username, &r.subtitle).chars().count())
         .max()
-        .unwrap_or(8)
-        .max(8);
+        .unwrap_or(7)
+        .max(7);
     let mut out = io::stdout().lock();
     writeln!(
         out,
         "{:<name_w$}  {:<6}  {:<user_w$}  {:<3}  WEBSITE",
-        "NAME", "KIND", "USERNAME", "2FA"
+        "NAME", "KIND", "DETAILS", "2FA"
     )?;
     for r in rows {
         writeln!(
@@ -581,10 +594,7 @@ pub fn list_long(vault: &Vault) -> Result<()> {
             "{:<name_w$}  {:<6}  {:<user_w$}  {:<3}  {}",
             r.name,
             r.kind.to_string(),
-            r.username
-                .as_deref()
-                .or(r.subtitle.as_deref())
-                .unwrap_or(""),
+            detail(&r.username, &r.subtitle),
             if r.has_otp { "yes" } else { "" },
             r.url.as_deref().unwrap_or("")
         )?;

@@ -28,8 +28,8 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
 use serde_json::{Value, json};
-use stash_core::Vault;
 use stash_core::reference::{self, ReferenceBuf};
+use stash_core::{Kind, Vault};
 use zeroize::Zeroizing;
 
 use crate::mask::Masker;
@@ -375,7 +375,7 @@ impl Server {
         let summaries = vault.summaries()?;
         let names: Vec<String> = summaries
             .into_iter()
-            .filter(|s| allow_payments || !s.kind.is_payment())
+            .filter(|s| s.kind != Kind::Ssh && (allow_payments || !s.kind.is_payment()))
             .map(|s| s.name)
             .filter(|n| self.allowed(n))
             .collect();
@@ -513,12 +513,22 @@ fn check_exists(
     if !vault.contains(r.name)? {
         return Err(stash_core::Error::NotFound(r.name.to_owned()).into());
     }
-    if !allow_payments
-        && vault
-            .summaries()?
-            .iter()
-            .any(|s| s.name == r.name && s.kind.is_payment())
-    {
+    let kind = vault
+        .summaries()?
+        .into_iter()
+        .find(|s| s.name == r.name)
+        .map(|s| s.kind);
+    if kind == Some(Kind::Ssh) {
+        return Err(Refusal::new(
+            "blocked",
+            format!(
+                "{} is an SSH key. Its private key never goes to AI agents; commands that need it \
+                 (ssh, git push, signed commits) get it through the stash SSH agent, which asks the user.",
+                r.name
+            ),
+        ));
+    }
+    if !allow_payments && kind.is_some_and(Kind::is_payment) {
         return Err(Refusal::new(
             "blocked",
             format!(

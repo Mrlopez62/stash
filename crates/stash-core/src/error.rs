@@ -18,6 +18,10 @@ pub enum Error {
     NotText(String),
     #[error("{0}")]
     InvalidPayment(String),
+    #[error("{0}")]
+    InvalidSshKey(String),
+    #[error("that SSH key file needs its passphrase (or the passphrase was wrong)")]
+    SshPassphrase,
     #[error("invalid password rules: {0}")]
     InvalidRules(String),
     #[error("not a valid 2FA (TOTP) secret: {0}")]

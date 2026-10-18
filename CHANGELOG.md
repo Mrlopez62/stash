@@ -2,6 +2,27 @@
 
 All notable changes to stash. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/) (pre-1.0: minor versions may change behavior).
 
+## [0.9.0] - 2026-10-17
+
+### Added
+- **SSH keys in the vault:** `stash ssh generate` makes an Ed25519 key, and `stash ssh import` moves in an existing OpenSSH key file (passphrase-protected keys too). `stash ssh public` prints the public key; `stash ssh ls` lists keys with fingerprints.
+- **The stash SSH agent** (`stash ssh agent`, or `stash ssh install` to run it at login with launchd):
+  - Every signature asks for Touch ID, on a prompt naming the key, its purpose (an SSH login as a user, or a git commit signature), and the process asking.
+  - Public keys stay listed while the vault is locked, so `ssh` picks a key without a prompt.
+  - When the vault is locked, the unlock prompt names the signature it approves; an unlock for anything else never counts as approval.
+  - Text from the requesting program (user names, namespaces) appears in the prompt only if short and plain.
+  - After a declined prompt, signing is refused for 10 seconds, so a process can't keep asking.
+  - Keys added while the agent runs are offered right away.
+  - Requests to add, remove, or lock keys are refused.
+  - Each signature is written to the audit log.
+- **Git commit signing:** `stash ssh git-setup <key> [--global]` configures git to sign commits and tags through the agent, and records your key in an allowed-signers file so `git log --show-signature` verifies them.
+- **In the Mac app:** an SSH Keys category; a key panel with its fingerprint, `ssh-keygen`-style randomart, and Copy Public Key; generating and importing keys from New Item. Copying an SSH key from the list copies its public key.
+
+### Changed
+- **`stash mcp` refuses SSH keys** (they're not listed, and references to them are blocked), since commands that need them get them through the agent.
+- **`stash ls --long`'s third column is now DETAILS:** a login's username, or a card's, bank account's, or SSH key's summary, sized to fit.
+- **Snapshot mode exits directly** instead of hanging when an editor sheet is open.
+
 ## [0.8.0] - 2026-10-17
 
 ### Added
@@ -109,6 +130,7 @@ Security and correctness fixes for 0.6.0, found by an independent security revie
 ### Added
 - **The first release:** an encrypted vault (Argon2id + XChaCha20-Poly1305) and the `init`, `add`, `get`, `ls`, and `rm` commands.
 
+[0.9.0]: https://github.com/Mrlopez62/stash/pull/13
 [0.8.0]: https://github.com/Mrlopez62/stash/pull/12
 [0.7.1]: https://github.com/Mrlopez62/stash/pull/11
 [0.7.0]: https://github.com/Mrlopez62/stash/pull/10

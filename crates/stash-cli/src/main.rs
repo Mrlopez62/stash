@@ -9,6 +9,8 @@ mod mask;
 mod mcp;
 mod procinfo;
 mod run;
+mod ssh_agent;
+mod ssh_cmd;
 mod touchid;
 mod ui;
 
@@ -202,6 +204,15 @@ enum Command {
     },
     /// End the unlocked session, so the next command asks again
     Lock,
+    /// SSH keys: generate or import them, serve them to ssh and git with
+    /// Touch ID, and sign git commits
+    #[command(
+        after_help = "Get started:\n  stash ssh generate ssh/github        # prints the public key for GitHub\n  stash ssh install                    # runs the agent at login\n  stash ssh git-setup ssh/github --global   # sign commits with it"
+    )]
+    Ssh {
+        #[command(subcommand)]
+        action: SshAction,
+    },
     /// Unlock with your fingerprint instead of the master password (macOS)
     #[command(name = "touchid")]
     TouchId {
@@ -222,6 +233,63 @@ enum Command {
     Agent {
         #[arg(long)]
         socket: PathBuf,
+    },
+}
+
+#[derive(Subcommand)]
+enum SshAction {
+    /// Make a new Ed25519 key and print its public key
+    Generate {
+        /// Item name, e.g. `ssh/github`
+        name: String,
+        /// The comment shown with the public key [default: the item name]
+        #[arg(long, short = 'C')]
+        comment: Option<String>,
+        #[arg(long, short)]
+        force: bool,
+    },
+    /// Move an existing OpenSSH private key file into the vault
+    Import {
+        /// Item name, e.g. `ssh/github`
+        name: String,
+        /// The private key file, e.g. ~/.ssh/id_ed25519
+        file: PathBuf,
+        #[arg(long, short)]
+        force: bool,
+    },
+    /// Print a key's public key (for authorized_keys or GitHub)
+    Public { name: String },
+    /// List SSH keys with their fingerprints
+    Ls,
+    /// Run the SSH agent in the foreground
+    Agent {
+        /// Where to listen [default: ~/.stash/ssh-agent.sock]
+        #[arg(long, env = "STASH_SSH_AUTH_SOCK")]
+        socket: Option<PathBuf>,
+        /// Lock the vault after this long without signing (10m, 1h, 600)
+        #[arg(long, default_value = "10m")]
+        lock_after: String,
+        /// Sign without asking for Touch ID (headless use with STASH_PASSWORD only)
+        #[arg(long)]
+        no_approval: bool,
+    },
+    /// Start the agent at login (macOS launchd) and show the SSH config line
+    Install {
+        #[arg(long, env = "STASH_SSH_AUTH_SOCK")]
+        socket: Option<PathBuf>,
+        #[arg(long, default_value = "10m")]
+        lock_after: String,
+    },
+    /// Stop starting the agent at login
+    Uninstall,
+    /// Sign git commits and tags with this key (in this repository, or
+    /// --global for all)
+    GitSetup {
+        name: String,
+        #[arg(long)]
+        global: bool,
+        #[arg(long, env = "STASH_SSH_AUTH_SOCK")]
+        socket: Option<PathBuf>,
     },
 }
 
@@ -429,6 +497,57 @@ fn run(cli: Cli) -> Result<ExitCode> {
             let mut out = io::stdout().lock();
             for event in &events {
                 writeln!(out, "{}", audit::describe(event))?;
+            }
+        }
+        Command::Ssh { action } => {
+            let socket = |s: Option<PathBuf>| s.map_or_else(ssh_agent::default_socket, Ok);
+            match action {
+                SshAction::Generate {
+                    name,
+                    comment,
+                    force,
+                } => {
+                    stash_core::validate_name(&name)?;
+                    let mut vault = unlock(&path, &format!("add SSH key {name}"))?;
+                    ssh_cmd::generate(&mut vault, &name, comment.as_deref(), force)?;
+                }
+                SshAction::Import { name, file, force } => {
+                    stash_core::validate_name(&name)?;
+                    let mut vault = unlock(&path, &format!("import SSH key {name}"))?;
+                    ssh_cmd::import(&mut vault, &name, &file, force)?;
+                }
+                SshAction::Public { name } => {
+                    let vault = unlock(&path, &format!("show {name}'s public key"))?;
+                    ssh_cmd::public(&vault, &name)?;
+                }
+                SshAction::Ls => {
+                    let vault = unlock(&path, "list SSH keys")?;
+                    ssh_cmd::list(&vault)?;
+                }
+                SshAction::Agent {
+                    socket: s,
+                    lock_after,
+                    no_approval,
+                } => {
+                    let lock_after = ssh_cmd::parse_duration(&lock_after)?;
+                    ssh_cmd::agent(&path, &socket(s)?, lock_after, no_approval)?;
+                }
+                SshAction::Install {
+                    socket: s,
+                    lock_after,
+                } => {
+                    let lock_after = ssh_cmd::parse_duration(&lock_after)?;
+                    ssh_cmd::install(&path, &socket(s)?, lock_after)?;
+                }
+                SshAction::Uninstall => ssh_cmd::uninstall()?,
+                SshAction::GitSetup {
+                    name,
+                    global,
+                    socket: s,
+                } => {
+                    let vault = unlock(&path, &format!("set up git signing with {name}"))?;
+                    ssh_cmd::git_setup(&vault, &name, &socket(s)?, global)?;
+                }
             }
         }
         Command::Lock => {

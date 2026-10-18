@@ -48,6 +48,12 @@ struct ItemEditorView: View {
     @FocusState private var cvvFocused: Bool
     /// Which sensitive payment fields the item already has (kept if untouched).
     @ViewState private var storedSensitive: Set<String> = []
+
+    @ViewState private var sshComment = ""
+    @ViewState private var sshImporting = false
+    @ViewState private var sshFile: URL?
+    @ViewState private var sshPassphrase = ""
+    @ViewState private var sshNeedsPassphrase = false
     // Bank accounts.
     @ViewState private var bankName = ""
     @ViewState private var holder = ""
@@ -96,6 +102,7 @@ struct ItemEditorView: View {
                             case .login, .secret: secretInput
                             case .card: cardInputs
                             case .bank: bankInputs
+                            case .ssh: sshInputs
                             case .note: EmptyView()
                             }
                             if kind == .login {
@@ -134,7 +141,7 @@ struct ItemEditorView: View {
                         }
                     }
 
-                    if kind != .note {
+                    if kind != .note && kind != .ssh {
                         Card(padding: 16, fill: true) {
                             VStack(alignment: .leading, spacing: 10) {
                                 Text("More fields").font(.plex(11.5, weight: .medium)).foregroundStyle(Color.inkTertiary)
@@ -219,6 +226,7 @@ struct ItemEditorView: View {
         case .note: "notes/wifi"
         case .card: "cards/visa"
         case .bank: "banks/chase-checking"
+        case .ssh: "ssh/github"
         }
     }
 
@@ -469,7 +477,11 @@ struct ItemEditorView: View {
         let trimmed = name.trimmingCharacters(in: .whitespaces)
         if trimmed.isEmpty { return "Give it a name." }
         if trimmed.contains(" ") { return "Names can't contain spaces (try github or work/aws)." }
-        if isNew && kind != .note && secret.isEmpty {
+        if kind == .ssh && isNew && sshImporting {
+            if sshFile == nil { return "Choose the private key file to import." }
+            if sshNeedsPassphrase && sshPassphrase.isEmpty { return "Enter the key file's passphrase." }
+        }
+        if isNew && kind != .note && kind != .ssh && secret.isEmpty {
             return kind == .login ? "Enter or generate a password." : "Enter the secret's value."
         }
         if kind == .note && notes.isEmpty && !(hadNotes && !notesLoaded) { return "Write the note." }
@@ -519,6 +531,9 @@ struct ItemEditorView: View {
                 case (.bank, "account type"): accountType = f.value ?? "checking"
                 case (.bank, "routing number"): routing = f.value ?? ""
                 case (.bank, "swift"): swift = f.value ?? ""
+                // The key can't be edited here; it's kept as is (and its
+                // public half is re-derived on save).
+                case (.ssh, _): keptHidden.append(f)
                 default:
                     if f.kind.isSensitive {
                         keptHidden.append(f)
@@ -531,6 +546,10 @@ struct ItemEditorView: View {
     }
 
     private func save() async {
+        if kind == .ssh && isNew {
+            await saveNewSSHKey()
+            return
+        }
         var fields: [SaveField] = []
         let keepOrNew = { (value: String) -> String? in value.isEmpty ? nil : value }
         switch kind {
@@ -563,10 +582,12 @@ struct ItemEditorView: View {
             appendSecret("iban", iban, to: &fields)
             appendText("swift", swift, to: &fields)
             appendSecret("pin", pin, to: &fields)
-        case .note:
+        case .note, .ssh:
             break
         }
-        if kind != .note {
+        if kind == .ssh {
+            fields += keptHidden.map { .init(label: $0.label, kind: $0.kind, value: nil) }
+        } else if kind != .note {
             fields += custom.map { .init(label: $0.label.trimmingCharacters(in: .whitespaces), kind: $0.kind, value: $0.value) }
             fields += keptHidden.map { .init(label: $0.label, kind: $0.kind, value: nil) }
         }
@@ -584,6 +605,95 @@ struct ItemEditorView: View {
             pin = ""
             accountNumber = ""
             iban = ""
+            dismiss()
+        }
+    }
+
+    @ViewBuilder private var sshInputs: some View {
+        if isNew {
+            Picker("", selection: $sshImporting) {
+                Text("Generate a new key").tag(false)
+                Text("Import a key file").tag(true)
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            if sshImporting {
+                LabeledInput("Private key file", hint: "Usually ~/.ssh/id_ed25519. Ed25519 keys in OpenSSH format.") {
+                    HStack(spacing: 10) {
+                        Button {
+                            chooseSSHFile()
+                        } label: {
+                            Label(sshFile == nil ? "Choose File…" : "Choose Another…", systemImage: "folder")
+                        }
+                        .buttonStyle(SecondaryButtonStyle())
+                        if let sshFile {
+                            Text(sshFile.path.replacingOccurrences(of: NSHomeDirectory(), with: "~"))
+                                .font(.mono(12))
+                                .foregroundStyle(Color.inkSecondary)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                        }
+                    }
+                }
+                if sshNeedsPassphrase {
+                    LabeledInput("Passphrase", hint: "Only used to read the file. In stash, the vault protects the key.") {
+                        FieldBox { SecureField("", text: $sshPassphrase, prompt: Text("The key file's passphrase").foregroundStyle(Color.inkTertiary)) }
+                    }
+                }
+            } else {
+                LabeledInput("Comment", hint: "Shown at the end of the public key, like you@laptop.") {
+                    FieldBox(mono: false) {
+                        TextField("", text: $sshComment, prompt: Text(name.isEmpty ? "you@laptop" : name).foregroundStyle(Color.inkTertiary))
+                    }
+                }
+                Label("A new Ed25519 key, made on this Mac. Only its public half ever leaves stash.", systemImage: "lock.shield")
+                    .font(.plex(12))
+                    .foregroundStyle(Color.inkSecondary)
+            }
+        } else {
+            Label("The key itself can't be changed. To replace it, make or import a new one.", systemImage: "lock")
+                .font(.plex(12))
+                .foregroundStyle(Color.inkSecondary)
+        }
+    }
+
+    private func chooseSSHFile() {
+        let panel = NSOpenPanel()
+        panel.message = "Choose an SSH private key (the file without .pub)"
+        panel.showsHiddenFiles = true
+        panel.directoryURL = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".ssh")
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        sshFile = url
+        sshNeedsPassphrase = false
+        sshPassphrase = ""
+        model.error = nil
+    }
+
+    private func saveNewSSHKey() async {
+        let trimmed = name.trimmingCharacters(in: .whitespaces)
+        let result: (ok: Bool, needsPassphrase: Bool)
+        if sshImporting, let sshFile {
+            guard let text = try? String(contentsOf: sshFile, encoding: .utf8) else {
+                model.error = "Couldn't read \(sshFile.lastPathComponent)."
+                return
+            }
+            let passphrase = sshPassphrase.isEmpty ? nil : sshPassphrase
+            result = await model.addSSHKey(name: trimmed) {
+                try await $0.sshImport(name: trimmed, key: text, passphrase: passphrase)
+            }
+        } else {
+            let comment = sshComment.trimmingCharacters(in: .whitespaces)
+            result = await model.addSSHKey(name: trimmed) {
+                try await $0.sshGenerate(name: trimmed, comment: comment.isEmpty ? nil : comment)
+            }
+        }
+        if result.needsPassphrase {
+            // Ask for it rather than showing an error.
+            if !sshNeedsPassphrase { model.error = nil }
+            sshNeedsPassphrase = true
+        }
+        if result.ok {
+            sshPassphrase = ""
             dismiss()
         }
     }

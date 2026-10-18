@@ -11,6 +11,12 @@ extension AppModel {
         guard let backend else { return false }
         do {
             let detail = try await backend.item(item.name)
+            // An SSH key's useful half is public: copy that, never the private key.
+            if detail.kind == .ssh {
+                guard let key = detail.fields.first(where: { $0.label == "public key" })?.value else { return false }
+                Clipboard.copy(key)
+                return true
+            }
             guard let field = detail.fields.first(where: { $0.kind == .concealed }) else {
                 if detail.hasNotes {
                     Clipboard.copySecret(try await backend.reveal(item.name, field: "notes"))

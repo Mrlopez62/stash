@@ -179,7 +179,7 @@ fn respond(request: &str, scope: Option<Identity>, keys: &mut Sessions) -> Zeroi
 }
 
 #[cfg(any(target_os = "macos", target_os = "freebsd", target_os = "openbsd"))]
-fn peer_is_same_user(stream: &UnixStream) -> bool {
+pub(crate) fn peer_is_same_user(stream: &UnixStream) -> bool {
     let (mut uid, mut gid) = (0, 0);
     // SAFETY: the fd is a valid, open socket owned by `stream`.
     let rc = unsafe { libc::getpeereid(stream.as_raw_fd(), &mut uid, &mut gid) };
@@ -187,7 +187,7 @@ fn peer_is_same_user(stream: &UnixStream) -> bool {
 }
 
 #[cfg(target_os = "linux")]
-fn peer_is_same_user(stream: &UnixStream) -> bool {
+pub(crate) fn peer_is_same_user(stream: &UnixStream) -> bool {
     let mut cred = libc::ucred {
         pid: 0,
         uid: 0,

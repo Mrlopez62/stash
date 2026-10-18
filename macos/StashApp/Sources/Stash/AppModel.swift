@@ -247,6 +247,26 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// Make or import an SSH key, then show it. Returns false on failure;
+    /// `needsPassphrase` is set when an imported file needs one.
+    func addSSHKey(name: String, make: (VaultBackend) async throws -> SSHKeyInfo) async -> (ok: Bool, needsPassphrase: Bool) {
+        var ok = false
+        var needsPassphrase = false
+        await run {
+            guard let backend else { return }
+            do {
+                _ = try await make(backend)
+            } catch let e as BackendError where e.needsPassphrase {
+                needsPassphrase = true
+                throw e
+            }
+            ok = true
+            await reload()
+            await select(name)
+        }
+        return (ok, needsPassphrase)
+    }
+
     func generate(length: Int, symbols: Bool) async -> String? {
         var pw: String?
         await run { pw = try await backend?.generate(length: length, symbols: symbols) }
@@ -274,6 +294,8 @@ final class MockBackend: VaultBackend {
                   subtitle: "Visa •••• 4242 · 08/27"),
             .init(name: "cards/amex-business", kind: .card, username: nil, url: nil, hasOtp: false, updated: now - 30 * 86_400,
                   subtitle: "American Express •••• 0005 · 11/28"),
+            .init(name: "ssh/github", kind: .ssh, username: nil, url: nil, hasOtp: false, updated: now - 2 * 86_400,
+                  subtitle: "Ed25519 · SHA256:2OdYwq/ygWHl…"),
             .init(name: "banks/chase-checking", kind: .bank, username: nil, url: nil, hasOtp: false, updated: now - 14 * 86_400,
                   subtitle: "Chase · Checking •••• 6789"),
             .init(name: "notes/recovery-codes", kind: .note, username: nil, url: nil, hasOtp: false, updated: now - 90 * 86_400),
@@ -323,6 +345,13 @@ final class MockBackend: VaultBackend {
                 .init(label: "cvv", kind: .concealed, value: nil),
                 .init(label: "billing zip", kind: .text, value: "78666"),
             ]
+        case .ssh:
+            fields = [
+                .init(label: "private key", kind: .concealed, value: nil),
+                .init(label: "public key", kind: .text,
+                      value: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIO60iQ4pgY5/xWYrWhdrOrpEvKYcKJnSet59LRMQ1vFq joshua@mac"),
+                .init(label: "fingerprint", kind: .text, value: "SHA256:2OdYwq/ygWHlId1JmNr04FYAgHKLr7ntZGcoJfk2lDY"),
+            ]
         case .bank:
             fields = [
                 .init(label: "bank", kind: .text, value: "Chase"),
@@ -351,4 +380,11 @@ final class MockBackend: VaultBackend {
     func delete(_ name: String) async throws {}
     func generate(length: Int, symbols: Bool) async throws -> String { "q7#Vd!xP2m@Kz9&Lw4$Rt8" }
     func enableTouchID(password: String) async throws {}
+    func sshGenerate(name: String, comment: String?) async throws -> SSHKeyInfo {
+        .init(publicKey: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIO60iQ4pgY5/xWYrWhdrOrpEvKYcKJnSet59LRMQ1vFq \(comment ?? name)",
+              fingerprint: "SHA256:2OdYwq/ygWHlId1JmNr04FYAgHKLr7ntZGcoJfk2lDY")
+    }
+    func sshImport(name: String, key: String, passphrase: String?) async throws -> SSHKeyInfo {
+        try await sshGenerate(name: name, comment: nil)
+    }
 }
