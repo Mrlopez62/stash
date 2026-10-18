@@ -340,7 +340,9 @@ final class MockBackend: VaultBackend {
                      hasNotes: summary.kind == .login || summary.kind == .note, binary: false,
                      created: summary.updated, updated: summary.updated)
     }
-    func reveal(_ name: String, field: String) async throws -> String { "correct-horse-battery" }
+    func reveal(_ name: String, field: String) async throws -> String {
+        field == "cvv" ? (name.contains("amex") ? "4321" : "123") : "correct-horse-battery"
+    }
     func otp(_ name: String) async throws -> OTPCode { .init(code: "482913", remaining: 18, period: 30) }
     func otpLink(_ name: String) async throws -> OTPLink {
         .init(uri: "otpauth://totp/\(name):octocat?secret=JBSWY3DPEHPK3PXP&issuer=\(name)", issuer: name, account: "octocat")

@@ -56,7 +56,11 @@ struct InspectorView: View {
                     CardFaceView(
                         face: face,
                         cardholder: detail.fields.first { $0.label == "cardholder" }?.value,
-                        expiry: detail.fields.first { $0.label == "expiry" }?.value)
+                        expiry: detail.fields.first { $0.label == "expiry" }?.value,
+                        revealCVV: {
+                            guard detail.fields.contains(where: { $0.label == "cvv" }) else { return nil }
+                            return await model.reveal("cvv")
+                        })
                 } else if detail.kind == .bank, let subtitle = detail.subtitle {
                     Label(subtitle, systemImage: "building.columns")
                         .font(.plex(13, weight: .medium))

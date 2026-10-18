@@ -7,7 +7,11 @@ All notable changes to stash. The format follows [Keep a Changelog](https://keep
 ### Added
 - **Payment cards:** cardholder, number, expiry, security code, PIN, and billing ZIP.
   - **Validation:** the number must pass the Luhn checksum and match the brand's length (Visa, Mastercard, Amex, Discover, JCB, Diners, UnionPay are detected), expiry must be MM/YY, and the security code must be 3–4 digits.
-  - **Display:** the app shows a card face. Lists show "Visa •••• 4242 · 08/27".
+  - **Display:** lists show "Visa •••• 4242 · 08/27". The app shows a 3D card:
+    - It tilts toward the pointer under a moving highlight, and a foil sheen crosses it when it opens.
+    - Clicking it turns it over to the security code, which is fetched only then. It turns back by itself after 30 seconds.
+    - The editor shows a live card that fills in as you type and turns over while you enter the security code.
+    - With Reduce Motion on, there's no tilt or sheen, and flips become fades.
 - **Bank accounts:** bank, holder, type, routing number (ABA checksum), account number, IBAN (mod-97), SWIFT/BIC, and PIN.
 - **Payment items in the CLI:** `stash add --card` and `--bank`. Numbers come only from hidden prompts (or one per line from stdin). New field aliases: `#cvv`, `#cvc`, `#expiry`, `#name`, `#zip`, `#routing`, `#account`.
 - **`stash mcp --allow-payments`:** without it, AI agents can't list or use payment items.

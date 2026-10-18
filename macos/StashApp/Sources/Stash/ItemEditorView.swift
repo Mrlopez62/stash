@@ -45,6 +45,7 @@ struct ItemEditorView: View {
     @ViewState private var pin = ""
     @ViewState private var billingZip = ""
     @ViewState private var showCardNumber = false
+    @FocusState private var cvvFocused: Bool
     /// Which sensitive payment fields the item already has (kept if untouched).
     @ViewState private var storedSensitive: Set<String> = []
     // Bank accounts.
@@ -225,7 +226,33 @@ struct ItemEditorView: View {
         Text(storedSensitive.contains(label) ? "Unchanged" : empty).foregroundStyle(Color.inkTertiary)
     }
 
+    /// The live card above the form: it fills in as you type, and turns over
+    /// while you enter the security code.
+    private var cardPreview: some View {
+        let editingFace: CardFace? = if case .edit(let d) = target { d.card } else { nil }
+        let brand = PaymentHints.brand(cardNumber) ?? (cardNumber.isEmpty ? editingFace?.brand : nil)
+        let number = cardNumber.isEmpty && editingFace != nil
+            ? CardNumberDisplay.preview("000000000000" + editingFace!.last4, reveal: false)
+            : CardNumberDisplay.preview(cardNumber, reveal: showCardNumber)
+        let code = String(repeating: "•", count: min(cvv.count, 4))
+        return PremiumCard(
+            content: CardContent(
+                brand: brand,
+                number: number,
+                cardholder: cardholder.isEmpty ? nil : cardholder,
+                expiry: expiry.isEmpty ? nil : expiry,
+                cvv: code.isEmpty ? nil : code),
+            flipped: cvvFocused,
+            interactive: false,
+            sheenOnAppear: true,
+            maxWidth: 300)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 6)
+            .accessibilityHidden(true)
+    }
+
     @ViewBuilder private var cardInputs: some View {
+        cardPreview
         LabeledInput("Cardholder") {
             FieldBox(mono: false) {
                 TextField("", text: $cardholder, prompt: Text("Name on the card").foregroundStyle(Color.inkTertiary))
@@ -264,7 +291,7 @@ struct ItemEditorView: View {
                 }
             }
             LabeledInput("Security code") {
-                FieldBox { SecureField("", text: $cvv, prompt: keepPrompt("cvv", "CVV")) }
+                FieldBox { SecureField("", text: $cvv, prompt: keepPrompt("cvv", "CVV")).focused($cvvFocused) }
             }
             LabeledInput("PIN") {
                 FieldBox { SecureField("", text: $pin, prompt: keepPrompt("pin", "Optional")) }

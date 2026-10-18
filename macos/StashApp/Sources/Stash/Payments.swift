@@ -59,55 +59,65 @@ enum PaymentHints {
     }
 }
 
-/// The card face at the top of a card's inspector: brand, last four digits,
+/// The card at the top of a card's inspector: brand, last four digits,
 /// cardholder, and expiry. Never the full number.
+///
+/// Clicking it turns it over to the security code, which is fetched only
+/// then, and it turns back by itself after 30 seconds (dropping the code).
 struct CardFaceView: View {
     let face: CardFace
     let cardholder: String?
     let expiry: String?
+    let revealCVV: () async -> String?
+
+    @ViewState private var flipped = PremiumCard.startFlipped
+    @ViewState private var cvv: String?
+    @ViewState private var flipBack: Task<Void, Never>?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack {
-                RoundedRectangle(cornerRadius: 4, style: .continuous)
-                    .fill(LinearGradient(colors: [Color(hex: 0xF7D58A), Color.keyholeAmber],
-                                         startPoint: .topLeading, endPoint: .bottomTrailing))
-                    .frame(width: 34, height: 26)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 4, style: .continuous)
-                            .strokeBorder(Color.black.opacity(0.15), lineWidth: 0.5))
-                Spacer()
-                Text(face.brand)
-                    .font(.plex(14, weight: .bold))
-                    .foregroundStyle(Color.plaintext)
-            }
-            Spacer()
-            Text("••••  ••••  ••••  \(face.last4)")
-                .font(.mono(17, weight: .semibold))
-                .foregroundStyle(Color.plaintext)
-                .tracking(1)
-            Spacer().frame(height: 14)
-            HStack(alignment: .bottom) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("CARDHOLDER").font(.plex(8.5, weight: .semibold)).tracking(1).foregroundStyle(Color.plaintext.opacity(0.55))
-                    Text(cardholder ?? "—").font(.plex(12.5, weight: .medium)).foregroundStyle(Color.plaintext).lineLimit(1)
-                }
-                Spacer()
-                VStack(alignment: .trailing, spacing: 2) {
-                    Text("EXPIRES").font(.plex(8.5, weight: .semibold)).tracking(1).foregroundStyle(Color.plaintext.opacity(0.55))
-                    Text(expiry ?? "—").font(.mono(12.5, weight: .medium)).foregroundStyle(Color.plaintext)
-                }
-            }
+        PremiumCard(
+            content: CardContent(
+                brand: face.brand,
+                number: face.brand == "American Express"
+                    ? "•••• •••••• •\(face.last4)"
+                    : "•••• •••• •••• \(face.last4)",
+                cardholder: cardholder,
+                expiry: expiry,
+                cvv: cvv),
+            flipped: flipped)
+            .frame(maxWidth: .infinity)
+            .contentShape(Rectangle())
+            .onTapGesture { toggle() }
+            .help(flipped ? "Turn back over" : "Turn over to see the security code")
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(flipped
+                ? "Security code \(cvv.map { $0.map(String.init).joined(separator: " ") } ?? "hidden")"
+                : "\(face.brand) card ending in \(face.last4)")
+            .accessibilityAddTraits(.isButton)
+            .accessibilityHint(flipped ? "Turns the card back over" : "Shows the security code")
+            .accessibilityAction { toggle() }
+            .onChange(of: face) { _, _ in reset() }
+            .onDisappear { reset() }
+    }
+
+    private func toggle() {
+        if flipped { reset(); return }
+        flipped = true
+        Task { @MainActor in
+            let code = await revealCVV()
+            if flipped { cvv = code }
         }
-        .padding(18)
-        .frame(height: 176)
-        .background(
-            LinearGradient(colors: [Color(hex: 0x1D222B), Color.vaultInk],
-                           startPoint: .topLeading, endPoint: .bottomTrailing),
-            in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(Color.white.opacity(0.08)))
-        .shadow(color: .black.opacity(0.18), radius: 14, y: 8)
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(face.brand) card ending in \(face.last4)")
+        flipBack?.cancel()
+        flipBack = Task { @MainActor in
+            try? await Task.sleep(for: .seconds(30))
+            if !Task.isCancelled { reset() }
+        }
+    }
+
+    private func reset() {
+        flipBack?.cancel()
+        flipBack = nil
+        flipped = false
+        cvv = nil
     }
 }
