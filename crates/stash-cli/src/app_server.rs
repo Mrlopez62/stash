@@ -143,6 +143,7 @@ impl Server {
             "item" => self.item(&params),
             "reveal" => self.reveal(&params),
             "otp" => self.otp(&params),
+            "otp_uri" => self.otp_uri(&params),
             "save" => self.save(&params),
             "delete" => self.delete(&params),
             "generate" => generate_password(&params),
@@ -347,6 +348,30 @@ impl Server {
             "remaining": totp.remaining(now),
             "period": totp.period,
         }))
+    }
+
+    /// An `otpauth://` link for adding this item's 2FA to an authenticator
+    /// app (the app shows it as a QR code, never as text). It contains the
+    /// 2FA secret, so the app asks for it only when you click to show it.
+    fn otp_uri(&mut self, params: &Value) -> Reply {
+        let name = name_param(params, "name")?;
+        let item = self.vault()?.item(&name)?;
+        let secret = Zeroizing::new(match item.kind {
+            Kind::Secret => item.primary().unwrap_or("").to_owned(),
+            _ => match item.field("otp") {
+                Some(FieldValue::Otp(s)) => s.to_owned(),
+                _ => return Err(Error::NoSuchField(name, "otp".into()).into()),
+            },
+        });
+        let totp = Totp::parse(&secret)?;
+        let title = name.rsplit('/').next().unwrap_or(&name).to_owned();
+        let issuer = totp.issuer.clone().unwrap_or(title);
+        let account = item
+            .username()
+            .map(str::to_owned)
+            .unwrap_or_else(|| name.clone());
+        let uri = totp.to_uri(&issuer, &account);
+        Ok(json!({ "uri": uri.as_str(), "issuer": issuer, "account": account }))
     }
 
     /// Create or update an item. Fields sent without a `value` keep their
@@ -606,6 +631,17 @@ mod tests {
             json!({ "name": "github", "field": "one-time password" }),
         );
         assert_eq!(c, code::INVALID_PARAMS);
+        // But they can be exported as an authenticator link (shown as a QR).
+        let link = f.ok("otp_uri", json!({ "name": "github" }));
+        assert_eq!(link["issuer"], "github");
+        assert_eq!(link["account"], "octocat");
+        let uri = link["uri"].as_str().unwrap();
+        assert!(
+            uri.starts_with("otpauth://totp/github:octocat?secret=JBSWY3DPEHPK3PXP"),
+            "{uri}"
+        );
+        let code = |s: &str| stash_core::otp::Totp::parse(s).unwrap().code_at(0);
+        assert_eq!(code(uri), code("JBSWY3DPEHPK3PXP"));
     }
 
     #[test]
