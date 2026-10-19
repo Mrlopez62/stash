@@ -37,7 +37,6 @@ yes.addEventListener("click", async (event) => {
   const reply = await send({ type: "save-confirm" });
   if (reply.ok) {
     title.textContent = reply.action === "unchanged" ? "Already in stash ✓" : "Saved to stash ✓";
-    if (info?.kind === "card") yes.textContent = "Save";
     detail.textContent = `As ${reply.name}.`;
   } else {
     title.textContent = "Not saved";

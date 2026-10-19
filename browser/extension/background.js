@@ -184,6 +184,8 @@ chrome.runtime.onInstalled.addListener(() => syncInline().catch(() => {}));
 /// dropped after a few minutes or once answered.
 const pendingSaves = new Map();
 const SAVE_TIMEOUT = 3 * 60 * 1000;
+/// A card's number and security code wait in memory for less time.
+const CARD_SAVE_TIMEOUT = 60 * 1000;
 
 function randomToken() {
   const bytes = crypto.getRandomValues(new Uint8Array(16));
@@ -234,7 +236,7 @@ async function capturedCard(card, sender) {
   setTimeout(() => {
     const pending = pendingSaves.get(tabId);
     if (pending?.token === token) dismissSave(tabId);
-  }, SAVE_TIMEOUT);
+  }, CARD_SAVE_TIMEOUT);
   showSave(tabId);
   return { ok: true };
 }

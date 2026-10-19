@@ -5,8 +5,13 @@ All notable changes to stash. The format follows [Keep a Changelog](https://keep
 ## [0.13.0] - 2026-10-19
 
 ### Added
-- **Saving cards at checkout** (with *Show stash in sign-in fields* on): after you submit a checkout form with a card number that passes its checksum, stash offers to save the card, unless one with the same brand, last four digits, and expiry is already saved. Saving asks for Touch ID on a prompt naming the card and the site, since cards are sealed under the sensitive key. Cards are named like `cards/visa-4242`.
+- **Saving cards at checkout** (with *Show stash in sign-in fields* on): after you submit a checkout form (its real submit button, not "Apply coupon" or "Back") with a card number that passes its checksum, stash offers to save the card, unless one with the same brand, last four digits, and expiry is already saved. Saving asks for Touch ID on a prompt naming the card and the site, since cards are sealed under the sensitive key. Cards are named like `cards/visa-4242`.
 - **Native host requests** `check_card` (compares summaries only; never decrypts) and `save_card`.
+- A pending card (number and security code) waits in memory for at most 60 seconds, and is dropped as soon as the prompt is dismissed.
+- A form with both a sign-up and a card (sign up and pay) offers both.
+
+### Fixed
+- Saving logins no longer mistakes a dropdown (like a country picker) for the username.
 
 ### Known limits
 - Card fields inside payment processors' frames (Stripe, Braintree) aren't captured, only checkout forms on the page itself.
