@@ -40,7 +40,7 @@ use std::fs::{self, OpenOptions};
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
-use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
+use rusqlite::{Connection, OpenFlags, OptionalExtension, TransactionBehavior, params};
 use secrecy::SecretSlice;
 use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
@@ -174,6 +174,8 @@ pub struct Vault {
     upgrade_blocked: bool,
     /// Where the pre-upgrade copy went, if this unlock upgraded the vault.
     backup: Option<PathBuf>,
+    /// Why an upgrade attempt failed (other than a read-only file).
+    upgrade_problem: Option<String>,
 }
 
 /// A stored row: the item's `blob`, and for sensitive kinds its `secret`.
@@ -254,17 +256,30 @@ impl Vault {
                     vault.upgrade_blocked = true;
                     Ok(vault)
                 }
+                // A backup that couldn't be made (a full disk, say) still
+                // lets the old vault open, read-only.
+                Err(Error::UpgradeFailed(why)) => {
+                    let mut vault = Self::from_parts(conn, legacy, None, path, version);
+                    vault.upgrade_problem = Some(why);
+                    Ok(vault)
+                }
                 Err(e) => Err(e),
             };
         }
 
         let keys = Keys::new(Zeroizing::new(*found.main), version);
-        verify_key_check(&conn, &keys)?;
-        verify_mac(&conn, &keys)?;
         let sensitive = found
             .sensitive
             .ok_or_else(|| Error::Corrupt("missing the sensitive key".into()))?;
-        verify_sensitive_check(&conn, &sensitive)?;
+        // One read transaction, so a concurrent write can't make the
+        // checks see two different states (a false "tampered").
+        {
+            let snapshot = conn.unchecked_transaction()?;
+            verify_key_check(&snapshot, &keys)?;
+            verify_mac(&snapshot, &keys)?;
+            verify_sensitive_check(&snapshot, &sensitive)?;
+            snapshot.commit()?;
+        }
 
         // Re-wrap both keys with stronger KDF settings if these are weaker
         // than today's defaults. Tolerates a read-only or busy file.
@@ -287,9 +302,13 @@ impl Vault {
     pub fn open_with_key(path: &Path, key: &[u8; crypto::KEY_LEN]) -> Result<Self> {
         let (conn, version) = connect_existing(path)?;
         let keys = Keys::new(Zeroizing::new(*key), version);
-        verify_key_check(&conn, &keys)?;
-        if !keys.legacy {
-            verify_mac(&conn, &keys)?;
+        {
+            let snapshot = conn.unchecked_transaction()?;
+            verify_key_check(&snapshot, &keys)?;
+            if !keys.legacy {
+                verify_mac(&snapshot, &keys)?;
+            }
+            snapshot.commit()?;
         }
         Ok(Self::from_parts(conn, keys, None, path, version))
     }
@@ -309,6 +328,7 @@ impl Vault {
             version,
             upgrade_blocked: false,
             backup: None,
+            upgrade_problem: None,
         }
     }
 
@@ -319,7 +339,9 @@ impl Vault {
 
     /// Why the vault can't be changed yet.
     pub fn upgrade_error(&self) -> Error {
-        if self.upgrade_blocked {
+        if let Some(why) = &self.upgrade_problem {
+            Error::UpgradeFailed(why.clone())
+        } else if self.upgrade_blocked {
             Error::UpgradeBlocked
         } else {
             Error::NeedsUpgrade
@@ -444,9 +466,6 @@ impl Vault {
         overwrite: bool,
     ) -> Result<()> {
         let id = self.item_id(name);
-        if !overwrite && self.row(&id)?.is_some() {
-            return Err(Error::AlreadyExists(name.to_owned()));
-        }
         let blob = crypto::seal(&self.keys.item, &self.keys.item_aad(&id), payload)?;
         let sealed_secret = match secret {
             Some(secret) => {
@@ -455,7 +474,18 @@ impl Vault {
             }
             None => None,
         };
-        let tx = self.conn.transaction()?;
+        let tx = begin_write(&mut self.conn, &self.keys, self.sensitive.as_ref())?;
+        let exists = tx
+            .query_row(
+                "SELECT 1 FROM items WHERE id = ?1",
+                params![id.as_slice()],
+                |_| Ok(()),
+            )
+            .optional()?
+            .is_some();
+        if exists && !overwrite {
+            return Err(Error::AlreadyExists(name.to_owned()));
+        }
         tx.execute(
             "INSERT INTO items (id, blob, secret) VALUES (?1, ?2, ?3)
              ON CONFLICT (id) DO UPDATE SET blob = excluded.blob, secret = excluded.secret",
@@ -546,6 +576,16 @@ impl Vault {
                 "item `{name}` holds a different name"
             )));
         }
+        if let Stored::Structured(item) = &stored
+            && !self.keys.legacy
+            && item.kind.is_sensitive()
+        {
+            // A card or SSH key must be split; a whole one in the main-key
+            // part wasn't written by stash.
+            return Err(Error::Corrupt(format!(
+                "item `{name}` holds a sensitive item outside its seal"
+            )));
+        }
         let Stored::Redacted(_) = stored else {
             return Ok(Some(stored));
         };
@@ -576,7 +616,7 @@ impl Vault {
             return Err(self.upgrade_error());
         }
         let id = self.item_id(name);
-        let tx = self.conn.transaction()?;
+        let tx = begin_write(&mut self.conn, &self.keys, None)?;
         let deleted = tx.execute("DELETE FROM items WHERE id = ?1", params![id.as_slice()])?;
         if deleted == 0 {
             return Err(Error::NotFound(name.to_owned()));
@@ -646,22 +686,70 @@ impl Vault {
             return Err(self.upgrade_error());
         }
         self.unlock_sensitive(password)?;
-        let items = self.all_full()?;
+        // A safety copy until the new vault is proven to open; deleted
+        // after, since its point would be to keep the old keys working.
+        let backup = sibling_path(&self.path, "rekey-backup");
+        snapshot_to(&self.conn, &backup)?;
         let main = crypto::random_key()?;
         let sensitive = crypto::random_key()?;
         let keys = Keys::new(Zeroizing::new(*main), FORMAT_VERSION);
         let wrap_with = new_password.unwrap_or(password);
-        let tx = self.conn.transaction()?;
-        tx.execute("DELETE FROM items", [])?;
-        for (name, stored) in &items {
-            insert_row(&tx, &keys, &sensitive, name, stored)?;
-        }
-        write_header(&tx, wrap_with, strengthen_target(), &main, &sensitive)?;
-        bump_mac(&tx, &keys)?;
-        tx.commit()?;
+
+        // Read and rewrite under one write lock, so nothing another process
+        // adds in between is lost, and only from a vault that checks out.
+        self.conn.execute_batch("BEGIN IMMEDIATE")?;
+        let result = (|| {
+            verify_key_check(&self.conn, &self.keys).map_err(keys_changed)?;
+            verify_mac(&self.conn, &self.keys)?;
+            let items = self.all_full()?;
+            self.conn.execute("DELETE FROM items", [])?;
+            for (name, stored) in &items {
+                insert_row(&self.conn, &keys, &sensitive, name, stored)?;
+            }
+            write_header(
+                &self.conn,
+                wrap_with,
+                strengthen_target(),
+                &main,
+                &sensitive,
+            )?;
+            bump_mac(&self.conn, &keys)?;
+            Ok(items.len())
+        })();
+        let count = match result {
+            Ok(count) => {
+                self.conn.execute_batch("COMMIT")?;
+                count
+            }
+            Err(e) => {
+                let _ = self.conn.execute_batch("ROLLBACK");
+                let _ = fs::remove_file(&backup);
+                return Err(e);
+            }
+        };
         self.keys = keys;
         self.sensitive = Some(sensitive);
-        Ok(())
+        // Prove it: reopen with the new keys and read everything.
+        let check = (|| {
+            let mut fresh = Vault::open_with_key(&self.path, &self.keys.main)?;
+            fresh.unlock_sensitive_with_key(self.sensitive.as_ref().expect("just set"))?;
+            if fresh.all_full()?.len() != count {
+                return Err(Error::Corrupt(
+                    "an item went missing while replacing keys".into(),
+                ));
+            }
+            Ok(())
+        })();
+        match check {
+            Ok(()) => {
+                fs::remove_file(&backup)?;
+                Ok(())
+            }
+            Err(e) => Err(Error::Corrupt(format!(
+                "replacing the keys didn't verify ({e}); the vault before it is at {}",
+                backup.display()
+            ))),
+        }
     }
 
     /// Every item, fully decrypted (needs the sensitive key).
@@ -741,7 +829,7 @@ fn unwrap_key(kek: &SecretKey, aad: &[u8], wrapped: &[u8]) -> Result<SecretKey> 
 /// Write a v3 header: fresh salt, both keys wrapped with the KEK from
 /// `password` and `params`, and their check values.
 fn write_header(
-    tx: &rusqlite::Transaction<'_>,
+    tx: &Connection,
     password: &[u8],
     params: KdfParams,
     main: &SecretKey,
@@ -778,7 +866,7 @@ fn write_header(
 
 /// Seal one item into a v3 row.
 fn insert_row(
-    tx: &rusqlite::Transaction<'_>,
+    tx: &Connection,
     keys: &Keys,
     sensitive: &SecretKey,
     name: &str,
@@ -836,15 +924,27 @@ fn upgrade(
             items.push(decode_item(&payload)?);
         }
     }
-    let backup = backup_path(path, version);
-    fs::copy(path, &backup)?;
-    #[cfg(unix)]
-    fs::set_permissions(&backup, std::os::unix::fs::PermissionsExt::from_mode(0o600))?;
+    let backup = sibling_path(path, &format!("v{version}-backup"));
+    snapshot_to(conn, &backup).map_err(|e| match e {
+        // Read-only or busy: the caller opens the vault without upgrading.
+        Error::Database(rusqlite::Error::SqliteFailure(f, _))
+            if matches!(
+                f.code,
+                rusqlite::ErrorCode::ReadOnly
+                    | rusqlite::ErrorCode::DatabaseBusy
+                    | rusqlite::ErrorCode::DatabaseLocked
+            ) =>
+        {
+            e
+        }
+        Error::Io(io) if io.kind() == ErrorKind::PermissionDenied => Error::Io(io),
+        other => Error::UpgradeFailed(format!("couldn't make the backup copy first ({other})")),
+    })?;
 
     let main = crypto::random_key()?;
     let sensitive = crypto::random_key()?;
     let keys = Keys::new(Zeroizing::new(*main), FORMAT_VERSION);
-    let tx = conn.transaction()?;
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
     tx.execute_batch(
         "DROP TABLE items;
          CREATE TABLE items (id BLOB PRIMARY KEY, blob BLOB NOT NULL, secret BLOB) STRICT;",
@@ -858,16 +958,62 @@ fn upgrade(
     Ok((keys, sensitive, backup))
 }
 
-/// `vault.db` → `vault.db.v2-backup` (or with a timestamp if that exists).
-fn backup_path(path: &Path, version: i64) -> PathBuf {
+/// A consistent copy of the vault file (SQLite's own `VACUUM INTO`, under a
+/// read lock, so a write in progress can't tear it), private (`0600`).
+fn snapshot_to(conn: &Connection, dest: &Path) -> Result<()> {
+    let mut opts = OpenOptions::new();
+    opts.write(true).create_new(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut opts, 0o600);
+    opts.open(dest)?;
+    let result = conn.execute(
+        "VACUUM INTO ?1",
+        params![dest.to_string_lossy().into_owned()],
+    );
+    if let Err(e) = result {
+        let _ = fs::remove_file(dest);
+        return Err(e.into());
+    }
+    Ok(())
+}
+
+/// `vault.db` → `vault.db.<suffix>` (or with a timestamp if that exists).
+fn sibling_path(path: &Path, suffix: &str) -> PathBuf {
     let mut name = path.as_os_str().to_owned();
-    name.push(format!(".v{version}-backup"));
+    name.push(format!(".{suffix}"));
     let candidate = PathBuf::from(&name);
     if !candidate.exists() {
         return candidate;
     }
     name.push(format!("-{}", unix_now()));
     PathBuf::from(name)
+}
+
+/// Start a write: take the write lock, then make sure this process's keys
+/// still match the file (another stash command may have replaced them) and
+/// that the vault is still intact (so a write never re-blesses tampering
+/// done since it was opened). Everything after runs in this transaction.
+fn begin_write<'a>(
+    conn: &'a mut Connection,
+    keys: &Keys,
+    sensitive: Option<&SecretKey>,
+) -> Result<rusqlite::Transaction<'a>> {
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    verify_key_check(&tx, keys).map_err(keys_changed)?;
+    if let Some(sensitive) = sensitive {
+        verify_sensitive_check(&tx, sensitive).map_err(keys_changed)?;
+    }
+    verify_mac(&tx, keys)?;
+    Ok(tx)
+}
+
+/// A key that no longer matches during a write means the keys were
+/// replaced since this process unlocked.
+fn keys_changed(e: Error) -> Error {
+    match e {
+        Error::WrongKey => Error::KeysChanged,
+        other => other,
+    }
 }
 
 /// The vault-wide MAC: the write counter and every row's id and the hashes
@@ -898,7 +1044,7 @@ fn compute_mac(conn: &Connection, keys: &Keys, counter: i64) -> Result<[u8; 32]>
 
 /// After a change: bump the counter and store the new MAC (same
 /// transaction as the change).
-fn bump_mac(tx: &rusqlite::Transaction<'_>, keys: &Keys) -> Result<()> {
+fn bump_mac(tx: &Connection, keys: &Keys) -> Result<()> {
     let counter: i64 = tx
         .query_row(
             "SELECT value FROM meta WHERE key = 'write_counter'",
@@ -982,8 +1128,11 @@ fn strengthen_target() -> KdfParams {
     }
 }
 
+/// Less total work than `target` (memory × passes), or less memory than
+/// half of it. Stronger custom settings are left alone.
 fn weaker_than(params: KdfParams, target: KdfParams) -> bool {
-    params.m_cost_kib < target.m_cost_kib || params.t_cost < target.t_cost
+    let work = |p: KdfParams| u64::from(p.m_cost_kib) * u64::from(p.t_cost);
+    work(params) < work(target) || params.m_cost_kib < target.m_cost_kib / 2
 }
 
 /// `Ok(None)` if the write failed only because the vault is read-only or
@@ -2001,5 +2150,104 @@ mod tests {
         // The old copy, with the old password, can't read the new vault.
         let old = Vault::open(&old_copy, b"correct horse").unwrap();
         assert_ne!(old.key(), vault.key());
+    }
+
+    #[test]
+    fn a_process_with_replaced_keys_cant_write_and_break_the_vault() {
+        let (_dir, path, mut vault) = new_vault();
+        vault.add("api/token", b"t", false).unwrap();
+        // The Mac app, say, unlocked earlier with today's main key...
+        let mut stale = Vault::open_with_key(&path, vault.key()).unwrap();
+        // ...then `stash rekey` (or `passwd`) runs in a terminal.
+        vault.rekey(b"correct horse", None).unwrap();
+        // The app's next save is refused instead of corrupting the vault.
+        assert!(matches!(
+            stale.add("note", b"x", false),
+            Err(Error::KeysChanged)
+        ));
+        assert!(matches!(stale.remove("api/token"), Err(Error::KeysChanged)));
+        drop(vault);
+        let reopened = Vault::open(&path, b"correct horse").unwrap();
+        assert_eq!(value(&reopened, "api/token"), b"t");
+        // No safety copy is left behind once the rekey checked out.
+        let leftovers: Vec<_> = fs::read_dir(path.parent().unwrap())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().contains("rekey-backup"))
+            .collect();
+        assert!(leftovers.is_empty());
+    }
+
+    #[test]
+    fn a_write_never_re_blesses_tampering_done_since_opening() {
+        let (dir, path, mut vault) = new_vault();
+        vault.add("api/token", b"original", false).unwrap();
+        let snapshot = dir.path().join("snap.db");
+        fs::copy(&path, &snapshot).unwrap();
+        vault.add("api/token", b"rotated", true).unwrap();
+        // While this process has the vault open, someone without the keys
+        // rolls the token back in the file.
+        let conn = Connection::open(&path).unwrap();
+        conn.execute(&format!("ATTACH '{}' AS old", snapshot.display()), [])
+            .unwrap();
+        conn.execute_batch(
+            "UPDATE items SET blob = (SELECT blob FROM old.items o WHERE o.id = items.id)",
+        )
+        .unwrap();
+        drop(conn);
+        // The next write notices instead of signing over it.
+        assert!(matches!(
+            vault.add("note", b"x", false),
+            Err(Error::Tampered)
+        ));
+        drop(vault);
+        assert!(matches!(
+            Vault::open(&path, b"correct horse"),
+            Err(Error::Tampered)
+        ));
+    }
+
+    #[test]
+    fn a_whole_sensitive_item_outside_its_seal_is_refused() {
+        let (_dir, path, mut vault) = new_vault();
+        // Someone with the main key plants an unsplit "card" and re-MACs.
+        let id = vault.item_id("cards/planted");
+        let payload = encode_with(&STRUCTURED, "cards/planted", &visa()).unwrap();
+        let blob = crypto::seal(&vault.keys.item, &vault.keys.item_aad(&id), &payload).unwrap();
+        {
+            let tx = vault.conn.transaction().unwrap();
+            tx.execute(
+                "INSERT INTO items (id, blob) VALUES (?1, ?2)",
+                params![id.as_slice(), blob],
+            )
+            .unwrap();
+            bump_mac(&tx, &vault.keys).unwrap();
+            tx.commit().unwrap();
+        }
+        drop(vault);
+        let vault = Vault::open(&path, b"correct horse").unwrap();
+        assert!(matches!(
+            vault.item("cards/planted"),
+            Err(Error::Corrupt(_))
+        ));
+    }
+
+    #[test]
+    fn stronger_custom_kdf_settings_are_left_alone() {
+        let target = KdfParams::default();
+        let big_memory_one_pass = KdfParams {
+            m_cost_kib: 1 << 20,
+            t_cost: 1,
+            p_cost: 4,
+        };
+        assert!(!weaker_than(big_memory_one_pass, target));
+        assert!(weaker_than(
+            KdfParams {
+                m_cost_kib: 64 * 1024,
+                t_cost: 3,
+                p_cost: 1
+            },
+            target
+        ));
     }
 }

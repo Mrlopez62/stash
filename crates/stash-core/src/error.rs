@@ -9,6 +9,12 @@ pub enum Error {
     )]
     SensitiveLocked(String),
     #[error(
+        "the vault's keys were changed by another stash command (a new master password or `stash rekey`); unlock again"
+    )]
+    KeysChanged,
+    #[error("this vault couldn't be upgraded: {0}")]
+    UpgradeFailed(String),
+    #[error(
         "the vault file was changed outside stash (items were added, removed, or rolled back), so stash won't trust it. Restore it from a backup you trust"
     )]
     Tampered,

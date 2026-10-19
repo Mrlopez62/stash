@@ -157,6 +157,9 @@ pub fn unlock(helper: &Path, vault: &Path, reason: &str) -> Result<Keys, UnlockE
     match out.code {
         Some(0) => {
             let hex = out.stdout.trim();
+            if !hex.is_ascii() {
+                return Err(malformed());
+            }
             match hex.len() {
                 64 => Ok(Keys {
                     main: crypto::key_from_hex(hex).ok_or_else(malformed)?,

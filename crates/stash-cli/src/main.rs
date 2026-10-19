@@ -871,12 +871,19 @@ fn refresh_unlock_methods(path: &Path, vault: &Vault) {
         match touchid::helper() {
             Some(helper) => {
                 if let Err(e) = touchid::enroll(&helper, path, vault.key(), vault.sensitive_key()) {
+                    // Don't leave the old keys wrapped there.
+                    let _ = touchid::disable(path);
                     eprintln!(
-                        "stash: couldn't update Touch ID ({e:#}); run `stash touchid enable`"
+                        "stash: couldn't update Touch ID ({e:#}), so it's off; run `stash touchid enable`"
                     );
                 }
             }
-            None => eprintln!("stash: Touch ID needs updating: run `stash touchid enable`"),
+            None => {
+                let _ = touchid::disable(path);
+                eprintln!(
+                    "stash: Touch ID is off until you run `stash touchid enable` (the helper wasn't found)"
+                );
+            }
         }
     }
 }

@@ -56,6 +56,12 @@ pub trait Gate: Send {
     /// A fresh approval that recovers the sensitive key, for one
     /// signature: the fingerprint is what decrypts the private key.
     fn sensitive(&mut self, vault: &Path, reason: &str) -> Result<SecretKey, String>;
+    /// Whether an unlock asked the user (Touch ID), so it can count as
+    /// approving the signature it was for. A password from the environment
+    /// asked nobody.
+    fn unlock_approves(&self) -> bool {
+        true
+    }
 }
 
 pub struct TouchIdGate {
@@ -68,7 +74,9 @@ impl Gate for TouchIdGate {
         if let Ok(password) = std::env::var(crate::PASSWORD_ENV) {
             // Headless use still needs a fingerprint per signature (below).
             let password = Zeroizing::new(password);
-            return Vault::open(vault, password.as_bytes()).map_err(|e| e.to_string());
+            let opened = Vault::open(vault, password.as_bytes()).map_err(|e| e.to_string())?;
+            crate::after_password_unlock(vault, &opened);
+            return Ok(opened);
         }
         let helper = touchid::helper().ok_or("the stash-touchid helper was not found")?;
         if !touchid::is_enrolled(vault) {
@@ -91,6 +99,7 @@ impl Gate for TouchIdGate {
             // Headless (`--no-approval` needs STASH_PASSWORD).
             let password = Zeroizing::new(std::env::var(crate::PASSWORD_ENV).unwrap_or_default());
             let opened = Vault::open(vault, password.as_bytes()).map_err(|e| e.to_string())?;
+            crate::after_password_unlock(vault, &opened);
             return opened
                 .sensitive_key()
                 .map(|k| Zeroizing::new(*k))
@@ -101,6 +110,10 @@ impl Gate for TouchIdGate {
         keys.sensitive.ok_or_else(|| {
             "Touch ID needs updating for this vault: run `stash touchid enable`".into()
         })
+    }
+
+    fn unlock_approves(&self) -> bool {
+        std::env::var_os(crate::PASSWORD_ENV).is_none()
     }
 }
 
@@ -215,6 +228,10 @@ impl<G: Gate> Agent<G> {
             detail: None,
         };
         let result = self.approve_and_sign(blob, data, &purpose, client, &mut event);
+        // On every path, signed or not: the sensitive key is gone.
+        if let Some((vault, _)) = self.unlocked.as_mut() {
+            vault.lock_sensitive();
+        }
         if let Err(why) = &result {
             event.outcome = match why {
                 Refused::Denied => "denied",
@@ -279,7 +296,7 @@ impl<G: Gate> Agent<G> {
             );
             event.detail = Some(describe_purpose(purpose, self.name_of(blob).as_deref()));
             self.unlock(&reason).map_err(|why| self.refusal(why))?;
-            approved = true;
+            approved = self.gate.unlock_approves();
         }
         self.refresh();
         let name = self.name_of(blob).ok_or(Refused::UnknownKey)?;

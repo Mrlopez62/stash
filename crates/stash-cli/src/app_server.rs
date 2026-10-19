@@ -528,6 +528,9 @@ impl Server {
 
         let mut fields = Vec::with_capacity(request.fields.len());
         for f in &request.fields {
+            // A kept value keeps its stored kind too: a client can't turn a
+            // concealed value (a private key, say) into a visible one.
+            let mut kind = f.kind;
             let value = match &f.value {
                 Some(v) => {
                     if f.kind == FieldKind::Otp {
@@ -541,7 +544,10 @@ impl Server {
                         .as_ref()
                         .and_then(|item| item.fields.iter().find(|old| old.label == f.label));
                     match kept {
-                        Some(old) => Zeroizing::new(old.value.clone()),
+                        Some(old) => {
+                            kind = old.kind;
+                            Zeroizing::new(old.value.clone())
+                        }
                         None => {
                             return Err(Failure::params(format!(
                                 "`{}` has no stored value to keep",
@@ -551,7 +557,7 @@ impl Server {
                     }
                 }
             };
-            fields.push(Field::new(&f.label, f.kind, value.as_str()));
+            fields.push(Field::new(&f.label, kind, value.as_str()));
         }
         if request.kind == Kind::Secret && fields.first().is_none_or(|f| f.value.is_empty()) {
             return Err(Failure::params("a secret needs a value"));

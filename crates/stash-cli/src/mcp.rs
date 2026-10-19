@@ -155,7 +155,12 @@ impl Server {
             "initialize" => Ok(self.initialize(&params)),
             "ping" => Ok(json!({})),
             "tools/list" => Ok(json!({ "tools": self.tool_definitions() })),
-            "tools/call" => Ok(self.call_tool(&params)),
+            "tools/call" => {
+                let result = self.call_tool(&params);
+                // Whatever happened, no sensitive key outlives the request.
+                self.forget_sensitive();
+                Ok(result)
+            }
             _ => Err((-32601, format!("method not found: {method}"))),
         };
         Some(match result {
@@ -321,6 +326,7 @@ impl Server {
         let (vault, approved, fresh_sensitive) = if let Ok(password) = std::env::var(PASSWORD_ENV) {
             let password = Zeroizing::new(password);
             let mut vault = Vault::open(&self.vault_path, password.as_bytes())?;
+            crate::after_password_unlock(&self.vault_path, &vault);
             // Kept only for the moment of use (see `sensitive_for`).
             vault.lock_sensitive();
             (vault, false, None)

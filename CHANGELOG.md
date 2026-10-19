@@ -17,6 +17,11 @@ A security release, from an audit of how stash encrypts your data.
 - **Card numbers and IBANs** are no longer copied into un-wiped memory while validating, summarizing, or normalizing.
 - **`stash add --card`** asks for the cardholder, expiry, and ZIP when they aren't given as flags, keeping them out of shell history.
 - **Clearer errors:** "wrong master password (or the vault's header was modified)", and a distinct error for a tampered vault.
+- **Fixes from a second audit of format 3** (before release):
+  - A process that unlocked before `stash passwd` or `rekey` could write with the old keys and leave the vault unopenable; every write now checks the keys still match ("unlock again") and `rekey` keeps a safety copy until the new vault verifies.
+  - The vault-wide MAC is checked again under the write lock before every write, so a write can't sign over tampering done since the vault was opened; open-time checks run in one read transaction (no false "tampered" during concurrent writes).
+  - The redacted copy of a card, bank account, or SSH key keeps values only from a fixed list of non-secret fields, whatever kind a client sends, and secret fields are always stored concealed (a crafted edit could otherwise have copied an SSH private key into it); the app server keeps a kept value's stored kind.
+  - Unsplit card or SSH items are refused; upgrades through `stash mcp` and the SSH agent re-enroll Touch ID and end sessions too (or turn Touch ID off if they can't); backups use SQLite's `VACUUM INTO`, and a failed backup opens the old vault read-only instead of failing; `rekey` reads under the write lock; the sensitive key is dropped on every error path; the SSH agent no longer counts a password-from-the-environment unlock as approving a signature.
 - **The threat model** describes format 3, and corrects two claims: deleted items can survive in journals, snapshots, and backups (still encrypted), and the audit log records item names in plain text.
 
 ### Changed
