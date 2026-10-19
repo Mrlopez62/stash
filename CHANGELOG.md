@@ -2,6 +2,26 @@
 
 All notable changes to stash. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/) (pre-1.0: minor versions may change behavior).
 
+## [0.12.0] - 2026-10-19
+
+A security release, from an audit of how stash encrypts your data.
+
+### Security
+- **Vault format 3,** upgraded automatically on your next master-password unlock (or with `stash upgrade`), after copying the old file to `vault.db.v2-backup`:
+  - **A separate key for cards, bank accounts, and SSH keys.** Their secret values are sealed under a *sensitive key* that sessions never hold; a redacted copy (cardholder, expiry, "Visa •••• 4242", SSH public keys) keeps lists working. Every use takes a fresh Touch ID or the master password, so the prompts for payment fills, SSH signatures, AI-agent requests, and `stash get cards/…` are now enforced by encryption, not just by policy.
+  - **Tamper detection for the whole vault:** a MAC over every item and a write counter, checked on every open. Removing, adding, swapping, or rolling back items is now detected (before, only changes *within* an item were).
+  - **New keys on upgrade**, and subkeys derived per purpose (item encryption, row ids, the vault MAC, key checks).
+- **`stash passwd`** changes the master password and replaces both keys, re-encrypting every item, so an old copy of the vault with an old password opens nothing current. **`stash rekey`** replaces the keys without changing the password.
+- **Stronger key derivation:** Argon2id now uses 256 MiB, 3 passes, 4 lanes (was 64 MiB, 1 lane); older vaults are re-wrapped on their next password unlock. Settings in the file are bounded before Argon2 runs, so an edited file can't make an unlock exhaust memory.
+- **Touch ID carries both keys**; the helper denies debugger attach.
+- **Card numbers and IBANs** are no longer copied into un-wiped memory while validating, summarizing, or normalizing.
+- **`stash add --card`** asks for the cardholder, expiry, and ZIP when they aren't given as flags, keeping them out of shell history.
+- **Clearer errors:** "wrong master password (or the vault's header was modified)", and a distinct error for a tampered vault.
+- **The threat model** describes format 3, and corrects two claims: deleted items can survive in journals, snapshots, and backups (still encrypted), and the audit log records item names in plain text.
+
+### Changed
+- In the Mac app, revealing or editing a card, bank account, or SSH key asks for Touch ID each time. The app keeps only the main key.
+
 ## [0.11.0] - 2026-10-19
 
 ### Added
@@ -168,6 +188,7 @@ Security and correctness fixes for 0.6.0, found by an independent security revie
 ### Added
 - **The first release:** an encrypted vault (Argon2id + XChaCha20-Poly1305) and the `init`, `add`, `get`, `ls`, and `rm` commands.
 
+[0.12.0]: https://github.com/Mrlopez62/stash/pull/16
 [0.11.0]: https://github.com/Mrlopez62/stash/pull/16
 [0.10.0]: https://github.com/Mrlopez62/stash/pull/15
 [0.9.1]: https://github.com/Mrlopez62/stash/pull/14

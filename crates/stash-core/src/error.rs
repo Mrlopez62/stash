@@ -2,10 +2,18 @@ use std::path::PathBuf;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-    #[error("wrong master password")]
+    #[error("wrong master password (or the vault's header was modified)")]
     WrongPassword,
     #[error(
-        "this vault needs a one-time upgrade before it can store logins and notes: unlock it once with your master password (for example `STASH_SESSION_TIMEOUT=0 stash ls`, then cancel the Touch ID prompt)"
+        "`{0}` is a card, bank account, or SSH key: reading its secret values takes Touch ID or the master password each time"
+    )]
+    SensitiveLocked(String),
+    #[error(
+        "the vault file was changed outside stash (items were added, removed, or rolled back), so stash won't trust it. Restore it from a backup you trust"
+    )]
+    Tampered,
+    #[error(
+        "this vault needs a one-time upgrade to the current format before it can be changed: run `stash upgrade` (it asks for your master password and keeps a backup)"
     )]
     NeedsUpgrade,
     #[error(

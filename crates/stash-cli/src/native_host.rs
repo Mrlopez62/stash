@@ -35,6 +35,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Result, bail};
 use serde_json::{Map, Value, json};
+use stash_core::crypto::SecretKey;
 use stash_core::item::{
     ACCOUNT_HOLDER, ACCOUNT_NUMBER, ACCOUNT_TYPE, BANK_NAME, BILLING_ZIP, CARD_NUMBER, CARDHOLDER,
     CVV, EXPIRY, IBAN, PASSWORD, ROUTING_NUMBER, SWIFT,
@@ -244,8 +245,11 @@ fn browser() -> Result<BrowserApp, String> {
 
 /// How the host unlocks and approves. Touch ID in real use.
 pub trait Gate {
+    /// Unlock the vault (with its sensitive key, if the unlock yields it).
     fn unlock(&mut self, vault: &Path, reason: &str) -> Result<Vault, String>;
-    fn approve(&mut self, reason: &str) -> Result<(), String>;
+    /// A fresh approval that recovers the sensitive key, for one payment
+    /// fill: the fingerprint *is* what decrypts the card.
+    fn sensitive(&mut self, vault: &Path, reason: &str) -> Result<SecretKey, String>;
 }
 
 pub struct TouchIdGate;
@@ -264,13 +268,24 @@ impl Gate for TouchIdGate {
         if !touchid::is_enrolled(vault) {
             return Err("browser autofill needs Touch ID; run `stash touchid enable`".into());
         }
-        let key = touchid::unlock(&helper, vault, reason).map_err(describe)?;
-        Vault::open_with_key(vault, &key).map_err(|e| e.to_string())
+        let keys = touchid::unlock(&helper, vault, reason).map_err(describe)?;
+        let mut opened = Vault::open_with_key(vault, &keys.main).map_err(|e| e.to_string())?;
+        if let Some(sensitive) = &keys.sensitive
+            && opened.is_current()
+        {
+            opened
+                .unlock_sensitive_with_key(sensitive)
+                .map_err(|e| e.to_string())?;
+        }
+        Ok(opened)
     }
 
-    fn approve(&mut self, reason: &str) -> Result<(), String> {
+    fn sensitive(&mut self, vault: &Path, reason: &str) -> Result<SecretKey, String> {
         let helper = touchid::helper().ok_or("the stash-touchid helper was not found")?;
-        touchid::confirm(&helper, reason).map_err(describe)
+        let keys = touchid::unlock(&helper, vault, reason).map_err(describe)?;
+        keys.sensitive.ok_or_else(|| {
+            "Touch ID needs updating for this vault: run `stash touchid enable`".into()
+        })
     }
 }
 
@@ -312,7 +327,15 @@ impl<G: Gate> Host<G> {
         let result = if unlock {
             self.unlock(reason)
         } else {
-            self.gate.approve(reason)
+            match self.gate.sensitive(&self.vault_path, reason) {
+                Ok(key) => match self.vault_mut() {
+                    Some(vault) => vault
+                        .unlock_sensitive_with_key(&key)
+                        .map_err(|e| e.to_string()),
+                    None => Err("stash is locked".into()),
+                },
+                Err(why) => Err(why),
+            }
         };
         if matches!(&result, Err(why) if why == "cancelled") {
             self.last_denial = Some(Instant::now());
@@ -333,10 +356,20 @@ impl<G: Gate> Host<G> {
         Some(vault)
     }
 
+    /// Unlock. The sensitive key, if the unlock yielded it, stays only
+    /// until the request that asked is done (see `forget_sensitive`).
     fn unlock(&mut self, reason: &str) -> Result<(), String> {
         let vault = self.gate.unlock(&self.vault_path, reason)?;
         self.unlocked = Some((vault, Instant::now()));
         Ok(())
+    }
+
+    /// The host never keeps the sensitive key between requests: every card
+    /// or bank fill decrypts it again with a fresh fingerprint.
+    fn forget_sensitive(&mut self) {
+        if let Some((vault, _)) = self.unlocked.as_mut() {
+            vault.lock_sensitive();
+        }
     }
 
     pub fn respond(&mut self, request: &Value) -> Value {
@@ -344,7 +377,21 @@ impl<G: Gate> Host<G> {
         if let Some(why) = &self.refuse {
             return json!({ "id": id, "ok": false, "error": why });
         }
-        let result = match request.get("type").and_then(Value::as_str) {
+        let result = self.dispatch(request);
+        self.forget_sensitive();
+        match result {
+            Ok(Value::Object(mut map)) => {
+                map.insert("id".into(), id);
+                map.insert("ok".into(), true.into());
+                Value::Object(map)
+            }
+            Ok(_) => unreachable!("results are objects"),
+            Err(error) => json!({ "id": id, "ok": false, "error": error }),
+        }
+    }
+
+    fn dispatch(&mut self, request: &Value) -> Result<Value, String> {
+        match request.get("type").and_then(Value::as_str) {
             Some("status") => Ok(json!({
                 "locked": self.vault().is_none(),
                 "version": env!("CARGO_PKG_VERSION"),
@@ -359,15 +406,6 @@ impl<G: Gate> Host<G> {
                 Ok(json!({ "locked": true }))
             }
             _ => Err("unknown request".to_owned()),
-        };
-        match result {
-            Ok(Value::Object(mut map)) => {
-                map.insert("id".into(), id);
-                map.insert("ok".into(), true.into());
-                Value::Object(map)
-            }
-            Ok(_) => unreachable!("results are objects"),
-            Err(error) => json!({ "id": id, "ok": false, "error": error }),
         }
     }
 
@@ -850,14 +888,14 @@ mod tests {
             }
             Vault::open(vault, b"pw").map_err(|e| e.to_string())
         }
-        fn approve(&mut self, reason: &str) -> Result<(), String> {
+        fn sensitive(&mut self, vault: &Path, reason: &str) -> Result<SecretKey, String> {
             let mut p = self.0.borrow_mut();
             p.seen.push(format!("approve: {reason}"));
             if p.deny {
-                Err("cancelled".into())
-            } else {
-                Ok(())
+                return Err("cancelled".into());
             }
+            let full = Vault::open(vault, b"pw").map_err(|e| e.to_string())?;
+            Ok(zeroize::Zeroizing::new(*full.sensitive_key().unwrap()))
         }
     }
 

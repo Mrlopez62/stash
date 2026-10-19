@@ -16,7 +16,7 @@
 use std::fmt;
 
 use serde::{Deserialize, Serialize};
-use zeroize::Zeroize;
+use zeroize::{Zeroize, Zeroizing};
 
 use crate::{Error, payment, ssh};
 
@@ -35,6 +35,13 @@ impl Kind {
     /// Cards and bank accounts: kept away from AI agents unless allowed.
     pub fn is_payment(self) -> bool {
         matches!(self, Kind::Card | Kind::Bank)
+    }
+
+    /// Items sealed under the vault's separate *sensitive* key (cards, bank
+    /// accounts, SSH keys): their secret values can't be read with the key
+    /// a session holds, only after a fresh Touch ID or master password.
+    pub fn is_sensitive(self) -> bool {
+        matches!(self, Kind::Card | Kind::Bank | Kind::Ssh)
     }
 }
 
@@ -120,6 +127,11 @@ pub struct Item {
     pub created: u64,
     #[serde(default)]
     pub updated: u64,
+    /// Set only on the redacted copy of a sensitive item (see
+    /// [`Item::redacted`]): its summary, since the values it's computed
+    /// from aren't there.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
 }
 
 impl Drop for Item {
@@ -255,16 +267,26 @@ impl Item {
         push(
             ROUTING_NUMBER,
             FieldKind::Text,
-            b.routing.map(payment::digits).as_deref(),
+            b.routing
+                .map(payment::digits)
+                .as_deref()
+                .map(String::as_str),
         );
         push(ACCOUNT_NUMBER, FieldKind::Concealed, b.account_number);
         let iban = b.iban.map(|i| {
-            i.chars()
-                .filter(|c| !c.is_whitespace())
-                .collect::<String>()
-                .to_uppercase()
+            let mut compact = Zeroizing::new(String::with_capacity(i.len()));
+            compact.extend(
+                i.chars()
+                    .filter(|c| !c.is_whitespace())
+                    .map(|c| c.to_ascii_uppercase()),
+            );
+            compact
         });
-        push(IBAN, FieldKind::Concealed, iban.as_deref());
+        push(
+            IBAN,
+            FieldKind::Concealed,
+            iban.as_deref().map(String::as_str),
+        );
         push(
             SWIFT,
             FieldKind::Text,
@@ -312,7 +334,7 @@ impl Item {
         }
         for field in &mut self.fields {
             let normalized = match field.label.as_str() {
-                CARD_NUMBER | ROUTING_NUMBER => Some(payment::digits(&field.value)),
+                CARD_NUMBER | ROUTING_NUMBER => Some(payment::digits(&field.value).to_string()),
                 EXPIRY => payment::parse_expiry(&field.value)
                     .ok()
                     .map(|(m, y)| payment::format_expiry(m, y)),
@@ -327,9 +349,14 @@ impl Item {
                 SWIFT => Some(field.value.trim().to_uppercase()),
                 _ => None,
             };
-            if let Some(v) = normalized.filter(|v| *v != field.value) {
-                field.value.zeroize();
-                field.value = v;
+            match normalized {
+                Some(v) if v != field.value => {
+                    field.value.zeroize();
+                    field.value = v;
+                }
+                // Unchanged: wipe the copy before it's freed.
+                Some(mut v) => v.zeroize(),
+                None => {}
             }
         }
     }
@@ -392,6 +419,9 @@ impl Item {
     /// A one-line description with nothing sensitive in it, for lists:
     /// "Visa •••• 4242 · 08/27", "Chase · Checking •••• 6789".
     pub fn subtitle(&self) -> Option<String> {
+        if let Some(summary) = &self.summary {
+            return Some(summary.clone());
+        }
         let value = |label: &str| self.labeled(label).map(|f| f.value.as_str());
         match self.kind {
             Kind::Card => {
@@ -443,6 +473,7 @@ impl Item {
             notes: String::new(),
             created: 0,
             updated: 0,
+            summary: None,
         }
     }
 
@@ -540,6 +571,29 @@ impl Item {
             .iter()
             .find(|f| f.kind == FieldKind::Url)
             .map(|f| f.value.as_str())
+    }
+
+    /// The copy of a sensitive item that the session key can read: every
+    /// field's label and kind, non-secret values (cardholder, expiry, SSH
+    /// public key), and the summary, but no concealed or 2FA value and no
+    /// notes. The full item is sealed separately.
+    pub fn redacted(&self) -> Item {
+        let mut copy = self.clone();
+        copy.summary = self.subtitle();
+        for field in &mut copy.fields {
+            if field.kind.is_sensitive() {
+                field.value.zeroize();
+                field.value.clear();
+            }
+        }
+        copy.notes.zeroize();
+        copy.notes.clear();
+        copy
+    }
+
+    /// Whether this is a redacted copy (see [`Item::redacted`]).
+    pub fn is_redacted(&self) -> bool {
+        self.summary.is_some()
     }
 
     pub fn has_otp(&self) -> bool {

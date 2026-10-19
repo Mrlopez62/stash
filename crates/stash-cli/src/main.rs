@@ -208,6 +208,15 @@ enum Command {
     },
     /// End the unlocked session, so the next command asks again
     Lock,
+    /// Upgrade the vault to the current format (asks for the master
+    /// password, and keeps a copy of the old file)
+    Upgrade,
+    /// Change the master password. Also replaces the vault's keys, so an
+    /// old copy of the vault and the old password open nothing new
+    Passwd,
+    /// Replace the vault's keys (keeping the password), re-encrypting
+    /// everything
+    Rekey,
     /// SSH keys: generate or import them, serve them to ssh and git with
     /// Touch ID, and sign git commits
     #[command(
@@ -391,6 +400,9 @@ fn run(cli: Cli) -> Result<ExitCode> {
         } => {
             stash_core::validate_name(&name)?;
             let mut vault = unlock(&path, &format!("add {name}"))?;
+            if card || bank {
+                ensure_sensitive(&mut vault, &format!("add {name}"))?;
+            }
             if login {
                 items::add_login(&mut vault, &name, &fields, force)?;
             } else if card {
@@ -418,11 +430,17 @@ fn run(cli: Cli) -> Result<ExitCode> {
         Command::Edit { name, args } => {
             stash_core::validate_name(&name)?;
             let mut vault = unlock(&path, &format!("edit {name}"))?;
+            if needs_sensitive(&vault, [name.as_str()])? {
+                ensure_sensitive(&mut vault, &format!("edit {name}"))?;
+            }
             items::edit(&mut vault, &name, &args)?;
         }
         Command::Show { name, reveal } => {
             let r = reference::parse_arg(&name)?;
-            let vault = unlock(&path, &format!("show {}", r.name))?;
+            let mut vault = unlock(&path, &format!("show {}", r.name))?;
+            if reveal && needs_sensitive(&vault, [r.name])? {
+                ensure_sensitive(&mut vault, &format!("show {}", r.name))?;
+            }
             items::show(&vault, r.name, reveal)?;
         }
         Command::Generate { rules, copy } => {
@@ -436,7 +454,10 @@ fn run(cli: Cli) -> Result<ExitCode> {
         Command::Get { name, copy } => {
             let r = reference::parse_arg(&name)?;
             let shown = r.describe();
-            let vault = unlock(&path, &format!("get {shown}"))?;
+            let mut vault = unlock(&path, &format!("get {shown}"))?;
+            if needs_sensitive(&vault, [r.name])? {
+                ensure_sensitive(&mut vault, &format!("get {shown}"))?;
+            }
             let value = vault.resolve(&r, unix_now())?;
             if copy {
                 copy_to_clipboard(&value, &shown)?;
@@ -548,11 +569,13 @@ fn run(cli: Cli) -> Result<ExitCode> {
                 } => {
                     stash_core::validate_name(&name)?;
                     let mut vault = unlock(&path, &format!("add SSH key {name}"))?;
+                    ensure_sensitive(&mut vault, &format!("add SSH key {name}"))?;
                     ssh_cmd::generate(&mut vault, &name, comment.as_deref(), force)?;
                 }
                 SshAction::Import { name, file, force } => {
                     stash_core::validate_name(&name)?;
                     let mut vault = unlock(&path, &format!("import SSH key {name}"))?;
+                    ensure_sensitive(&mut vault, &format!("import SSH key {name}"))?;
                     ssh_cmd::import(&mut vault, &name, &file, force)?;
                 }
                 SshAction::Public { name } => {
@@ -595,6 +618,51 @@ fn run(cli: Cli) -> Result<ExitCode> {
             BrowserAction::Uninstall => browser_cmd::uninstall()?,
             BrowserAction::Status => browser_cmd::status()?,
         },
+        Command::Upgrade => {
+            let password = read_password(&path, "upgrade the vault")?;
+            let vault = Vault::open(&path, password.as_bytes())?;
+            if vault.upgrade_backup().is_some() {
+                after_password_unlock(&path, &vault);
+            } else if !vault.is_current() {
+                return Err(vault.upgrade_error().into());
+            } else {
+                eprintln!("Your vault is already in the current format.");
+            }
+        }
+        Command::Passwd => {
+            let password = read_password(&path, "change the master password")?;
+            let mut vault = Vault::open(&path, password.as_bytes())?;
+            after_password_unlock(&path, &vault);
+            let new = match std::env::var("STASH_NEW_PASSWORD") {
+                Ok(p) => Zeroizing::new(p),
+                Err(_) => {
+                    let first =
+                        Zeroizing::new(rpassword::prompt_password("New master password: ")?);
+                    let second = Zeroizing::new(rpassword::prompt_password(
+                        "Confirm new master password: ",
+                    )?);
+                    if first != second {
+                        bail!("passwords do not match");
+                    }
+                    first
+                }
+            };
+            if new.chars().count() < MIN_PASSWORD_LEN {
+                bail!("master password must be at least {MIN_PASSWORD_LEN} characters");
+            }
+            vault.rekey(password.as_bytes(), Some(new.as_bytes()))?;
+            refresh_unlock_methods(&path, &vault);
+            eprintln!("Changed the master password and replaced the vault's keys.");
+            eprintln!("Old backups of the vault still open with the password they were made with.");
+        }
+        Command::Rekey => {
+            let password = read_password(&path, "replace the vault's keys")?;
+            let mut vault = Vault::open(&path, password.as_bytes())?;
+            after_password_unlock(&path, &vault);
+            vault.rekey(password.as_bytes(), None)?;
+            refresh_unlock_methods(&path, &vault);
+            eprintln!("Replaced the vault's keys and re-encrypted every item.");
+        }
         Command::Lock => {
             if agent::lock(&agent::default_socket()?) {
                 eprintln!("Locked");
@@ -645,7 +713,7 @@ fn touch_id(action: TouchIdAction, path: &Path) -> Result<()> {
             )?;
             // Always require the master password to turn on a new way in.
             let vault = unlock_with_password(path, "turn on Touch ID")?;
-            touchid::enroll(&helper, path, vault.key())?;
+            touchid::enroll(&helper, path, vault.key(), vault.sensitive_key())?;
             eprintln!("Touch ID unlock is on");
         }
         TouchIdAction::Disable => {
@@ -734,8 +802,18 @@ fn unlock_with_touch_id(path: &Path, purpose: &str) -> Result<Option<Vault>> {
         procinfo::requester_chain(2)
     );
     let why = match touchid::unlock(&helper, path, &reason) {
-        Ok(key) => match Vault::open_with_key(path, &key) {
-            Ok(vault) => return Ok(Some(vault)),
+        Ok(keys) => match Vault::open_with_key(path, &keys.main) {
+            Ok(mut vault) => {
+                // A fresh fingerprint: this command may read cards, bank
+                // accounts, and SSH keys too. (Only the main key goes to the
+                // session agent.)
+                if let Some(sensitive) = &keys.sensitive
+                    && vault.is_current()
+                {
+                    let _ = vault.unlock_sensitive_with_key(sensitive);
+                }
+                return Ok(Some(vault));
+            }
             Err(stash_core::Error::WrongKey) => {
                 "Touch ID data doesn't match this vault; run `stash touchid enable` again".into()
             }
@@ -763,7 +841,121 @@ fn unlock_with_password(path: &Path, purpose: &str) -> Result<Vault> {
             Zeroizing::new(rpassword::prompt_password("Master password: ")?)
         }
     };
-    Ok(Vault::open(path, password.as_bytes())?)
+    let vault = Vault::open(path, password.as_bytes())?;
+    after_password_unlock(path, &vault);
+    Ok(vault)
+}
+
+/// After an unlock that upgraded the vault (or replaced its keys): say so,
+/// end sessions holding the old key, and re-enroll Touch ID with the new
+/// keys.
+pub(crate) fn after_password_unlock(path: &Path, vault: &Vault) {
+    let Some(backup) = vault.upgrade_backup() else {
+        return;
+    };
+    eprintln!(
+        "stash: upgraded your vault to the current format: new keys, a separate key for cards, \
+         bank accounts, and SSH keys, and tamper detection. The old file is at {} (delete it once \
+         everything works).",
+        backup.display()
+    );
+    refresh_unlock_methods(path, vault);
+}
+
+/// New keys: sessions with the old one end, and Touch ID gets the new ones.
+fn refresh_unlock_methods(path: &Path, vault: &Vault) {
+    if let Ok(socket) = agent::default_socket() {
+        agent::lock(&socket);
+    }
+    if touchid::is_enrolled(path) {
+        match touchid::helper() {
+            Some(helper) => {
+                if let Err(e) = touchid::enroll(&helper, path, vault.key(), vault.sensitive_key()) {
+                    eprintln!(
+                        "stash: couldn't update Touch ID ({e:#}); run `stash touchid enable`"
+                    );
+                }
+            }
+            None => eprintln!("stash: Touch ID needs updating: run `stash touchid enable`"),
+        }
+    }
+}
+
+/// Do any of these items need the sensitive key (cards, bank accounts,
+/// SSH keys)?
+pub(crate) fn needs_sensitive<'a>(
+    vault: &Vault,
+    names: impl IntoIterator<Item = &'a str>,
+) -> Result<bool> {
+    if !vault.is_current() || vault.has_sensitive() {
+        return Ok(false);
+    }
+    let summaries = vault.summaries()?;
+    Ok(names.into_iter().any(|name| {
+        summaries
+            .iter()
+            .any(|s| s.name == name && s.kind.is_sensitive())
+    }))
+}
+
+/// Unlock the sensitive key for one command: a fresh Touch ID (naming the
+/// request), or the master password. Never from a session.
+pub(crate) fn ensure_sensitive(vault: &mut Vault, purpose: &str) -> Result<()> {
+    if vault.has_sensitive() || !vault.is_current() {
+        return Ok(());
+    }
+    if let Ok(password) = std::env::var(PASSWORD_ENV) {
+        let password = Zeroizing::new(password);
+        return Ok(vault.unlock_sensitive(password.as_bytes())?);
+    }
+    let path = vault.path().to_owned();
+    if touchid::is_enrolled(&path)
+        && let Some(helper) = touchid::helper()
+    {
+        let reason = format!(
+            "use a card, bank account, or SSH key for “{purpose}”, requested by {}",
+            procinfo::requester_chain(2)
+        );
+        match touchid::unlock(&helper, &path, &reason) {
+            Ok(keys) => match keys.sensitive {
+                Some(sensitive) => {
+                    if vault.unlock_sensitive_with_key(&sensitive).is_ok() {
+                        return Ok(());
+                    }
+                    eprintln!("stash: Touch ID data is out of date; run `stash touchid enable`");
+                }
+                None => eprintln!(
+                    "stash: Touch ID was set up before this vault format; run `stash touchid enable` to use it here"
+                ),
+            },
+            Err(touchid::UnlockError::Cancelled) => bail!("Touch ID was cancelled"),
+            Err(touchid::UnlockError::Unavailable(why)) => eprintln!("stash: {why}"),
+            Err(touchid::UnlockError::Failed(why)) => eprintln!("stash: Touch ID failed: {why}"),
+        }
+    }
+    eprintln!(
+        "stash: “{purpose}” uses a card, bank account, or SSH key, requested by {}",
+        procinfo::requester_chain(2)
+    );
+    let password = Zeroizing::new(rpassword::prompt_password("Master password: ")?);
+    Ok(vault.unlock_sensitive(password.as_bytes())?)
+}
+
+/// The master password, from the environment or a prompt.
+fn read_password(path: &Path, purpose: &str) -> Result<Zeroizing<String>> {
+    if let Ok(password) = std::env::var(PASSWORD_ENV) {
+        return Ok(Zeroizing::new(password));
+    }
+    if !path.exists() {
+        return Err(stash_core::Error::VaultMissing(path.to_owned()).into());
+    }
+    eprintln!(
+        "stash: “{purpose}” needs your master password, requested by {}",
+        procinfo::requester_chain(2)
+    );
+    Ok(Zeroizing::new(rpassword::prompt_password(
+        "Master password: ",
+    )?))
 }
 
 fn session_timeout() -> Result<Option<Duration>> {

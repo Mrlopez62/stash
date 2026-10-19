@@ -187,7 +187,9 @@ fn every_card_fill_asks_touch_id_naming_the_site() {
         prompts[0]
             .starts_with("unwrap: fill your payment details “cards/visa” on shop.example in ")
     );
-    assert!(prompts[1].starts_with("confirm: fill Visa •••• 4242 · 08/27 on shop.example in "));
+    // The second fill decrypts the card with a fresh fingerprint, not just an
+    // approval: the fingerprint is what unlocks the card.
+    assert!(prompts[1].starts_with("unwrap: fill Visa •••• 4242 · 08/27 on shop.example in "));
 
     std::fs::write(f.dir.path().join("deny"), "").unwrap();
     let (r, _) = f.host(

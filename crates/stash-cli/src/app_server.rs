@@ -42,6 +42,9 @@ mod code {
     pub const NEEDS_UPGRADE: i64 = -32005;
     pub const ALREADY_EXISTS: i64 = -32006;
     pub const NEEDS_PASSPHRASE: i64 = -32007;
+    /// Cards, bank accounts, and SSH keys need Touch ID, or the master
+    /// password (`password` param) where Touch ID isn't set up.
+    pub const NEEDS_PASSWORD: i64 = -32008;
 }
 
 struct Failure {
@@ -241,7 +244,9 @@ impl Server {
                 crate::MIN_PASSWORD_LEN
             )));
         }
-        let vault = Vault::create(&self.vault_path, password.as_bytes(), KdfParams::default())?;
+        let mut vault = Vault::create(&self.vault_path, password.as_bytes(), KdfParams::default())?;
+        // Like every unlock here: only the main key stays.
+        vault.lock_sensitive();
         self.unlocked = Some(Unlocked {
             vault,
             last_used: Instant::now(),
@@ -257,7 +262,12 @@ impl Server {
         let vault = match method {
             "password" => {
                 let password = password_param(params)?;
-                Vault::open(&self.vault_path, password.as_bytes())?
+                let mut vault = Vault::open(&self.vault_path, password.as_bytes())?;
+                crate::after_password_unlock(&self.vault_path, &vault);
+                // The app keeps only the main key; each use of a card, bank
+                // account, or SSH key asks again.
+                vault.lock_sensitive();
+                vault
             }
             "touch_id" => {
                 let helper = touchid::helper()
@@ -268,17 +278,9 @@ impl Server {
                         "Touch ID unlock isn't turned on",
                     ));
                 }
-                let key =
-                    touchid::unlock(&helper, &self.vault_path, &unlock_reason()).map_err(|e| {
-                        match e {
-                            touchid::UnlockError::Cancelled => {
-                                Failure::new(code::CANCELLED, "Touch ID was cancelled")
-                            }
-                            touchid::UnlockError::Unavailable(why)
-                            | touchid::UnlockError::Failed(why) => Failure::new(code::FAILED, why),
-                        }
-                    })?;
-                Vault::open_with_key(&self.vault_path, &key)?
+                let keys = touchid::unlock(&helper, &self.vault_path, &unlock_reason())
+                    .map_err(touch_id_failure)?;
+                Vault::open_with_key(&self.vault_path, &keys.main)?
             }
             other => return Err(Failure::params(format!("unknown unlock method `{other}`"))),
         };
@@ -295,8 +297,70 @@ impl Server {
         let helper = touchid::helper()
             .ok_or_else(|| Failure::new(code::FAILED, "the Touch ID helper is missing"))?;
         let vault = Vault::open(&self.vault_path, password.as_bytes())?;
-        touchid::enroll(&helper, &self.vault_path, vault.key())?;
+        crate::after_password_unlock(&self.vault_path, &vault);
+        touchid::enroll(
+            &helper,
+            &self.vault_path,
+            vault.key(),
+            vault.sensitive_key(),
+        )?;
         Ok(json!({}))
+    }
+
+    /// Unlock the sensitive key for one request: with `password` if the
+    /// request has one, or else a fresh Touch ID naming `reason`.
+    fn unlock_sensitive_for(
+        &mut self,
+        params: &Value,
+        reason: &str,
+    ) -> std::result::Result<(), Failure> {
+        let path = self.vault_path.clone();
+        let vault = self.vault()?;
+        if vault.has_sensitive() || !vault.is_current() {
+            return Ok(());
+        }
+        if let Some(password) = params.get("password").and_then(Value::as_str) {
+            let password = Zeroizing::new(password.to_owned());
+            vault.unlock_sensitive(password.as_bytes())?;
+            return Ok(());
+        }
+        let needs_password = |why: &str| Failure::new(code::NEEDS_PASSWORD, why);
+        let helper = touchid::helper()
+            .filter(|_| touchid::is_enrolled(&path))
+            .ok_or_else(|| {
+                needs_password(
+                    "Cards, bank accounts, and SSH keys need Touch ID or your master password.",
+                )
+            })?;
+        let keys = touchid::unlock(&helper, &path, reason).map_err(touch_id_failure)?;
+        let sensitive = keys.sensitive.ok_or_else(|| {
+            needs_password("Touch ID needs updating for this vault: turn it off and on again, or use your master password.")
+        })?;
+        self.vault()?.unlock_sensitive_with_key(&sensitive)?;
+        Ok(())
+    }
+
+    /// Run `op` with the sensitive key, then forget it again.
+    fn with_sensitive(
+        &mut self,
+        params: &Value,
+        reason: &str,
+        op: impl FnOnce(&mut Self) -> Reply,
+    ) -> Reply {
+        self.unlock_sensitive_for(params, reason)?;
+        let result = op(self);
+        if let Some(unlocked) = self.unlocked.as_mut() {
+            unlocked.vault.lock_sensitive();
+        }
+        result
+    }
+
+    /// Is `name` a card, bank account, or SSH key (sealed separately)?
+    fn is_sensitive(&mut self, name: &str) -> std::result::Result<bool, Failure> {
+        Ok(match self.vault()?.item_redacted(name) {
+            Ok(item) => item.is_redacted(),
+            Err(_) => false,
+        })
     }
 
     fn list(&mut self) -> Reply {
@@ -322,7 +386,7 @@ impl Server {
     fn item(&mut self, params: &Value) -> Reply {
         let name = name_param(params, "name")?;
         let vault = self.vault()?;
-        let (item, binary) = match vault.item(&name) {
+        let (item, binary) = match vault.item_redacted(&name) {
             Ok(item) => (item, false),
             // Binary secrets can't be shown, but they can still be listed.
             Err(Error::NotText(_)) => (Item::secret(""), true),
@@ -341,14 +405,8 @@ impl Server {
             .collect();
         // For drawing a card face: the brand and last four digits only.
         let card = (item.kind == Kind::Card)
-            .then(|| item.primary())
-            .flatten()
-            .map(|number| {
-                json!({
-                    "brand": stash_core::payment::brand(number).name(),
-                    "last4": stash_core::payment::last4(number),
-                })
-            });
+            .then(|| card_face(&item))
+            .flatten();
         Ok(json!({
             "name": name,
             "kind": item.kind,
@@ -362,10 +420,21 @@ impl Server {
         }))
     }
 
-    /// One value, on demand: a field by label, or `notes`.
+    /// One value, on demand: a field by label, or `notes`. A card's, bank
+    /// account's, or SSH key's values each take a fresh Touch ID.
     fn reveal(&mut self, params: &Value) -> Reply {
         let name = name_param(params, "name")?;
         let field = string_param(params, "field")?;
+        if self.is_sensitive(&name)? {
+            let shown = crate::text::clean(&field, 40);
+            let reason = format!("show the {shown} of “{name}” in the stash app");
+            return self.with_sensitive(params, &reason, |me| me.reveal_now(&name, &field));
+        }
+        self.reveal_now(&name, &field)
+    }
+
+    fn reveal_now(&mut self, name: &str, field: &str) -> Reply {
+        let (name, field) = (name.to_owned(), field.to_owned());
         let item = self.vault()?.item(&name)?;
         let value = if field == "notes" {
             Zeroizing::new(item.notes.clone())
@@ -431,6 +500,19 @@ impl Server {
     fn save(&mut self, params: &Value) -> Reply {
         let request: SaveRequest = serde_json::from_value(params.clone())
             .map_err(|e| Failure::params(format!("invalid item: {e}")))?;
+        let touches_sensitive = request.kind.is_sensitive()
+            || match &request.original_name {
+                Some(original) => self.is_sensitive(original)?,
+                None => false,
+            };
+        if touches_sensitive {
+            let reason = format!("save changes to “{}” in the stash app", request.name);
+            return self.with_sensitive(params, &reason, |me| me.save_now(request));
+        }
+        self.save_now(request)
+    }
+
+    fn save_now(&mut self, request: SaveRequest) -> Reply {
         let vault = self.vault()?;
         let existing = match &request.original_name {
             Some(original) => Some(vault.item(original)?),
@@ -485,6 +567,7 @@ impl Server {
             notes,
             created: existing.as_ref().map_or(0, |i| i.created),
             updated: 0,
+            summary: None,
         };
         vault.put(&request.name, &item, true)?;
         if renamed {
@@ -503,7 +586,7 @@ impl Server {
             .unwrap_or(&name)
             .to_owned();
         let pair = stash_core::ssh::KeyPair::generate(&comment)?;
-        self.save_ssh_key(&name, &pair)
+        self.save_ssh_key(params, &name, &pair)
     }
 
     /// An OpenSSH private key file's contents, with its passphrase if it
@@ -519,10 +602,20 @@ impl Server {
             &text,
             passphrase.as_ref().map(|p| p.as_bytes()),
         )?;
-        self.save_ssh_key(&name, &pair)
+        self.save_ssh_key(params, &name, &pair)
     }
 
-    fn save_ssh_key(&mut self, name: &str, pair: &stash_core::ssh::KeyPair) -> Reply {
+    fn save_ssh_key(
+        &mut self,
+        params: &Value,
+        name: &str,
+        pair: &stash_core::ssh::KeyPair,
+    ) -> Reply {
+        let reason = format!("add the SSH key “{name}” in the stash app");
+        self.with_sensitive(params, &reason, |me| me.save_ssh_key_now(name, pair))
+    }
+
+    fn save_ssh_key_now(&mut self, name: &str, pair: &stash_core::ssh::KeyPair) -> Reply {
         let vault = self.vault()?;
         if vault.contains(name)? {
             return Err(Error::AlreadyExists(name.to_owned()).into());
@@ -612,6 +705,31 @@ fn unlock_reason() -> String {
             crate::procinfo::requester_chain(2)
         )
     }
+}
+
+fn touch_id_failure(e: touchid::UnlockError) -> Failure {
+    match e {
+        touchid::UnlockError::Cancelled => Failure::new(code::CANCELLED, "Touch ID was cancelled"),
+        touchid::UnlockError::Unavailable(why) | touchid::UnlockError::Failed(why) => {
+            Failure::new(code::FAILED, why)
+        }
+    }
+}
+
+/// The brand and last four digits, for drawing a card face: from the
+/// number when it's there, or from the redacted copy's summary
+/// ("Visa •••• 4242 · 08/27").
+fn card_face(item: &Item) -> Option<Value> {
+    if let Some(number) = item.primary().filter(|n| !n.is_empty()) {
+        return Some(json!({
+            "brand": stash_core::payment::brand(number).name(),
+            "last4": stash_core::payment::last4(number),
+        }));
+    }
+    let summary = item.summary.as_deref()?;
+    let (brand, rest) = summary.split_once(" •••• ")?;
+    let last4: String = rest.chars().take_while(char::is_ascii_digit).collect();
+    Some(json!({ "brand": brand, "last4": last4 }))
 }
 
 fn name_param(params: &Value, key: &str) -> std::result::Result<String, Failure> {
@@ -863,9 +981,16 @@ mod tests {
     #[test]
     fn cards_show_brand_and_last_four_but_never_the_number() {
         let mut f = Fixture::new();
-        f.ok(
+        // Without Touch ID set up, saving a card needs the master password.
+        let (c, _) = f.err(
             "save",
             json!({ "name": "visa", "kind": "card", "fields": [
+                { "label": "number", "kind": "concealed", "value": "4242 4242 4242 4242" } ]}),
+        );
+        assert_eq!(c, code::NEEDS_PASSWORD);
+        f.ok(
+            "save",
+            json!({ "name": "visa", "kind": "card", "password": "correct horse", "fields": [
                 { "label": "cardholder", "kind": "text", "value": "J Lopez" },
                 { "label": "number", "kind": "concealed", "value": "4242 4242 4242 4242" },
                 { "label": "expiry", "kind": "text", "value": "8/27" },
@@ -882,15 +1007,27 @@ mod tests {
             !shown.contains("4242424242424242") && !shown.contains("\"123\""),
             "{shown}"
         );
+        // Revealing asks again every time, and the key isn't kept.
+        let (c, _) = f.err("reveal", json!({ "name": "visa", "field": "number" }));
+        assert_eq!(c, code::NEEDS_PASSWORD);
         assert_eq!(
-            f.ok("reveal", json!({ "name": "visa", "field": "number" }))["value"],
+            f.ok(
+                "reveal",
+                json!({ "name": "visa", "field": "number", "password": "correct horse" })
+            )["value"],
             "4242424242424242"
+        );
+        let (c, _) = f.err("reveal", json!({ "name": "visa", "field": "cvv" }));
+        assert_eq!(
+            c,
+            code::NEEDS_PASSWORD,
+            "the sensitive key was forgotten after the reveal"
         );
 
         // The backend validates whatever the app sends.
         let (c, m) = f.err(
             "save",
-            json!({ "name": "bad", "kind": "card", "fields": [
+            json!({ "name": "bad", "kind": "card", "password": "correct horse", "fields": [
             { "label": "number", "kind": "concealed", "value": "4242424242424241" } ]}),
         );
         assert_eq!(c, code::FAILED);
@@ -902,7 +1039,7 @@ mod tests {
         let mut f = Fixture::new();
         let made = f.ok(
             "ssh_generate",
-            json!({ "name": "ssh/github", "comment": "me@mac" }),
+            json!({ "name": "ssh/github", "comment": "me@mac", "password": "correct horse" }),
         );
         assert!(made["public_key"].as_str().unwrap().ends_with(" me@mac"));
         let listed = f.ok("list", json!({}));
@@ -934,14 +1071,20 @@ mod tests {
         );
 
         let encrypted = include_str!("../../stash-core/tests/data/ed25519-encrypted");
-        let needs = f.call("ssh_import", json!({ "name": "ssh/old", "key": encrypted }));
+        let needs = f.call(
+            "ssh_import",
+            json!({ "name": "ssh/old", "key": encrypted, "password": "correct horse" }),
+        );
         assert_eq!(needs["error"]["code"], code::NEEDS_PASSPHRASE);
         let ok = f.ok(
             "ssh_import",
-            json!({ "name": "ssh/old", "key": encrypted, "passphrase": "correct horse" }),
+            json!({ "name": "ssh/old", "key": encrypted, "passphrase": "correct horse", "password": "correct horse" }),
         );
         assert!(ok["fingerprint"].as_str().unwrap().starts_with("SHA256:"));
-        let dup = f.call("ssh_generate", json!({ "name": "ssh/old" }));
+        let dup = f.call(
+            "ssh_generate",
+            json!({ "name": "ssh/old", "password": "correct horse" }),
+        );
         assert_eq!(dup["error"]["code"], code::ALREADY_EXISTS);
     }
 }

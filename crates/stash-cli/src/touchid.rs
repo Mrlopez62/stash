@@ -1,7 +1,8 @@
 //! Touch ID unlock through the `stash-touchid` Swift helper.
 //!
-//! On `stash touchid enable`, the helper encrypts the vault key to a Secure
-//! Enclave key that only works after a Touch ID match. The result is an
+//! On `stash touchid enable`, the helper encrypts the vault's keys (the main
+//! key and the sensitive key, together) to a Secure Enclave key that only
+//! works after a Touch ID match. The result is an
 //! opaque blob saved next to the vault as `<vault>.touchid`. Unlocking hands
 //! the blob back to the helper, which prompts for a fingerprint and returns
 //! the vault key. Keys always travel over pipes, never in arguments.
@@ -89,12 +90,34 @@ pub fn availability(helper: &Path) -> Result<(), String> {
     }
 }
 
-/// Protect `key` with Touch ID and save the blob next to the vault.
-pub fn enroll(helper: &Path, vault: &Path, key: &[u8; 32]) -> Result<()> {
+/// What a Touch ID unlock recovers: the main key, and the sensitive key
+/// (for cards, bank accounts, SSH keys) unless the Touch ID data predates
+/// version 3 vaults.
+pub struct Keys {
+    pub main: SecretKey,
+    pub sensitive: Option<SecretKey>,
+}
+
+/// Protect the vault's keys with Touch ID and save the blob next to it.
+pub fn enroll(
+    helper: &Path,
+    vault: &Path,
+    main: &[u8; 32],
+    sensitive: Option<&[u8; 32]>,
+) -> Result<()> {
     if let Err(why) = availability(helper) {
         bail!("{why}");
     }
-    let hex = crypto::to_hex(key);
+    let mut both = Zeroizing::new([0u8; 64]);
+    both[..32].copy_from_slice(main);
+    let keys: &[u8] = match sensitive {
+        Some(s) => {
+            both[32..].copy_from_slice(s);
+            both.as_slice()
+        }
+        None => &both[..32],
+    };
+    let hex = crypto::to_hex(keys);
     let out = run(helper, &["wrap"], &hex)?;
     if out.code != Some(0) || out.stdout.is_empty() {
         bail!("Touch ID enrollment failed: {}", out.stderr);
@@ -123,16 +146,29 @@ pub fn disable(vault: &Path) -> Result<bool> {
     }
 }
 
-/// Prompt for a fingerprint and recover the vault key.
+/// Prompt for a fingerprint and recover the vault's keys.
 /// `reason` finishes the system dialog's sentence "stash-touchid is trying to …".
-pub fn unlock(helper: &Path, vault: &Path, reason: &str) -> Result<SecretKey, UnlockError> {
+pub fn unlock(helper: &Path, vault: &Path, reason: &str) -> Result<Keys, UnlockError> {
     let blob = fs::read_to_string(blob_path(vault))
         .map_err(|e| UnlockError::Failed(format!("could not read Touch ID data: {e}")))?;
     let out = run(helper, &["unwrap", reason], &blob)
         .map_err(|e| UnlockError::Unavailable(format!("{e:#}")))?;
+    let malformed = || UnlockError::Failed("helper returned a malformed key".into());
     match out.code {
-        Some(0) => crypto::key_from_hex(&out.stdout)
-            .ok_or_else(|| UnlockError::Failed("helper returned a malformed key".into())),
+        Some(0) => {
+            let hex = out.stdout.trim();
+            match hex.len() {
+                64 => Ok(Keys {
+                    main: crypto::key_from_hex(hex).ok_or_else(malformed)?,
+                    sensitive: None,
+                }),
+                128 => Ok(Keys {
+                    main: crypto::key_from_hex(&hex[..64]).ok_or_else(malformed)?,
+                    sensitive: Some(crypto::key_from_hex(&hex[64..]).ok_or_else(malformed)?),
+                }),
+                _ => Err(malformed()),
+            }
+        }
         Some(2) => Err(UnlockError::Cancelled),
         Some(3) => Err(UnlockError::Unavailable(out.stderr)),
         _ => Err(UnlockError::Failed(out.stderr)),

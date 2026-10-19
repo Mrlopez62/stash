@@ -64,16 +64,30 @@ fn check_can_add(vault: &Vault, name: &str, force: bool) -> Result<()> {
     Ok(())
 }
 
-fn key_pair(vault: &Vault, name: &str) -> Result<KeyPair> {
-    let item = vault.item(name)?;
+/// A key's public half: its `authorized_keys` line and fingerprint. Read
+/// from the redacted copy, so it needs no Touch ID.
+struct PublicKey {
+    line: String,
+    fingerprint: String,
+}
+
+fn public_key(vault: &Vault, name: &str) -> Result<PublicKey> {
+    let item = vault.item_redacted(name)?;
     if item.kind != Kind::Ssh {
         bail!("{name} is a {}, not an SSH key", item.kind);
     }
-    Ok(item.ssh_key_pair()?)
+    let field = |label: &str| item.labeled(label).map(|f| f.value.clone());
+    match (
+        field(stash_core::item::PUBLIC_KEY),
+        field(stash_core::item::FINGERPRINT),
+    ) {
+        (Some(line), Some(fingerprint)) if !line.is_empty() => Ok(PublicKey { line, fingerprint }),
+        _ => bail!("{name} has no public key; re-import it"),
+    }
 }
 
 pub fn public(vault: &Vault, name: &str) -> Result<()> {
-    println!("{}", key_pair(vault, name)?.public_line());
+    println!("{}", public_key(vault, name)?.line);
     Ok(())
 }
 
@@ -270,7 +284,7 @@ fn tilde(path: &Path) -> Result<String> {
 /// wrapper that runs `ssh-keygen` with the stash agent's socket, so nothing
 /// else on the system has to change.
 pub fn git_setup(vault: &Vault, name: &str, socket: &Path, global: bool) -> Result<()> {
-    let pair = key_pair(vault, name)?;
+    let pair = public_key(vault, name)?;
     let stash_dir = vault
         .path()
         .parent()
@@ -316,7 +330,7 @@ pub fn git_setup(vault: &Vault, name: &str, socket: &Path, global: bool) -> Resu
         Ok(String::from_utf8_lossy(&out.stdout).trim().to_owned())
     };
 
-    let public = pair.public_line();
+    let public = pair.line.clone();
     // Without the comment: git compares this to allowed_signers entries.
     let bare = public
         .split_whitespace()
@@ -363,7 +377,7 @@ pub fn git_setup(vault: &Vault, name: &str, socket: &Path, global: bool) -> Resu
     };
     eprintln!(
         "Git will now sign commits and tags in {where_} with {name} ({}).",
-        pair.fingerprint()
+        pair.fingerprint
     );
     eprintln!("Each signature asks for Touch ID. Make sure the agent runs: `stash ssh install`.");
     eprintln!();

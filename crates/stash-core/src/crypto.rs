@@ -30,12 +30,16 @@ pub struct KdfParams {
 }
 
 impl Default for KdfParams {
-    /// 64 MiB, 3 passes, 1 lane — above the OWASP minimum for Argon2id.
+    /// 256 MiB, 3 passes, 4 lanes: about a quarter of a second per unlock on
+    /// a laptop, and four times the memory an offline guesser needs per
+    /// guess compared with stash before v0.12 (which used 64 MiB). Vaults
+    /// with weaker settings are re-wrapped with these on their next master
+    /// password unlock.
     fn default() -> Self {
         Self {
-            m_cost_kib: 64 * 1024,
+            m_cost_kib: 256 * 1024,
             t_cost: 3,
-            p_cost: 1,
+            p_cost: 4,
         }
     }
 }

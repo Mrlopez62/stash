@@ -1,44 +1,42 @@
 # Threat model
 
-This document covers what stash protects against, how it does it, and what it doesn't protect against. It describes **v0.7**: an encrypted vault file, a CLI, Touch ID unlock, sessions scoped to your shell, `stash run` / `stash inject`, and the MCP server for AI agents.
+This document covers what stash protects against, how it does it, and what it doesn't protect against. It describes **v0.12**: an encrypted vault file (format 3), the CLI, Touch ID unlock, sessions scoped to your shell, `stash run` / `stash inject`, the MCP server for AI agents, the SSH agent, the Mac app, and browser autofill.
 
 ## What we protect
 
-The names and values of the secrets in your vault.
+The names and values of the secrets in your vault, with the most protection for cards, bank accounts, and SSH keys.
 
-## Vault format (version 2)
+## Vault format (version 3)
 
 The vault is a single SQLite file, `~/.stash/vault.db` by default.
 
 | Piece | How it's protected |
 |---|---|
-| Master password | Never stored. It goes through **Argon2id** (64 MiB, 3 passes, 1 lane) with a random 16-byte salt to produce a key-encryption key (KEK). |
-| Vault key | 32 random bytes from the operating system's random number generator, encrypted with the KEK using **XChaCha20-Poly1305**. The encryption is bound to the format version, the KDF parameters, and the salt, so none of them can be changed without being detected. |
-| Item names | Never stored in plaintext. Each row's id is `HMAC-SHA256(index_key, name)`, where `index_key` is derived from the vault key. The name is also encrypted along with the value. |
-| Item contents | Encrypted together with the name using XChaCha20-Poly1305 and the vault key. Each one gets a fresh random 24-byte nonce, and the row id is bound into the encryption, so an encrypted value can't be moved to a different row. |
-| Payment cards and bank accounts | They're stored like logins, encrypted per item. Lists, the app's item view, and `show` expose only the brand and last four digits. Numbers are validated and normalized on every save, so a typo can't be stored by any client. |
-| Logins and notes | Their fields (usernames, URLs, passwords, 2FA secrets, notes, timestamps) are JSON *inside* the same per-item encryption, so a copied vault doesn't reveal usernames or websites. Encrypted sizes are visible, and logins and notes are noticeably larger than plain secrets, so an item's size can hint at its kind. |
-| Deleted secrets | SQLite's `secure_delete` setting overwrites freed pages with zeros. |
+| Master password | Never stored. It goes through **Argon2id** (256 MiB, 3 passes, 4 lanes) with a random 16-byte salt to produce a key-encryption key (KEK). The settings are checked against fixed bounds *before* Argon2 runs, so an edited file can't make an unlock exhaust memory. Vaults with weaker settings are re-wrapped with these on their next master-password unlock. |
+| Two vault keys | 32 random bytes each, from the operating system's random number generator, each wrapped with the KEK using **XChaCha20-Poly1305**, bound to which key it is, the format version, the KDF settings, and the salt. The **main key** reads every item's name and non-secret parts; sessions and Touch ID unlocks hold it. The **sensitive key** alone reads the secret values of cards, bank accounts, and SSH keys. |
+| Subkeys | Derived from the main key with HMAC-SHA256 and distinct labels: one encrypts items, one makes row ids, one authenticates the vault, one checks that a key belongs to this vault. |
+| Item names | Never stored in plaintext. Each row's id is `HMAC-SHA256(index key, name)`. The name is also encrypted along with the contents. |
+| Item contents | Encrypted with XChaCha20-Poly1305, a fresh random 24-byte nonce each time, bound to the row id, so an encrypted item can't be moved to a different row. |
+| Cards, bank accounts, SSH keys | Stored twice: a **redacted copy** under the item key (labels, cardholder, expiry, the SSH public key, "Visa •••• 4242"), so lists and the app can show them, and the **full item** under the sensitive key. A session, or any program that gets the main key, can't decrypt a card number, CVV, PIN, account number, or private key. |
+| The whole vault | **A vault-wide MAC** over every row (its id and the hashes of both encrypted parts) and a write counter, updated in the same transaction as every change and checked on every open. Removing, adding, swapping, or rolling back individual items makes stash refuse the vault. |
+| Deleted items | SQLite's `secure_delete` overwrites freed pages in the vault file with zeros. Copies elsewhere aren't covered: SQLite's rollback journal, APFS snapshots, and backups can hold earlier versions of the file. They stay encrypted, under the keys and password of the moment they were made. |
 | File permissions | The vault file is created with mode `0600`, and new parent directories with `0700`. |
 
-**Version 2** only adds the structured encoding for logins and notes. Single-value secrets keep the original encoding, so they never need it.
+**Upgrading from versions 1 and 2.** They open, read-only, with the master password, Touch ID, or a session. A master-password unlock (or `stash upgrade`) upgrades them: stash copies the old file to `vault.db.v2-backup` (mode `0600`), then in one transaction generates new keys, re-encrypts every item (splitting the sensitive kinds), writes the MAC, and strengthens the KDF settings. Touch ID is re-enrolled with the new keys and sessions holding the old key end.
 
-- **A version 1 vault opens normally,** with the master password, Touch ID, or a session.
-- **The master password upgrades it.** Unlocking with the password re-wraps the vault key bound to version 2, so older versions of stash refuse the vault from then on.
-- **Touch ID and sessions can't upgrade it,** because only the password-derived key can re-wrap. Until a password unlock, stash **refuses to store logins and notes** in a version 1 vault and asks for that one-time unlock. So an older version of stash never meets an item it would misread.
-- **The upgrade is best-effort:** if the file is read-only or busy, the vault still opens and stays at version 1.
-
-Because of this design, changing the master password (not yet available as a command) will only need to re-encrypt the vault key, not every secret.
+**Replacing keys.** `stash passwd` (change the master password) and `stash rekey` both generate new main and sensitive keys and re-encrypt every item, so an old copy of the vault and an old (perhaps leaked) password open nothing current. Old copies remain readable with the password they were made with.
 
 ## Threats and how stash handles them
 
 | Threat | Protected? | How |
 |---|---|---|
-| Someone copies your vault file (stolen laptop backup, synced folder, etc.) | ✅ | Without the master password they only have ciphertext. Argon2id makes guessing the password slow and expensive. |
-| Someone edits the vault file (changes, swaps, or truncates rows, or tampers with the KDF settings) | ✅ detected | Authenticated encryption makes stash refuse to open or read anything that was modified. It **can't** stop someone deleting the whole file, so keep backups. |
-| Someone learns what services you use from the secret names | ✅ | Names are encrypted. The number of items and their approximate sizes are still visible. |
+| Someone copies your vault file (stolen laptop backup, synced folder, etc.) | ✅ | Without the master password they only have ciphertext. Argon2id at 256 MiB per guess makes guessing slow and expensive. |
+| Someone edits the vault file: changes, swaps, removes, adds, or rolls back items, or tampers with the KDF settings | ✅ detected | Per-item authenticated encryption plus the vault-wide MAC: stash refuses to open it. It **can't** stop someone deleting the whole file, or replacing it with an entire older copy of itself (which is self-consistent), so keep backups and protect them. |
+| A program that gets the main key (from a session, or a running stash process) reading your cards or SSH keys | ✅ | Those values are sealed under the sensitive key, which no session holds. Every use needs a fresh Touch ID or the master password, and long-lived processes forget the key right after each use. |
+| An old backup plus an old password | ✅ after `stash passwd` | Changing the password replaces the keys, so the old pair decrypts only that old copy. |
+| Someone learns what services you use from the secret names | Partial | Names are encrypted. The number of items and their encrypted sizes are visible (sizes can hint at an item's kind), and the audit log (`audit.log`, mode `0600`) records item names and sites in plain text. |
 | Other user accounts on the same Mac | ✅ | File permissions keep them out. |
-| Secrets left lying around in memory | Partial | Keys, passwords, and values are wiped when they're no longer needed (`zeroize`). But temporary copies made by the OS, the terminal, or growing buffers can't all be guaranteed wiped. |
+| Secrets left lying around in memory | Partial | Keys, passwords, and values are wiped when they're no longer needed (`zeroize`), including card numbers during validation. But temporary copies made by the OS, the terminal, JSON parsing, or growing buffers can't all be guaranteed wiped. |
 | Weak master password | Partial | stash requires at least 8 characters and Argon2id slows guessing down. A short password can still be cracked offline. Use a long passphrase. |
 
 ## Programs running as you (including AI agents)
@@ -74,10 +72,10 @@ What stays possible for a program running as you, and how to limit it:
 `stash touchid enable` asks for the master password once. Then the `stash-touchid` helper:
 
 1. creates a P-256 key **inside the Secure Enclave**, with the access control `privateKeyUsage + biometryCurrentSet`
-2. encrypts the vault key to that key: an ephemeral ECDH key exchange, HKDF-SHA256, and ChaCha20-Poly1305
-3. saves the result as `<vault>.touchid` (mode `0600`). The file holds the encrypted vault key and an encrypted handle to the Secure Enclave key, which is useless on any other Mac.
+2. encrypts the vault's two keys (main and sensitive) to that key: an ephemeral ECDH key exchange, HKDF-SHA256, and ChaCha20-Poly1305
+3. saves the result as `<vault>.touchid` (mode `0600`). The file holds the encrypted keys and an encrypted handle to the Secure Enclave key, which is useless on any other Mac.
 
-To unlock, the helper asks for a fingerprint and then has the Secure Enclave do the key exchange. The vault key is passed back to `stash` over a pipe, never as a command-line argument. Before using the key, `stash` checks it against the vault's key check (an HMAC of the vault key), so a stale or swapped `.touchid` file is rejected.
+To unlock, the helper asks for a fingerprint and then has the Secure Enclave do the key exchange. The keys are passed back to `stash` over a pipe, never as a command-line argument. Before using them, `stash` checks each against the vault's check values, so a stale or swapped `.touchid` file is rejected. Every fingerprint recovers both keys, but only the main key ever goes to a session: whenever a card, bank account, or SSH key is used, it's from a fresh fingerprint. The helper refuses to attach debuggers.
 
 | Threat | Protected? | How |
 |---|---|---|
@@ -97,6 +95,7 @@ After an unlock, `stash` starts `stash agent` in the background. The agent keeps
 - **Anyone else unlocks for themselves.** The prompt names the request and the process chain behind it, so an unexpected prompt is visible.
 - **Timeout:** each key is forgotten after 10 minutes without use (`STASH_SESSION_TIMEOUT`). `stash lock` forgets all keys immediately. The agent exits once it holds no keys.
 - **Memory only:** keys are never written to disk and are wiped from memory when dropped.
+- **Only the main key.** Sessions never hold the sensitive key, so a program that reaches a session (see below) still can't read cards, bank accounts, or SSH private keys: those always prompt.
 - **Only to the real agent:** `stash` hands a key only to a listener running the same `stash` executable, so a program listening on the socket path in its place never gets one.
 
 | Threat | Protected? | How |

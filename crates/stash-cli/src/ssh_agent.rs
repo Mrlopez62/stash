@@ -25,6 +25,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
+use stash_core::crypto::SecretKey;
 use stash_core::ssh::{self, Reader, SignPurpose};
 use stash_core::{Kind, Vault};
 use zeroize::Zeroizing;
@@ -52,7 +53,9 @@ pub fn default_socket() -> Result<PathBuf> {
 pub trait Gate: Send {
     /// Unlock the vault, asking the user. Counts as approving `reason`.
     fn unlock(&mut self, vault: &Path, reason: &str) -> Result<Vault, String>;
-    fn approve(&mut self, reason: &str) -> Result<(), String>;
+    /// A fresh approval that recovers the sensitive key, for one
+    /// signature: the fingerprint is what decrypts the private key.
+    fn sensitive(&mut self, vault: &Path, reason: &str) -> Result<SecretKey, String>;
 }
 
 pub struct TouchIdGate {
@@ -71,16 +74,33 @@ impl Gate for TouchIdGate {
         if !touchid::is_enrolled(vault) {
             return Err("the SSH agent needs Touch ID; run `stash touchid enable`".into());
         }
-        let key = touchid::unlock(&helper, vault, reason).map_err(describe)?;
-        Vault::open_with_key(vault, &key).map_err(|e| e.to_string())
+        let keys = touchid::unlock(&helper, vault, reason).map_err(describe)?;
+        let mut opened = Vault::open_with_key(vault, &keys.main).map_err(|e| e.to_string())?;
+        if let Some(sensitive) = &keys.sensitive
+            && opened.is_current()
+        {
+            opened
+                .unlock_sensitive_with_key(sensitive)
+                .map_err(|e| e.to_string())?;
+        }
+        Ok(opened)
     }
 
-    fn approve(&mut self, reason: &str) -> Result<(), String> {
+    fn sensitive(&mut self, vault: &Path, reason: &str) -> Result<SecretKey, String> {
         if !self.approve {
-            return Ok(());
+            // Headless (`--no-approval` needs STASH_PASSWORD).
+            let password = Zeroizing::new(std::env::var(crate::PASSWORD_ENV).unwrap_or_default());
+            let opened = Vault::open(vault, password.as_bytes()).map_err(|e| e.to_string())?;
+            return opened
+                .sensitive_key()
+                .map(|k| Zeroizing::new(*k))
+                .ok_or_else(|| "this vault needs `stash upgrade`".into());
         }
         let helper = touchid::helper().ok_or("the stash-touchid helper was not found")?;
-        touchid::confirm(&helper, reason).map_err(describe)
+        let keys = touchid::unlock(&helper, vault, reason).map_err(describe)?;
+        keys.sensitive.ok_or_else(|| {
+            "Touch ID needs updating for this vault: run `stash touchid enable`".into()
+        })
     }
 }
 
@@ -163,6 +183,10 @@ impl<G: Gate> Agent<G> {
             let reason = format!("unlock stash to list SSH keys for {client}");
             if let Err(why) = self.unlock(&reason) {
                 eprintln!("stash ssh agent: not listing keys: {why}");
+            }
+            // Listing needs only public keys.
+            if let Some((vault, _)) = self.unlocked.as_mut() {
+                vault.lock_sensitive();
             }
         }
         self.refresh();
@@ -263,17 +287,25 @@ impl<G: Gate> Agent<G> {
         event.secrets = vec![name.clone()];
         event.detail = Some(what.clone());
         if !approved {
-            self.gate
-                .approve(&format!("{what}, for {client}"))
+            let key = self
+                .gate
+                .sensitive(&self.vault_path, &format!("{what}, for {client}"))
                 .map_err(|why| self.refusal(why))?;
+            if let Some((vault, _)) = self.unlocked.as_mut() {
+                vault
+                    .unlock_sensitive_with_key(&key)
+                    .map_err(|e| Refused::Failed(e.to_string()))?;
+            }
         }
+        // Read the private key, then forget the sensitive key at once: the
+        // next signature needs a fresh fingerprint.
         let (vault, _) = self
             .unlocked
-            .as_ref()
+            .as_mut()
             .ok_or(Refused::Failed("locked".into()))?;
-        let item = vault
-            .item(&name)
-            .map_err(|e| Refused::Failed(e.to_string()))?;
+        let item = vault.item(&name);
+        vault.lock_sensitive();
+        let item = item.map_err(|e| Refused::Failed(e.to_string()))?;
         let pair = item
             .ssh_key_pair()
             .map_err(|e| Refused::Failed(e.to_string()))?;
@@ -375,11 +407,15 @@ fn list(vault: &Vault) -> stash_core::Result<Vec<Listed>> {
         if summary.kind != Kind::Ssh {
             continue;
         }
-        let item = vault.item(&summary.name)?;
-        if let Ok(pair) = item.ssh_key_pair() {
+        // The public key is readable without the sensitive key.
+        let item = vault.item_redacted(&summary.name)?;
+        if let Some(blob) = item
+            .labeled(stash_core::item::PUBLIC_KEY)
+            .and_then(|f| ssh::blob_from_line(&f.value))
+        {
             keys.push(Listed {
                 name: summary.name,
-                blob: pair.public_blob(),
+                blob,
             });
         }
     }
@@ -503,15 +539,15 @@ mod tests {
             }
             Vault::open(vault, b"pw").map_err(|e| e.to_string())
         }
-        fn approve(&mut self, reason: &str) -> Result<(), String> {
+        fn sensitive(&mut self, vault: &Path, reason: &str) -> Result<SecretKey, String> {
             let mut g = self.lock().unwrap();
             g.approvals += 1;
             g.reasons.push(format!("approve: {reason}"));
-            if g.allow {
-                Ok(())
-            } else {
-                Err("cancelled".into())
+            if !g.allow {
+                return Err("cancelled".into());
             }
+            let full = Vault::open(vault, b"pw").map_err(|e| e.to_string())?;
+            Ok(Zeroizing::new(*full.sensitive_key().unwrap()))
         }
     }
 

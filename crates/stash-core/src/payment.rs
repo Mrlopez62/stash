@@ -4,6 +4,8 @@
 //! number fails its Luhn checksum; a mistyped routing number fails its ABA
 //! checksum; an IBAN fails mod-97). It never contacts anything.
 
+use zeroize::Zeroizing;
+
 use crate::Error;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -49,9 +51,12 @@ impl Brand {
     }
 }
 
-/// Just the digits: "4242 4242-4242 4242" → "4242424242424242".
-pub fn digits(s: &str) -> String {
-    s.chars().filter(char::is_ascii_digit).collect()
+/// Just the digits: "4242 4242-4242 4242" → "4242424242424242". Wiped
+/// when dropped, since it's usually a whole card number.
+pub fn digits(s: &str) -> Zeroizing<String> {
+    let mut out = Zeroizing::new(String::with_capacity(s.len()));
+    out.extend(s.chars().filter(char::is_ascii_digit));
+    out
 }
 
 /// The brand, from the number's leading digits (IIN ranges).
@@ -173,8 +178,15 @@ pub fn validate_cvv(cvv: &str, brand: Brand) -> Result<(), Error> {
 
 /// The last four digits, for safe display ("•••• 4242").
 pub fn last4(number: &str) -> String {
-    let d = digits(number);
-    d[d.len().saturating_sub(4)..].to_owned()
+    // The last four digits, without making a copy of the whole number.
+    let mut last: Vec<char> = number
+        .chars()
+        .rev()
+        .filter(char::is_ascii_digit)
+        .take(4)
+        .collect();
+    last.reverse();
+    last.into_iter().collect()
 }
 
 /// US ABA routing numbers: 9 digits with a weighted checksum.
