@@ -754,6 +754,7 @@ mod tests {
         assert!(!BROWSERS.iter().any(|(_, id, _)| id.contains("testing")));
     }
 
+    #[cfg(target_os = "macos")]
     fn first_pid(args: &[&str]) -> Option<i32> {
         let out = std::process::Command::new("/usr/bin/pgrep")
             .args(args)
