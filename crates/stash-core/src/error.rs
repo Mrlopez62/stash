@@ -12,6 +12,10 @@ pub enum Error {
         "the vault's keys were changed by another stash command (a new master password or `stash rekey`); unlock again"
     )]
     KeysChanged,
+    #[error(
+        "the vault's keys were replaced, but reopening it to double-check failed ({0}); the copy from before is at {1}"
+    )]
+    RekeyUnverified(String, PathBuf),
     #[error("this vault couldn't be upgraded: {0}")]
     UpgradeFailed(String),
     #[error(

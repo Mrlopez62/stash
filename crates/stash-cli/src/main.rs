@@ -650,8 +650,13 @@ fn run(cli: Cli) -> Result<ExitCode> {
             if new.chars().count() < MIN_PASSWORD_LEN {
                 bail!("master password must be at least {MIN_PASSWORD_LEN} characters");
             }
-            vault.rekey(password.as_bytes(), Some(new.as_bytes()))?;
-            refresh_unlock_methods(&path, &vault);
+            let result = vault.rekey(password.as_bytes(), Some(new.as_bytes()));
+            // The keys changed even if the final double-check didn't pass:
+            // sessions and Touch ID must follow either way.
+            if matches!(result, Ok(()) | Err(stash_core::Error::RekeyUnverified(..))) {
+                refresh_unlock_methods(&path, &vault);
+            }
+            result?;
             eprintln!("Changed the master password and replaced the vault's keys.");
             eprintln!("Old backups of the vault still open with the password they were made with.");
         }
@@ -659,8 +664,13 @@ fn run(cli: Cli) -> Result<ExitCode> {
             let password = read_password(&path, "replace the vault's keys")?;
             let mut vault = Vault::open(&path, password.as_bytes())?;
             after_password_unlock(&path, &vault);
-            vault.rekey(password.as_bytes(), None)?;
-            refresh_unlock_methods(&path, &vault);
+            let result = vault.rekey(password.as_bytes(), None);
+            // The keys changed even if the final double-check didn't pass:
+            // sessions and Touch ID must follow either way.
+            if matches!(result, Ok(()) | Err(stash_core::Error::RekeyUnverified(..))) {
+                refresh_unlock_methods(&path, &vault);
+            }
+            result?;
             eprintln!("Replaced the vault's keys and re-encrypted every item.");
         }
         Command::Lock => {

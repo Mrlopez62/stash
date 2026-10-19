@@ -518,6 +518,17 @@ impl Server {
             Some(original) => Some(vault.item(original)?),
             None => None,
         };
+        // A card, bank account, or SSH key keeps its kind: turning one into
+        // another kind would let kept values land outside the sensitive seal.
+        if let Some(old) = &existing
+            && old.kind.is_sensitive()
+            && old.kind != request.kind
+        {
+            return Err(Failure::params(format!(
+                "a {} can't be changed into a {}",
+                old.kind, request.kind
+            )));
+        }
         let renamed = request
             .original_name
             .as_deref()
