@@ -50,6 +50,7 @@ const IDLE_LOCK: Duration = Duration::from_secs(10 * 60);
 const MAX_REQUEST: usize = 64 * 1024;
 
 /// Code-signing Team IDs of the browsers that may start the host (macOS).
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 const BROWSER_TEAMS: &[(&str, &str)] = &[
     ("EQHXZ8M8AV", "Google Chrome"),
     ("43AQ936H96", "Firefox"),
@@ -69,6 +70,7 @@ pub fn caller_is_allowed(args: &[String]) -> bool {
 }
 
 /// The `.app` bundle an executable belongs to.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn app_bundle(exe: &Path) -> Option<PathBuf> {
     exe.ancestors()
         .find(|p| p.extension().is_some_and(|e| e == "app"))
@@ -76,6 +78,7 @@ fn app_bundle(exe: &Path) -> Option<PathBuf> {
 }
 
 /// `TeamIdentifier=…` from `codesign -dv` output.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn team_id(codesign_output: &str) -> Option<&str> {
     codesign_output
         .lines()
