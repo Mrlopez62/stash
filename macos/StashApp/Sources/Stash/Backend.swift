@@ -76,9 +76,14 @@ final class RPCBackend: VaultBackend, @unchecked Sendable {
     /// or `$PATH`.
     static func stashBinary() throws -> URL {
         let fm = FileManager.default
+        // The backend holds the vault key, so a release build only ever runs
+        // the copy sealed inside its own bundle: never one picked by an
+        // environment variable or $PATH, which another program could set.
         var candidates: [URL] = [
             Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/stash")
         ]
+        #if DEBUG
+        // Development builds (`swift run`) aren't bundled.
         if let env = ProcessInfo.processInfo.environment["STASH_BIN"] {
             candidates.append(URL(fileURLWithPath: env))
         }
@@ -86,6 +91,7 @@ final class RPCBackend: VaultBackend, @unchecked Sendable {
         for dir in (ProcessInfo.processInfo.environment["PATH"] ?? "").split(separator: ":") {
             candidates.append(URL(fileURLWithPath: String(dir)).appendingPathComponent("stash"))
         }
+        #endif
         // Never pick up the app's own executable, which is also named `Stash`
         // on case-insensitive disks.
         let me = Bundle.main.executableURL?.resolvingSymlinksInPath()

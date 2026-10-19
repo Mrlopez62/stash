@@ -209,8 +209,29 @@ pub(crate) fn peer_is_same_user(stream: &UnixStream) -> bool {
 
 // ---- client side ----
 
+/// Whatever is listening on `socket`: the real agent, nothing, or an
+/// impostor (some other program listening on the same path, hoping to be
+/// handed a key).
+enum Listener {
+    Agent(UnixStream),
+    Nothing,
+    Impostor,
+}
+
+fn connect(socket: &Path) -> Listener {
+    match UnixStream::connect(socket) {
+        Ok(stream) if procinfo::peer_is_this_program(&stream) => Listener::Agent(stream),
+        Ok(_) => Listener::Impostor,
+        Err(_) => Listener::Nothing,
+    }
+}
+
+/// One request to the agent. Only ever sent to a process running this same
+/// stash executable, so a key is never handed to an impostor.
 fn request(socket: &Path, line: &str) -> Option<Zeroizing<String>> {
-    let mut stream = UnixStream::connect(socket).ok()?;
+    let Listener::Agent(mut stream) = connect(socket) else {
+        return None;
+    };
     stream.set_read_timeout(Some(IO_TIMEOUT)).ok()?;
     stream.set_write_timeout(Some(IO_TIMEOUT)).ok()?;
     stream.write_all(line.as_bytes()).ok()?;
@@ -243,6 +264,13 @@ pub fn put(socket: &Path, vault: &Path, key: &[u8; 32], idle_timeout: Duration) 
         bail!(
             "the agent socket path is {len} bytes, over the {MAX_SOCKET_PATH_LEN}-byte limit \
              for Unix sockets ({}); set STASH_AGENT_SOCK to a shorter path",
+            socket.display()
+        );
+    }
+    if matches!(connect(socket), Listener::Impostor) {
+        bail!(
+            "another program (not stash) is listening on {}; not handing it your key. \
+             If you didn't expect that, something on this Mac may be trying to steal it",
             socket.display()
         );
     }

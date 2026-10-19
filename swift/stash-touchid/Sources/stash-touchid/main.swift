@@ -13,8 +13,14 @@
 //   stash-touchid confirm <reason>   fingerprint check only; exit 0 if approved
 //
 // Exit codes: 0 ok, 1 error, 2 cancelled by the user, 3 Touch ID unavailable.
+//
+// Only the `stash` binary installed next to this helper may use it (checked
+// from the kernel's view of who started us). Otherwise any program could
+// show a stash-branded Touch ID prompt with a reason of its choosing and,
+// if you approved, receive the vault key.
 
 import CryptoKit
+import Darwin
 import Foundation
 import LocalAuthentication
 
@@ -144,8 +150,25 @@ func unwrap(reason: String) throws {
     print(hexEncode(vaultKey))
 }
 
+/// The executable of process `pid`, with symlinks resolved.
+func executable(of pid: pid_t) -> URL? {
+    var buffer = [CChar](repeating: 0, count: 4 * Int(MAXPATHLEN))
+    guard proc_pidpath(pid, &buffer, UInt32(buffer.count)) > 0 else { return nil }
+    return URL(fileURLWithPath: String(cString: buffer)).resolvingSymlinksInPath()
+}
+
+/// Is the process that started us the `stash` next to this helper?
+func calledByStash() -> Bool {
+    guard let me = executable(of: getpid()), let parent = executable(of: getppid()) else { return false }
+    let sibling = me.deletingLastPathComponent().appendingPathComponent("stash").resolvingSymlinksInPath()
+    return parent == sibling
+}
+
 let args = CommandLine.arguments.dropFirst()
 do {
+    if args.first != "available" && !calledByStash() {
+        throw Failure("only the stash command next to this helper can use it")
+    }
     switch args.first {
     case "available":
         try checkAvailable()

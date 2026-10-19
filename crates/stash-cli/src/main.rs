@@ -3,6 +3,7 @@ mod app_server;
 mod audit;
 mod clipboard;
 mod envfile;
+mod harden;
 mod inject;
 mod items;
 mod mask;
@@ -11,6 +12,7 @@ mod procinfo;
 mod run;
 mod ssh_agent;
 mod ssh_cmd;
+mod text;
 mod touchid;
 mod ui;
 
@@ -312,7 +314,9 @@ const SESSION_TIMEOUT_ENV: &str = "STASH_SESSION_TIMEOUT";
 const DEFAULT_SESSION_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 
 fn main() -> ExitCode {
-    match run(Cli::parse()) {
+    let cli = Cli::parse();
+    harden::process(matches!(cli.command, Command::Agent { .. }));
+    match run(cli) {
         Ok(code) => code,
         Err(err) => {
             eprintln!("stash: {err:#}");
@@ -479,6 +483,13 @@ fn run(cli: Cli) -> Result<ExitCode> {
                 if pattern.is_empty() {
                     bail!("--allow patterns can't be empty");
                 }
+            }
+            // Without a fingerprint per request, anything that can edit the
+            // MCP client's config (an AI agent included) could read every
+            // secret after one unlock. Only allow it where there's no Touch
+            // ID to ask anyway: headless use with the password in the env.
+            if no_approval && std::env::var_os(PASSWORD_ENV).is_none() {
+                bail!("--no-approval is only for headless use with {PASSWORD_ENV} set");
             }
             let opts = mcp::Options {
                 allow,
