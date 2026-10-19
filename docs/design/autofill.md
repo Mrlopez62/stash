@@ -1,6 +1,11 @@
 # Feature: browser autofill for logins and payments
 
-**Status:** planned (roadmap v0.10). This document is the design to build it from. Nothing here exists yet.
+**Status:** phases 1–3 built in v0.10: Chrome-family browsers and Firefox, logins with 2FA codes, cards, and bank accounts, from the toolbar popup. Inline field icons, Safari, and capture are still planned. Where the build settled an open question, it says so below.
+
+**Decisions made while building:**
+- **Payment iframes:** cards fill into a cross-origin frame only from a short built-in list of processors (`js.stripe.com`, `assets.braintreegateway.com`), only on https pages, and, where the browser reports frame ancestors (Chrome, Safari), only when the frame sits directly in the approved page. Every payment fill already needs Touch ID naming the top-level site.
+- **CLI-only users:** the native host unlocks the vault itself with Touch ID; the Mac app doesn't need to be running.
+- **The native host checks the browser,** not just the extension ID it's given: the process that starts it must be a browser signed by Google, Mozilla, Brave, Microsoft, or The Browser Company (Team ID on macOS; a root-owned system browser on Linux).
 
 ## Goal
 

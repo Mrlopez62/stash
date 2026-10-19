@@ -1,6 +1,7 @@
 mod agent;
 mod app_server;
 mod audit;
+mod browser_cmd;
 mod clipboard;
 mod envfile;
 mod harden;
@@ -8,6 +9,7 @@ mod inject;
 mod items;
 mod mask;
 mod mcp;
+mod native_host;
 mod procinfo;
 mod run;
 mod ssh_agent;
@@ -224,6 +226,22 @@ enum Command {
     /// Backend for the stash Mac app (JSON-RPC over stdio; not for direct use)
     #[command(hide = true)]
     AppServer,
+    /// Browser autofill: connect the stash extension to this vault
+    #[command(
+        after_help = "Set up:\n  stash browser install    # then load the extension it prints (chrome://extensions → Load unpacked)"
+    )]
+    Browser {
+        #[command(subcommand)]
+        action: BrowserAction,
+    },
+    /// Bridge for the stash browser extension (started by the browser; not for direct use)
+    #[command(hide = true)]
+    NativeHost {
+        /// What the browser passes: the extension's origin (Chrome) or its
+        /// manifest path and ID (Firefox)
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true, num_args = 0..)]
+        args: Vec<String>,
+    },
     /// Clear the clipboard later if unchanged (started automatically)
     #[command(hide = true)]
     ClipboardClear {
@@ -236,6 +254,16 @@ enum Command {
         #[arg(long)]
         socket: PathBuf,
     },
+}
+
+#[derive(Subcommand)]
+enum BrowserAction {
+    /// Register the native host with your browsers and unpack the extension
+    Install,
+    /// Remove the native host registrations
+    Uninstall,
+    /// Show which browsers are set up
+    Status,
 }
 
 #[derive(Subcommand)]
@@ -561,6 +589,12 @@ fn run(cli: Cli) -> Result<ExitCode> {
                 }
             }
         }
+        Command::NativeHost { args } => native_host::serve(&path, &args)?,
+        Command::Browser { action } => match action {
+            BrowserAction::Install => browser_cmd::install(&path)?,
+            BrowserAction::Uninstall => browser_cmd::uninstall()?,
+            BrowserAction::Status => browser_cmd::status()?,
+        },
         Command::Lock => {
             if agent::lock(&agent::default_socket()?) {
                 eprintln!("Locked");
