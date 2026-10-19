@@ -10,11 +10,16 @@ const yes = document.getElementById("yes");
 const no = document.getElementById("no");
 const send = (message) => chrome.runtime.sendMessage({ ...message, token });
 
+let info = null;
+
 async function load() {
-  const info = await send({ type: "save-info" });
+  info = await send({ type: "save-info" });
   if (!info.ok) return send({ type: "save-dismiss" });
   const who = info.username ? info.username : "this login";
-  if (info.state === "changed") {
+  if (info.kind === "card") {
+    title.textContent = "Save this card to stash?";
+    detail.textContent = `${info.summary}, from ${info.host}. Saving asks for Touch ID.`;
+  } else if (info.state === "changed") {
     title.textContent = `Update your ${info.host} password?`;
     detail.textContent = `stash will save the new password for ${who} and keep the old one in the item.`;
     yes.textContent = "Update";
@@ -28,10 +33,11 @@ async function load() {
 yes.addEventListener("click", async (event) => {
   if (!event.isTrusted) return;
   yes.disabled = no.disabled = true;
-  yes.textContent = "Saving…";
+  yes.textContent = info?.kind === "card" ? "Waiting for Touch ID…" : "Saving…";
   const reply = await send({ type: "save-confirm" });
   if (reply.ok) {
     title.textContent = reply.action === "unchanged" ? "Already in stash ✓" : "Saved to stash ✓";
+    if (info?.kind === "card") yes.textContent = "Save";
     detail.textContent = `As ${reply.name}.`;
   } else {
     title.textContent = "Not saved";

@@ -2,6 +2,16 @@
 
 All notable changes to stash. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/) (pre-1.0: minor versions may change behavior).
 
+## [0.13.0] - 2026-10-19
+
+### Added
+- **Saving cards at checkout** (with *Show stash in sign-in fields* on): after you submit a checkout form with a card number that passes its checksum, stash offers to save the card, unless one with the same brand, last four digits, and expiry is already saved. Saving asks for Touch ID on a prompt naming the card and the site, since cards are sealed under the sensitive key. Cards are named like `cards/visa-4242`.
+- **Native host requests** `check_card` (compares summaries only; never decrypts) and `save_card`.
+
+### Known limits
+- Card fields inside payment processors' frames (Stripe, Braintree) aren't captured, only checkout forms on the page itself.
+- Safari still waits for a signed release.
+
 ## [0.12.0] - 2026-10-19
 
 A security release, from an audit of how stash encrypts your data.
@@ -194,6 +204,7 @@ Security and correctness fixes for 0.6.0, found by an independent security revie
 ### Added
 - **The first release:** an encrypted vault (Argon2id + XChaCha20-Poly1305) and the `init`, `add`, `get`, `ls`, and `rm` commands.
 
+[0.13.0]: https://github.com/Mrlopez62/stash/pull/17
 [0.12.0]: https://github.com/Mrlopez62/stash/pull/16
 [0.11.0]: https://github.com/Mrlopez62/stash/pull/16
 [0.10.0]: https://github.com/Mrlopez62/stash/pull/15

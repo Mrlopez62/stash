@@ -280,3 +280,43 @@ fn saves_a_new_login_from_a_sign_in_after_one_unlock() {
         .success()
         .stdout(predicates::str::contains("https://www.shop.example"));
 }
+
+#[test]
+fn saves_a_card_from_a_checkout_with_one_touch_id() {
+    let f = Fixture::new();
+    let url = "https://shop.example/checkout";
+    let card = json!({ "url": url, "number": "5555555555554444", "exp_month": "03", "exp_year": "2028", "cvv": "321", "cardholder": "J Lopez" });
+    let with = |id: i64, kind: &str| {
+        let mut r = card.clone();
+        r["id"] = id.into();
+        r["type"] = kind.into();
+        r
+    };
+    let (r, _) = f.host(
+        &[CHROME_ORIGIN],
+        &[
+            with(1, "check_card"),
+            with(2, "save_card"),
+            with(3, "check_card"),
+        ],
+    );
+    assert_eq!(r[0]["state"], "locked");
+    assert_eq!(
+        (r[1]["name"].as_str(), r[1]["action"].as_str()),
+        (Some("cards/mastercard-4444"), Some("created")),
+        "{}",
+        r[1]
+    );
+    assert_eq!(r[2]["state"], "saved");
+    let prompts = f.prompts();
+    assert_eq!(prompts.len(), 1, "{prompts:?}");
+    assert!(prompts[0].starts_with(
+        "unwrap: save your Mastercard •••• 4444 · 03/28 from shop.example to stash in "
+    ));
+    // It's a real card in the vault now.
+    f.cli()
+        .args(["get", "cards/mastercard-4444#cvv"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("321"));
+}

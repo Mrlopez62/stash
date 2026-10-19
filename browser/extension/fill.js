@@ -214,6 +214,66 @@
     return { username: user >= 0 ? fields[user].value.trim() : "", password: fields[pw].value };
   }
 
+  function luhn(digits) {
+    if (digits.length < 12 || digits.length > 19) return false;
+    let sum = 0;
+    for (let i = 0; i < digits.length; i++) {
+      let n = digits.charCodeAt(digits.length - 1 - i) - 48;
+      if (i % 2 === 1) n = n * 2 > 9 ? n * 2 - 9 : n * 2;
+      sum += n;
+    }
+    return sum % 10 === 0;
+  }
+
+  const MONTHS = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
+
+  function monthOf(value) {
+    const v = String(value || "").trim().toLowerCase();
+    const n = parseInt(v, 10);
+    if (n >= 1 && n <= 12) return String(n).padStart(2, "0");
+    const named = MONTHS.findIndex((m) => v.startsWith(m));
+    return named >= 0 ? String(named + 1).padStart(2, "0") : null;
+  }
+
+  function yearOf(value) {
+    const d = String(value || "").replace(/\D/g, "");
+    if (d.length === 2) return `20${d}`;
+    if (d.length === 4) return d;
+    return null;
+  }
+
+  /// A card typed into a submitted checkout form, or null. Only a number
+  /// that passes the card checksum counts, so a gift-card or coupon field
+  /// isn't mistaken for one.
+  function captureCard(fields) {
+    const kinds = fields.map((f) => classify(f, "card"));
+    const value = (kind) => {
+      const i = kinds.indexOf(kind);
+      return i >= 0 ? (fields[i].value || "").trim() : "";
+    };
+    const number = value("cc-number").replace(/\D/g, "");
+    if (!luhn(number)) return null;
+    let month = monthOf(value("cc-exp-month"));
+    let year = yearOf(value("cc-exp-year"));
+    const exp = value("cc-exp");
+    if (exp && (!month || !year)) {
+      const m = exp.match(/^\s*(\d{1,2})\s*[\/\-.\s]?\s*(\d{2}|\d{4})\s*$/);
+      if (m) {
+        month = monthOf(m[1]);
+        year = yearOf(m[2]);
+      }
+    }
+    const cvv = value("cc-csc").replace(/\D/g, "");
+    return {
+      number,
+      cardholder: value("cc-name"),
+      exp_month: month || "",
+      exp_year: year || "",
+      cvv: cvv.length >= 3 && cvv.length <= 4 ? cvv : "",
+      postal_code: value("postal-code"),
+    };
+  }
+
   // ---- DOM ----
 
   function labelText(el) {
@@ -315,13 +375,13 @@
     return { filled };
   }
 
-  const api = { classify, plan, capture, formatExpiry, pickOption, frameAllowed, PAYMENT_PROCESSORS };
+  const api = { classify, plan, capture, captureCard, formatExpiry, pickOption, frameAllowed, PAYMENT_PROCESSORS };
   if (typeof module !== "undefined" && module.exports) {
     module.exports = api;
   } else {
     globalThis.__stashCheck = check;
     globalThis.__stashFill = fill;
     // For inline.js (stash in sign-in fields), in the same isolated world.
-    globalThis.__stashFields = { classify, capture, describe, visible };
+    globalThis.__stashFields = { classify, capture, captureCard, describe, visible };
   }
 })();

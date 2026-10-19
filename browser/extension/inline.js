@@ -125,13 +125,22 @@
 
   function inputsOf(form) {
     const scope = form || document;
-    return Array.from(scope.querySelectorAll("input")).filter((el) => fields.visible(el) || el.type === "password");
+    return Array.from(scope.querySelectorAll("input, select")).filter((el) => fields.visible(el) || el.type === "password");
   }
 
   let lastSent = "";
   function captureFrom(form) {
     const elements = inputsOf(form);
     const descriptors = elements.map((el) => ({ ...fields.describe(el), value: el.value }));
+    const card = fields.captureCard(descriptors);
+    if (card) {
+      const cardKey = `card\u0000${card.number}`;
+      if (cardKey !== lastSent) {
+        lastSent = cardKey;
+        chrome.runtime.sendMessage({ type: "captured-card", card }).catch(() => {});
+      }
+      return;
+    }
     const found = fields.capture(descriptors);
     if (!found) return;
     const key = `${found.username}\u0000${found.password}`;

@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 
 const require = createRequire(import.meta.url);
-const { classify, plan, capture, formatExpiry, pickOption, frameAllowed } = require("../extension/fill.js");
+const { classify, plan, capture, captureCard, formatExpiry, pickOption, frameAllowed } = require("../extension/fill.js");
 
 const input = (props) => ({ tag: "input", type: "text", autocomplete: "", text: "", placeholder: "", maxLength: 0, form: "f", ...props });
 const LOGIN = { username: "octocat", password: "hunter2!", otp: "123456" };
@@ -145,4 +145,27 @@ test("a password change saves the new password, not the old one", () => {
 test("nothing to save without a password", () => {
   assert.equal(capture([input({ type: "email", value: "me@x.com" })]), null);
   assert.equal(capture([input({ type: "password", value: "" })]), null);
+});
+
+test("finds the card in a submitted checkout, whatever the expiry fields look like", () => {
+  const card = (exp) => [
+    input({ autocomplete: "cc-name", value: "J Lopez" }),
+    input({ autocomplete: "cc-number", value: "4242 4242 4242 4242" }),
+    ...exp,
+    input({ autocomplete: "cc-csc", value: "123" }),
+    input({ autocomplete: "billing postal-code", value: "78666" }),
+  ];
+  const want = { number: "4242424242424242", cardholder: "J Lopez", exp_month: "08", exp_year: "2027", cvv: "123", postal_code: "78666" };
+  assert.deepEqual(captureCard(card([input({ autocomplete: "cc-exp", value: "08 / 27" })])), want);
+  assert.deepEqual(captureCard(card([input({ autocomplete: "cc-exp", value: "0827" })])), want);
+  assert.deepEqual(
+    captureCard(card([{ ...input({ autocomplete: "cc-exp-month", value: "8" }), tag: "select" }, { ...input({ autocomplete: "cc-exp-year", value: "2027" }), tag: "select" }])),
+    want,
+  );
+});
+
+test("a number that fails the card checksum isn't treated as a card", () => {
+  assert.equal(captureCard([input({ autocomplete: "cc-number", value: "4242 4242 4242 4241" })]), null);
+  assert.equal(captureCard([input({ text: "gift card code", value: "1234567890" })]), null);
+  assert.equal(captureCard([input({ type: "password", value: "x" })]), null);
 });
