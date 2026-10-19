@@ -5,8 +5,8 @@
 // released for this page. It runs once per frame and fills nothing unless:
 //
 // - the frame's origin is the page the host approved (logins: exactly that
-//   origin; cards: that origin or a known payment processor's frame embedded
-//   in it, like Stripe's card fields),
+//   origin; cards: that origin, or a known payment processor's frame placed
+//   *directly* in the approved page, like Stripe's card fields),
 // - the frame is visible, and each field is visible, enabled, and editable.
 //
 // Fields are found by the HTML `autocomplete` standard first
@@ -246,21 +246,39 @@
   }
 
   /// May this frame be filled? `expectedOrigin` is the page the host
-  /// approved.
-  function frameAllowed(mode, expectedOrigin, here, ancestorOrigins) {
+  /// approved; `directChild` says whether this frame's parent is the top
+  /// page; `ancestorOrigins` lists the frame's ancestors, nearest first,
+  /// where the browser reports them (Chrome, Safari; not Firefox).
+  function frameAllowed(mode, expectedOrigin, here, ancestorOrigins, directChild) {
     if (here === expectedOrigin) return true;
     if (mode !== "card" || !PAYMENT_PROCESSORS.includes(here)) return false;
-    // A processor's frame: only inside the approved page. Browsers that
-    // report the frame's ancestors (Chrome, Safari) must show it on top.
-    if (ancestorOrigins && ancestorOrigins.length) {
-      return ancestorOrigins[ancestorOrigins.length - 1] === expectedOrigin;
-    }
+    // A processor's frame only directly inside the approved page: not
+    // nested in some other frame (an ad could embed its own card form).
+    if (!directChild) return false;
+    if (ancestorOrigins && ancestorOrigins.length) return ancestorOrigins[0] === expectedOrigin;
     return true;
   }
 
+  function isDirectChild() {
+    try {
+      return window.parent === window.top && window !== window.top;
+    } catch {
+      return false;
+    }
+  }
+
+  /// Phase one: may this frame be filled? Nothing secret is sent yet.
+  function check({ expectedOrigin, mode }) {
+    return (
+      frameAllowed(mode, expectedOrigin, location.origin, location.ancestorOrigins, isDirectChild()) &&
+      document.visibilityState === "visible"
+    );
+  }
+
+  /// Phase two: fill. Runs only in frames that passed the check, and checks
+  /// again.
   function fill({ expectedOrigin, mode, values }) {
-    if (!frameAllowed(mode, expectedOrigin, location.origin, location.ancestorOrigins)) return { filled: [] };
-    if (document.visibilityState !== "visible") return { filled: [] };
+    if (!check({ expectedOrigin, mode })) return { filled: [] };
     const elements = Array.from(document.querySelectorAll("input, select")).filter(visible);
     const fields = elements.map(describe);
     const filled = [];
@@ -275,6 +293,7 @@
   if (typeof module !== "undefined" && module.exports) {
     module.exports = api;
   } else {
+    globalThis.__stashCheck = check;
     globalThis.__stashFill = fill;
   }
 })();

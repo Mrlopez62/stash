@@ -212,11 +212,13 @@ Git signing uses a small wrapper (`~/.stash/git-ssh-sign`) that runs `ssh-keygen
 
 The browser extension fills pages; the vault and every rule stay in `stash native-host`, which the browser starts over native messaging.
 
-- **Only a real browser reaches the host.** The host checks the process that started it: a browser app whose code signature is valid and comes from a known browser maker's Team ID (Google, Mozilla, Brave, Microsoft, The Browser Company) on macOS, or a root-owned system browser on Linux. It also requires one of stash's extension IDs. A program that runs `stash native-host` itself is refused before it can ask for anything.
+- **Only a real browser reaches the host.** The host checks the process that started it: on macOS, a browser app with a valid code signature whose Team ID *and* app identifier are on a fixed list (`com.google.Chrome`, `org.mozilla.firefox`, `com.brave.Browser`, `com.microsoft.edgemac`, `company.thebrowser.Browser`, and their beta/dev channels). The Team alone isn't enough: Google also signs Chrome for Testing, which loads any extension from the command line, and a rogue extension can copy stash's public manifest key to get stash's ID. If the parent is a helper, it must be one inside that same browser app, signed by the same maker, so another extension's native helper can't pass itself off as the browser. On Linux, a root-owned system browser. The prompt names the actual app. A program that runs `stash native-host` itself is refused before it can ask for anything.
+- **A changed extension is refused.** Browsers don't verify unpacked extensions, so the host compares `~/.stash/browser-extension` with the copy built into `stash` and refuses everything if a file was changed or added. (An extension loaded from somewhere else can't be checked; store-signed releases will close this.)
 - **Logins fill only on their site.** A login fills only where a saved website matches the page by registrable domain (Public Suffix List), compared in punycode, on https pages (or `localhost`). The check runs in the host on every fill, not only when suggesting, and the page address comes from the browser, not from the page.
-- **Payments always ask.** Every card or bank fill needs Touch ID, on a prompt naming the item and the site, even while unlocked. A fill that arrives while locked unlocks with that same prompt.
+- **Payments always ask.** Every card or bank fill needs Touch ID, on a prompt naming the item and the site, even while unlocked. A fill that arrives while locked unlocks with that same prompt. After a declined prompt, payment fills are refused for 10 seconds.
 - **Fills need a click in the popup.** There's no content script on any page. The extension uses `activeTab`, so it can touch only the tab whose toolbar button you clicked, then injects the fill code into it. Pages can't message the extension, and the background only answers its own popup.
-- **Frames.** Logins fill only in frames of exactly the approved origin. Cards also fill in the card frames of two payment processors (Stripe, Braintree), only on https pages, and only when the browser shows that frame sits in the approved page.
+- **Frames.** Logins fill only in frames of exactly the approved origin. Cards also fill in the card frames of two payment processors (Stripe, Braintree), only on https pages, and only when that frame sits *directly* in the approved page (its parent is the top page, and where the browser reports ancestors, the nearest one is the approved origin), never nested inside another frame like an ad. Each frame is asked first whether it may be filled; values are sent only to the frames that may.
+- **Navigation during Touch ID.** If the tab moved to another site while the prompt was up, nothing is filled.
 - **Hidden fields are never filled.** Fields must be visible (size, `display`, `visibility`, opacity), enabled, and editable, in a visible document.
 - **Nothing kept in the browser.** The extension has no storage. Values go from the host straight into the page.
 - **Audit:** each fill, and each refusal, is logged by item name and site.
@@ -228,7 +230,10 @@ The browser extension fills pages; the vault and every rule stay in `stash nativ
 | Invisible forms harvesting autofill | ✅ | Hidden and zero-size fields are skipped. |
 | A malicious page reading a payment card | Partial | A card fills only after a Touch ID prompt naming the site, so read it. After filling, the page has what it asked for, as with typing it yourself. |
 | A program running `stash native-host` to read the vault | ✅ | Refused unless started by a signed browser. |
-| A compromised browser or extension | ❌ | The browser sees what it fills. |
+| A program starting `stash native-host` from inside the browser (another extension's helper) | ✅ | Only the browser itself, or one of its own signed helpers, may be the parent. |
+| An automation build of a browser (Chrome for Testing) with a rogue extension using stash's ID | ✅ | The app identifier must be on the list, not just the maker's Team ID. |
+| Edited files in the unpacked extension | Partial | Detected for `~/.stash/browser-extension`; not for an extension loaded from elsewhere. |
+| A compromised browser, or a program adding an extension to your browser profile | ❌ | The browser sees what it fills. |
 
 ## Planned features and their open questions
 

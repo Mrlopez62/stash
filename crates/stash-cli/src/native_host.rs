@@ -48,16 +48,42 @@ pub const FIREFOX_EXTENSION_ID: &str = "autofill@stash.dev";
 const IDLE_LOCK: Duration = Duration::from_secs(10 * 60);
 /// Native messaging allows 1 MB from the host; requests here are tiny.
 const MAX_REQUEST: usize = 64 * 1024;
+/// After a declined payment prompt, payment fills are refused for this
+/// long, so a misbehaving extension can't keep asking until one is
+/// approved out of habit.
+const DENIAL_COOLDOWN: Duration = Duration::from_secs(10);
 
-/// Code-signing Team IDs of the browsers that may start the host (macOS).
+/// The browsers that may start the host (macOS): each app's code-signing
+/// Team ID *and* its app identifier. The Team alone isn't enough: a
+/// browser maker also signs builds meant for automation (Google's Chrome
+/// for Testing loads any extension from the command line), and a rogue
+/// extension can copy stash's public manifest key to get stash's ID.
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-const BROWSER_TEAMS: &[(&str, &str)] = &[
-    ("EQHXZ8M8AV", "Google Chrome"),
-    ("43AQ936H96", "Firefox"),
-    ("KL8N8XSYF4", "Brave"),
-    ("UBF8T346G9", "Microsoft Edge"),
-    ("S6N382Y83G", "Arc"),
+const BROWSERS: &[(&str, &str)] = &[
+    ("EQHXZ8M8AV", "com.google.Chrome"),
+    ("EQHXZ8M8AV", "com.google.Chrome.beta"),
+    ("EQHXZ8M8AV", "com.google.Chrome.dev"),
+    ("EQHXZ8M8AV", "com.google.Chrome.canary"),
+    ("43AQ936H96", "org.mozilla.firefox"),
+    ("43AQ936H96", "org.mozilla.firefoxdeveloperedition"),
+    ("43AQ936H96", "org.mozilla.nightly"),
+    ("KL8N8XSYF4", "com.brave.Browser"),
+    ("KL8N8XSYF4", "com.brave.Browser.beta"),
+    ("KL8N8XSYF4", "com.brave.Browser.nightly"),
+    ("UBF8T346G9", "com.microsoft.edgemac"),
+    ("UBF8T346G9", "com.microsoft.edgemac.Beta"),
+    ("UBF8T346G9", "com.microsoft.edgemac.Dev"),
+    ("S6N382Y83G", "company.thebrowser.Browser"),
 ];
+
+/// A browser app that started us, verified by its code signature.
+#[derive(Debug)]
+pub struct BrowserApp {
+    /// What the prompt calls it: the app's own name ("Google Chrome").
+    pub name: String,
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    bundle: PathBuf,
+}
 
 /// Is this launch from one of stash's extensions? Chrome passes the
 /// caller's origin first; Firefox passes the manifest path, then the ID.
@@ -77,56 +103,81 @@ fn app_bundle(exe: &Path) -> Option<PathBuf> {
         .map(Path::to_owned)
 }
 
-/// `TeamIdentifier=…` from `codesign -dv` output.
+/// A `Key=value` line from `codesign -dv` output.
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-fn team_id(codesign_output: &str) -> Option<&str> {
-    codesign_output
+fn codesign_field<'a>(output: &'a str, key: &str) -> Option<&'a str> {
+    output
         .lines()
-        .find_map(|l| l.strip_prefix("TeamIdentifier="))
+        .find_map(|l| l.strip_prefix(key)?.strip_prefix('='))
         .map(str::trim)
-        .filter(|t| *t != "not set")
+        .filter(|t| !t.is_empty() && *t != "not set")
 }
 
-/// The browser that started us, by its verified code signature: its name,
-/// or why it isn't one.
+/// A bundle's verified signature: (Team ID, app identifier).
 #[cfg(target_os = "macos")]
-fn verified_browser(pid: i32) -> Result<String, String> {
+fn signature(bundle: &Path) -> Result<(String, String), String> {
     use std::process::Command;
-    let exe = procinfo::exe_path(pid).ok_or("couldn't tell which program started stash")?;
-    let bundle = app_bundle(&exe).ok_or_else(|| format!("{} isn't a browser", exe.display()))?;
-    // A valid signature (nothing in the bundle's main code was changed)…
+    // A valid signature (nothing in the app's code was changed)…
     let verify = Command::new("/usr/bin/codesign")
         .args(["--verify", "--strict"])
-        .arg(&bundle)
+        .arg(bundle)
         .output()
         .map_err(|e| format!("couldn't run codesign: {e}"))?;
     if !verify.status.success() {
         return Err(format!("{} isn't validly signed", bundle.display()));
     }
-    // …from a browser maker.
+    // …and who signed it, as what.
     let info = Command::new("/usr/bin/codesign")
         .args(["-dv", "--verbose=2"])
-        .arg(&bundle)
+        .arg(bundle)
         .output()
         .map_err(|e| format!("couldn't run codesign: {e}"))?;
     let details = String::from_utf8_lossy(&info.stderr);
-    let team = team_id(&details).unwrap_or("none");
-    BROWSER_TEAMS
-        .iter()
-        .find(|(t, _)| *t == team)
-        .map(|(_, name)| (*name).to_owned())
-        .ok_or_else(|| {
-            format!(
-                "{} (Team ID {team}) isn't a supported browser",
-                bundle.display()
-            )
-        })
+    let team = codesign_field(&details, "TeamIdentifier").unwrap_or("none");
+    let id = codesign_field(&details, "Identifier").unwrap_or("none");
+    Ok((team.to_owned(), id.to_owned()))
+}
+
+/// Process `pid`, if it's an allowed browser app.
+#[cfg(target_os = "macos")]
+fn verified_browser(pid: i32) -> Result<BrowserApp, String> {
+    let exe = procinfo::exe_path(pid).ok_or("couldn't tell which program started stash")?;
+    let bundle = app_bundle(&exe).ok_or_else(|| format!("{} isn't a browser", exe.display()))?;
+    let (team, id) = signature(&bundle)?;
+    if !BROWSERS.iter().any(|(t, i)| *t == team && *i == id) {
+        return Err(format!(
+            "{} ({id}, Team ID {team}) isn't a supported browser",
+            bundle.display()
+        ));
+    }
+    let name = bundle
+        .file_stem()
+        .map(|n| text::clean(&n.to_string_lossy(), 40))
+        .unwrap_or_else(|| "your browser".into());
+    Ok(BrowserApp { name, bundle })
+}
+
+/// Process `pid` is a helper app inside `browser`, signed by the same
+/// maker (Chrome can start hosts from its helper processes).
+#[cfg(target_os = "macos")]
+fn is_helper_of(pid: i32, browser: &BrowserApp) -> bool {
+    let Some(exe) = procinfo::exe_path(pid) else {
+        return false;
+    };
+    let Some(helper) = app_bundle(&exe) else {
+        return false;
+    };
+    if !helper.starts_with(&browser.bundle) {
+        return false;
+    }
+    let browser_team = signature(&browser.bundle).map(|(t, _)| t);
+    matches!((signature(&helper), browser_team), (Ok((t, _)), Ok(bt)) if t == bt)
 }
 
 /// On Linux there are no code signatures to check; a browser installed by
 /// the system (owned by root, not writable by you) is accepted.
 #[cfg(not(target_os = "macos"))]
-fn verified_browser(pid: i32) -> Result<String, String> {
+fn verified_browser(pid: i32) -> Result<BrowserApp, String> {
     use std::os::unix::fs::MetadataExt;
     let exe = procinfo::exe_path(pid).ok_or("couldn't tell which program started stash")?;
     let meta = std::fs::metadata(&exe).map_err(|e| e.to_string())?;
@@ -138,7 +189,10 @@ fn verified_browser(pid: i32) -> Result<String, String> {
         .iter()
         .any(|b| name.contains(b));
     if meta.uid() == 0 && meta.mode() & 0o022 == 0 && known {
-        Ok(name)
+        Ok(BrowserApp {
+            name: text::clean(&name, 40),
+            bundle: exe,
+        })
     } else {
         Err(format!(
             "{} isn't a system-installed browser",
@@ -147,15 +201,32 @@ fn verified_browser(pid: i32) -> Result<String, String> {
     }
 }
 
-/// The browser that started us. Chrome may start hosts from a helper
-/// process, so the grandparent is checked too.
-fn browser() -> Result<String, String> {
+/// On Linux, a helper is a root-owned program in the browser's directory.
+#[cfg(not(target_os = "macos"))]
+fn is_helper_of(pid: i32, browser: &BrowserApp) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    let Some(exe) = procinfo::exe_path(pid) else {
+        return false;
+    };
+    exe.parent() == browser.bundle.parent()
+        && std::fs::metadata(&exe).is_ok_and(|m| m.uid() == 0 && m.mode() & 0o022 == 0)
+}
+
+/// The browser that started us: our parent, or our grandparent when the
+/// parent is one of that browser's own signed helpers. Any other parent
+/// (another extension's native host, a shell, a script) is refused, even if
+/// a browser started *it*.
+fn browser() -> Result<BrowserApp, String> {
     let parent = std::os::unix::process::parent_id() as i32;
     match verified_browser(parent) {
-        Ok(name) => Ok(name),
-        Err(why) => procinfo::info(parent)
-            .and_then(|p| verified_browser(p.ppid).ok())
-            .ok_or(why),
+        Ok(app) => Ok(app),
+        Err(why) => {
+            let grandparent = procinfo::info(parent).map(|p| p.ppid);
+            match grandparent.map(verified_browser) {
+                Some(Ok(app)) if is_helper_of(parent, &app) => Ok(app),
+                _ => Err(why),
+            }
+        }
     }
 }
 
@@ -197,6 +268,9 @@ pub struct Host<G: Gate> {
     browser: String,
     gate: G,
     unlocked: Option<(Vault, Instant)>,
+    last_denial: Option<Instant>,
+    /// Set when the host must refuse everything (a tampered extension).
+    refuse: Option<String>,
 }
 
 impl<G: Gate> Host<G> {
@@ -207,7 +281,31 @@ impl<G: Gate> Host<G> {
             browser,
             gate,
             unlocked: None,
+            last_denial: None,
+            refuse: None,
         }
+    }
+
+    /// Ask for a payment approval (or unlock), honoring the cooldown after
+    /// a decline.
+    fn payment_prompt(&mut self, reason: &str, unlock: bool) -> Result<(), String> {
+        if self
+            .last_denial
+            .is_some_and(|at| at.elapsed() < DENIAL_COOLDOWN)
+        {
+            return Err(
+                "blocked: a payment fill was just declined; try again in a few seconds".into(),
+            );
+        }
+        let result = if unlock {
+            self.unlock(reason)
+        } else {
+            self.gate.approve(reason)
+        };
+        if matches!(&result, Err(why) if why == "cancelled") {
+            self.last_denial = Some(Instant::now());
+        }
+        result
     }
 
     fn vault(&mut self) -> Option<&Vault> {
@@ -231,6 +329,9 @@ impl<G: Gate> Host<G> {
 
     pub fn respond(&mut self, request: &Value) -> Value {
         let id = request.get("id").cloned().unwrap_or(Value::Null);
+        if let Some(why) = &self.refuse {
+            return json!({ "id": id, "ok": false, "error": why });
+        }
         let result = match request.get("type").and_then(Value::as_str) {
             Some("status") => Ok(json!({
                 "locked": self.vault().is_none(),
@@ -391,7 +492,7 @@ impl<G: Gate> Host<G> {
             text::clean(name, 40),
             self.browser
         );
-        self.unlock(&reason)?;
+        self.payment_prompt(&reason, true)?;
         let vault = self.vault().ok_or("stash is locked")?;
         let item = vault.item(name).map_err(|e| e.to_string())?;
         if !item.kind.is_payment() {
@@ -439,7 +540,7 @@ impl<G: Gate> Host<G> {
             text::clean(what, 48),
             self.browser
         );
-        self.gate.approve(&reason)?;
+        self.payment_prompt(&reason, false)?;
         let vault = self.vault().ok_or("stash is locked")?;
         let item = vault.item(name).map_err(|e| e.to_string())?;
         Ok(payment_values(&item))
@@ -517,11 +618,16 @@ pub fn serve(vault: &Path, args: &[String]) -> Result<()> {
     }
     // Debug builds skip the browser check so tests can drive the host.
     let browser = match browser() {
-        Ok(name) => name,
+        Ok(app) => app.name,
         Err(_) if cfg!(debug_assertions) => "a test browser".to_owned(),
         Err(why) => bail!("stash native-host only serves a signed web browser: {why}"),
     };
     let mut host = Host::new(vault.to_owned(), browser, TouchIdGate);
+    let extension = vault
+        .parent()
+        .map(|d| d.join("browser-extension"))
+        .unwrap_or_default();
+    host.refuse = crate::browser_cmd::tampered(&extension);
     let stdin = io::stdin();
     let stdout = io::stdout();
     let (mut input, mut output) = (stdin.lock(), stdout.lock());
@@ -626,9 +732,15 @@ mod tests {
             "chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/".into()
         ]));
         assert!(!caller_is_allowed(&[]));
-        let out = "Executable=/Applications/Google Chrome.app/Contents/MacOS/Google Chrome\nTeamIdentifier=EQHXZ8M8AV\n";
-        assert_eq!(team_id(out), Some("EQHXZ8M8AV"));
-        assert_eq!(team_id("TeamIdentifier=not set\n"), None);
+        let out = "Executable=/Applications/Google Chrome.app/Contents/MacOS/Google Chrome\nIdentifier=com.google.Chrome\nTeamIdentifier=EQHXZ8M8AV\n";
+        assert_eq!(codesign_field(out, "TeamIdentifier"), Some("EQHXZ8M8AV"));
+        assert_eq!(codesign_field(out, "Identifier"), Some("com.google.Chrome"));
+        assert_eq!(
+            codesign_field("TeamIdentifier=not set\n", "TeamIdentifier"),
+            None
+        );
+        // Chrome for Testing is signed by Google, but isn't on the list.
+        assert!(!BROWSERS.iter().any(|(_, id)| id.contains("testing")));
         assert_eq!(
             app_bundle(Path::new(
                 "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
@@ -636,6 +748,32 @@ mod tests {
             Some(PathBuf::from("/Applications/Google Chrome.app"))
         );
         assert_eq!(app_bundle(Path::new("/usr/bin/python3")), None);
+    }
+
+    /// Runs against the real Chrome where it's installed.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn reads_real_browser_signatures() {
+        let chrome = Path::new("/Applications/Google Chrome.app");
+        if !chrome.exists() {
+            return;
+        }
+        let (team, id) = signature(chrome).unwrap();
+        assert_eq!(
+            (team.as_str(), id.as_str()),
+            ("EQHXZ8M8AV", "com.google.Chrome")
+        );
+        assert!(BROWSERS.iter().any(|(t, i)| *t == team && *i == id));
+        // Its helpers are signed by the same team, under their own IDs.
+        let helper = chrome.join("Contents/Frameworks/Google Chrome Framework.framework/Helpers/Google Chrome Helper.app");
+        if helper.exists() {
+            let (helper_team, helper_id) = signature(&helper).unwrap();
+            assert_eq!(helper_team, team);
+            assert!(
+                !BROWSERS.iter().any(|(_, i)| *i == helper_id),
+                "a helper isn't a browser by itself"
+            );
+        }
     }
 
     #[test]
@@ -711,6 +849,35 @@ mod tests {
         // Never on plain http.
         let r = host.respond(&json!({ "id": 1, "type": "fill", "url": "http://shop.example/", "name": "cards/visa" }));
         assert_eq!(r["ok"], false);
+    }
+
+    #[test]
+    fn a_declined_payment_prompt_pauses_payment_fills() {
+        let (_dir, mut host, prompts) = unlocked();
+        let fill = json!({ "id": 1, "type": "fill", "url": "https://shop.example/", "name": "cards/visa", "kind": "card" });
+        prompts.borrow_mut().deny = true;
+        host.respond(&fill);
+        prompts.borrow_mut().deny = false;
+        let r = host.respond(&fill);
+        assert_eq!(r["ok"], false, "{r}");
+        assert_eq!(
+            prompts.borrow().seen.len(),
+            1,
+            "no second prompt during the pause"
+        );
+        host.last_denial = Some(Instant::now() - DENIAL_COOLDOWN);
+        assert_eq!(host.respond(&fill)["cvv"], "123");
+    }
+
+    #[test]
+    fn refuses_everything_once_told_to() {
+        let (_dir, mut host, _) = unlocked();
+        host.refuse = Some("tampered".into());
+        let r = host.respond(&json!({ "id": 9, "type": "suggest", "url": "https://github.com/" }));
+        assert_eq!(
+            (r["ok"].as_bool(), r["error"].as_str(), r["id"].as_i64()),
+            (Some(false), Some("tampered"), Some(9))
+        );
     }
 
     #[test]

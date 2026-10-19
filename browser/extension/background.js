@@ -56,16 +56,28 @@ async function pageOf(tabId) {
 
 async function fill(tabId, name, kind) {
   const url = await pageOf(tabId);
+  const expectedOrigin = new URL(url).origin;
   const values = await ask({ type: "fill", url, name, kind });
   if (!values.ok) return values;
-  const expectedOrigin = new URL(url).origin;
+  // The page may have changed while Touch ID was up: fill only the page
+  // the vault approved.
+  if (new URL(await pageOf(tabId)).origin !== expectedOrigin) {
+    return { ok: false, error: "The page changed before stash could fill it." };
+  }
   const mode = values.kind;
-  // Load the fill code into each frame, then fill. Each frame checks for
-  // itself that it may be filled (see fill.js).
-  const target = { tabId, allFrames: true };
-  await chrome.scripting.executeScript({ target, files: ["fill.js"] });
+  // Load the fill code, ask each frame whether it may be filled, and send
+  // the values only to the frames that may (see fill.js).
+  const everywhere = { tabId, allFrames: true };
+  await chrome.scripting.executeScript({ target: everywhere, files: ["fill.js"] });
+  const checks = await chrome.scripting.executeScript({
+    target: everywhere,
+    func: (args) => globalThis.__stashCheck(args),
+    args: [{ expectedOrigin, mode }],
+  });
+  const frameIds = checks.filter((r) => r.result === true).map((r) => r.frameId);
+  if (!frameIds.length) return { ok: true, filled: [] };
   const results = await chrome.scripting.executeScript({
-    target,
+    target: { tabId, frameIds },
     func: (args) => globalThis.__stashFill(args),
     args: [{ expectedOrigin, mode, values }],
   });

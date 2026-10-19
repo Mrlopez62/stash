@@ -10,7 +10,11 @@ All notable changes to stash. The format follows [Keep a Changelog](https://keep
   - **Cards and bank accounts** fill on any https page, with Touch ID every time, on a prompt naming the card and the site. Cards also fill Stripe and Braintree card frames inside the approved page.
   - **Fields are found** by the HTML `autocomplete` standard, then by names and labels; hidden fields are never filled.
 - **`stash browser install | uninstall | status`:** connects your browsers to the vault and unpacks the extension to `~/.stash/browser-extension`.
-- **`stash native-host`:** the extension's bridge to the vault. It serves only a signed browser and stash's extension IDs, re-checks the site on every fill, and logs every fill in the audit log.
+- **`stash native-host`:** the extension's bridge to the vault.
+  - It serves only an allowed browser (a valid signature from a listed maker *and* a listed app identifier, so Chrome for Testing and other automation builds are refused), started directly or by one of that browser's own signed helpers, and only stash's extension IDs.
+  - It refuses everything if the unpacked extension's files were changed.
+  - It re-checks the site on every fill, pauses payment fills for 10 seconds after a declined prompt, and logs every fill in the audit log.
+- **The extension** asks each frame whether it may be filled before sending any value, fills card frames only when they sit directly in the approved page, and fills nothing if the page changed while Touch ID was up.
 
 ## [0.9.1] - 2026-10-18
 

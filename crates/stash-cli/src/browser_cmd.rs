@@ -25,7 +25,7 @@ macro_rules! extension_files {
 }
 
 /// The extension, as shipped with this version of stash.
-const EXTENSION: &[(&str, &[u8])] = extension_files![
+pub(crate) const EXTENSION: &[(&str, &[u8])] = extension_files![
     "manifest.json",
     "background.js",
     "fill.js",
@@ -118,6 +118,51 @@ fn home() -> Result<PathBuf> {
 
 fn shell_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+/// Why the unpacked extension next to the vault can't be trusted, if it
+/// can't: a file that differs from the copy built into this binary, or one
+/// that shouldn't be there. Chrome doesn't verify unpacked extensions, so
+/// edited code there would run with stash's real ID.
+pub(crate) fn tampered(extension: &Path) -> Option<String> {
+    fn walk(dir: &Path, base: &Path, out: &mut Vec<(String, PathBuf)>) {
+        let Ok(entries) = fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let name = entry.file_name();
+            // Browsers' and Finder's own bookkeeping.
+            if name == "_metadata" || name == ".DS_Store" {
+                continue;
+            }
+            if path.is_dir() {
+                walk(&path, base, out);
+            } else if let Ok(rel) = path.strip_prefix(base) {
+                out.push((rel.to_string_lossy().into_owned(), path.clone()));
+            }
+        }
+    }
+    if !extension.is_dir() {
+        return None;
+    }
+    let mut files = Vec::new();
+    walk(extension, extension, &mut files);
+    for (rel, path) in files {
+        let expected = EXTENSION.iter().find(|(f, _)| *f == rel).map(|(_, b)| *b);
+        let changed = match expected {
+            None => true,
+            Some(bytes) => fs::read(&path).map_or(true, |actual| actual != bytes),
+        };
+        if changed {
+            return Some(format!(
+                "the stash extension's files were changed ({rel}). If you didn't do that, something on \
+                 this Mac may be tampering with it. Run `stash browser install` to restore them, then \
+                 reload the extension"
+            ));
+        }
+    }
+    None
 }
 
 pub fn install(vault: &Path) -> Result<()> {
@@ -320,6 +365,26 @@ mod tests {
             ])
         );
         assert!(manifest.get("content_scripts").is_none());
+    }
+
+    #[test]
+    fn notices_changed_or_added_extension_files() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let ext = dir.path().join("browser-extension");
+        assert_eq!(tampered(&ext), None, "not unpacked: nothing to check");
+        for (file, bytes) in EXTENSION {
+            let path = ext.join(file);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, bytes).unwrap();
+        }
+        fs::create_dir_all(ext.join("_metadata")).unwrap();
+        fs::write(ext.join("_metadata/x"), "browser data").unwrap();
+        assert_eq!(tampered(&ext), None);
+        fs::write(ext.join("background.js"), "steal()").unwrap();
+        assert!(tampered(&ext).unwrap().contains("background.js"));
+        fs::write(ext.join("background.js"), EXTENSION[1].1).unwrap();
+        fs::write(ext.join("extra.js"), "steal()").unwrap();
+        assert!(tampered(&ext).unwrap().contains("extra.js"));
     }
 
     #[test]

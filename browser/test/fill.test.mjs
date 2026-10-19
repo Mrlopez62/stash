@@ -91,14 +91,26 @@ test("fills bank account fields", () => {
   ]);
 });
 
-test("frames: logins only on the approved origin, cards also in a processor frame inside it", () => {
+test("frames: logins only on the approved origin, cards also in a processor frame directly in it", () => {
   const page = "https://shop.example";
-  assert.equal(frameAllowed("login", page, page, []), true);
-  assert.equal(frameAllowed("login", page, "https://ads.example", []), false);
-  assert.equal(frameAllowed("login", page, "https://js.stripe.com", [page]), false);
-  assert.equal(frameAllowed("card", page, "https://js.stripe.com", [page]), true);
-  assert.equal(frameAllowed("card", page, "https://js.stripe.com", ["https://evil.example"]), false);
-  assert.equal(frameAllowed("card", page, "https://evil.example", [page]), false);
+  const stripe = "https://js.stripe.com";
+  assert.equal(frameAllowed("login", page, page, [], false), true);
+  assert.equal(frameAllowed("login", page, "https://ads.example", [page], true), false);
+  assert.equal(frameAllowed("login", page, stripe, [page], true), false, "no logins in card frames");
+  assert.equal(frameAllowed("card", page, stripe, [page], true), true);
+  assert.equal(frameAllowed("card", page, stripe, ["https://evil.example"], true), false);
+  assert.equal(frameAllowed("card", page, "https://evil.example", [page], true), false);
+});
+
+test("a card frame nested inside another frame (like an ad) never gets the card", () => {
+  const page = "https://shop.example";
+  const stripe = "https://js.stripe.com";
+  // Chrome: the ad frame is the nearest ancestor, even though the top is right.
+  assert.equal(frameAllowed("card", page, stripe, ["https://ads.example", page], false), false);
+  assert.equal(frameAllowed("card", page, stripe, ["https://ads.example", page], true), false);
+  // Firefox reports no ancestors: only the direct-child test decides.
+  assert.equal(frameAllowed("card", page, stripe, undefined, false), false);
+  assert.equal(frameAllowed("card", page, stripe, undefined, true), true);
 });
 
 test("the billing ZIP never goes into a shipping ZIP", () => {
