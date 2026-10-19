@@ -217,7 +217,12 @@ The browser extension fills pages; the vault and every rule stay in `stash nativ
 - **Logins fill only on their site.** A login fills only where a saved website matches the page by registrable domain (Public Suffix List), compared in punycode, on https pages (or `localhost`). The check runs in the host on every fill, not only when suggesting, and the page address comes from the browser, not from the page.
 - **One unlock covers logins everywhere, and says so.** The unlock prompt reads "unlock stash for autofill in Google Chrome: logins on any site for the next 10 minutes, starting with github.com", because that's what it allows.
 - **Payments always ask.** Every card or bank fill needs Touch ID, on a prompt naming the item and the site, even while unlocked. A fill that arrives while locked unlocks with that same prompt. After a declined prompt, payment fills are refused for 10 seconds.
-- **Fills need a click in the popup.** There's no content script on any page. The extension uses `activeTab`, so it can touch only the tab whose toolbar button you clicked, then injects the fill code into it. Pages can't message the extension, and the background only answers its own popup.
+- **Fills need a click in stash's own interface.** By default there's no content script on any page: the extension uses `activeTab`, so it can touch only the tab whose toolbar button you clicked. Pages can't message the extension.
+- **Sign-in field icons and saving (opt-in).** Turning on *Show stash in sign-in fields* grants access to https sites (and `localhost`) and registers a content script; turning it off removes both.
+  - The content script draws only a small button, in a closed shadow root. The button opens the stash menu only for a trusted click (`isTrusted`), and the menu is an extension page in a frame, so the page can't read it, script it, or forge a choice in it. Fills from the menu follow every rule above.
+  - The content script may send the background exactly one kind of message: "a form was submitted with this username and password", from the page itself or a same-origin frame. The background asks the host whether it's already saved (`check_saved` returns only new/same/changed/locked) and, if not, shows stash's own save prompt, also an extension page in a frame. Only a click there saves.
+  - **A save only ever affects the page's own site.** The host creates a login named after the page's registrable domain with the page's origin as its website, or updates the login already saved for that site and username. A page can't overwrite another site's login. Updates keep the replaced password in the item.
+  - Pending sign-ins are held in the background's memory only, for at most 3 minutes.
 - **Frames.** Logins fill only in frames of exactly the approved origin. Cards also fill in the card frames of two payment processors (Stripe, Braintree), only on https pages, and only when that frame sits *directly* in the approved page (its parent is the top page, and where the browser reports ancestors, the nearest one is the approved origin), never nested inside another frame like an ad. Each frame is asked first whether it may be filled; values are sent only to the frames that may.
 - **Navigation during Touch ID.** If the tab moved to another site while the prompt was up, nothing is filled.
 - **Hidden fields are never filled.** Fields must be visible (size, `display`, `visibility`, opacity), enabled, and editable, in a visible document.
@@ -227,7 +232,9 @@ The browser extension fills pages; the vault and every rule stay in `stash nativ
 | Threat | Protected? | How |
 |---|---|---|
 | A phishing site (`github.com.evil.io`, `githuЬ.com`) | ✅ | Registrable-domain matching in punycode; the login isn't even suggested. |
-| A malicious page triggering a fill | ✅ | No content scripts; fills start only from a click in the extension's own popup. |
+| A malicious page triggering a fill | ✅ | Fills start only from a click in stash's popup or in-page menu (an extension frame the page can't script). |
+| A malicious page faking a sign-in to plant or change a saved login | Partial | It can make stash *offer* to save, but only for its own site, and only your click in stash's prompt saves. Another site's logins can't be touched; a changed password keeps the old one. |
+| A page detecting that stash is installed | ❌ (opt-in mode) | With field icons on, the page can see stash's element in the DOM. |
 | Invisible forms harvesting autofill | ✅ | Hidden and zero-size fields are skipped. |
 | A malicious page reading a payment card | Partial | A card fills only after a Touch ID prompt naming the site, so read it. After filling, the page has what it asked for, as with typing it yourself. |
 | A program running `stash native-host` to read the vault | ✅ | Refused unless started by a signed browser. |

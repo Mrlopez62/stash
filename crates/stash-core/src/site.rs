@@ -121,6 +121,44 @@ pub fn check_page(page_url: &str) -> Result<(), Refusal> {
     page(page_url).map(|_| ())
 }
 
+/// A stash item name for a login saved on this page: the site's
+/// registrable domain (`github.com` for `accounts.github.com`), or the host
+/// for local and IP pages (`localhost-3000`).
+pub fn item_name(page_url: &str) -> Option<String> {
+    let (url, site) = page(page_url).ok()?;
+    let raw = match site {
+        Site::Domain(d) => d,
+        Site::Exact(host, port) => match (port, url.port()) {
+            (Some(p), Some(_)) => format!("{host}-{p}"),
+            _ => host,
+        },
+    };
+    let name: String = raw
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    let mut collapsed = String::with_capacity(name.len());
+    for c in name.chars() {
+        if !(c == '-' && collapsed.ends_with('-')) {
+            collapsed.push(c);
+        }
+    }
+    let name = collapsed.trim_matches(|c| c == '-' || c == '.').to_owned();
+    crate::validate_name(&name).ok().map(|_| name)
+}
+
+/// The page's origin, saved as a new login's website: `https://github.com`.
+pub fn origin(page_url: &str) -> Option<String> {
+    let url = Url::parse(page_url).ok()?;
+    Some(url.origin().ascii_serialization())
+}
+
 /// The host to show the user: `github.com`, `localhost:3000`.
 pub fn display_host(page_url: &str) -> Option<String> {
     let url = Url::parse(page_url).ok()?;
@@ -219,6 +257,29 @@ mod tests {
         assert!(!fills("https://github.com/", "ftp://github.com"));
         assert!(!fills("https://github.com/", "javascript:alert(1)"));
         assert!(!fills("https://com/", "com"));
+    }
+
+    #[test]
+    fn names_saved_logins_after_their_site() {
+        assert_eq!(
+            item_name("https://accounts.github.com/login").as_deref(),
+            Some("github.com")
+        );
+        assert_eq!(
+            item_name("https://www.example.co.uk/").as_deref(),
+            Some("example.co.uk")
+        );
+        assert_eq!(
+            item_name("http://localhost:3000/").as_deref(),
+            Some("localhost-3000")
+        );
+        assert_eq!(item_name("https://10.0.0.1/").as_deref(), Some("10.0.0.1"));
+        assert_eq!(item_name("http://[::1]:8080/").as_deref(), Some("1-8080"));
+        assert_eq!(item_name("http://github.com/"), None, "not https");
+        assert_eq!(
+            origin("https://github.com/login?x=1").as_deref(),
+            Some("https://github.com")
+        );
     }
 
     #[test]

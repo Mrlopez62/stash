@@ -21,8 +21,12 @@
 //!   `IDLE_LOCK` without use or when the browser disconnects.
 //! - **Every fill is logged** in the audit log, by item name and site.
 //!
+//! - **Saving logins** creates or updates only a login for the page's own
+//!   site, keeps the replaced password in the item, and needs the vault
+//!   unlocked (a Touch ID prompt naming the site if it isn't).
+//!
 //! Requests: `{"id": 1, "type": "status" | "suggest" | "unlock" | "fill" |
-//! "lock", "url": "...", "name": "..."}`. Every reply echoes `id` and has
+//! "check_saved" | "save_login" | "lock", "url": "...", "name": "..."}`. Every reply echoes `id` and has
 //! `ok`, plus either the result or `error`.
 
 use std::io::{self, Read, Write};
@@ -348,6 +352,8 @@ impl<G: Gate> Host<G> {
             Some("suggest") => self.suggest(request),
             Some("unlock") => self.unlock_and_suggest(request),
             Some("fill") => self.fill(request),
+            Some("check_saved") => self.check_saved(request),
+            Some("save_login") => self.save_login(request),
             Some("lock") => {
                 self.unlocked = None;
                 Ok(json!({ "locked": true }))
@@ -512,6 +518,111 @@ impl<G: Gate> Host<G> {
         Ok(payment_values(&item))
     }
 
+    /// Is this sign-in already saved? "new", "same", "changed" (the saved
+    /// password differs), or "locked" (can't tell yet). Never returns a
+    /// value.
+    fn check_saved(&mut self, request: &Value) -> Result<Value, String> {
+        let (url, host) = Self::page(request)?;
+        let username = request
+            .get("username")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        let password = Zeroizing::new(
+            request
+                .get("password")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_owned(),
+        );
+        let Some(vault) = self.vault() else {
+            return Ok(json!({ "state": "locked", "host": host }));
+        };
+        let state = match existing_login(vault, &url, username).map_err(|e| e.to_string())? {
+            None => "new",
+            Some((_, item))
+                if current_password(&item).is_some_and(|p| p.as_str() == password.as_str()) =>
+            {
+                "same"
+            }
+            Some(_) => "changed",
+        };
+        Ok(json!({ "state": state, "host": host }))
+    }
+
+    /// Save a sign-in from the page: update the login saved for this site
+    /// and username, or create one named after the site.
+    fn save_login(&mut self, request: &Value) -> Result<Value, String> {
+        let (url, host) = Self::page(request)?;
+        let username = request
+            .get("username")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|u| !u.is_empty())
+            .map(|u| text::clean(u, 256));
+        let password = Zeroizing::new(
+            request
+                .get("password")
+                .and_then(Value::as_str)
+                .filter(|p| !p.is_empty())
+                .ok_or("there's no password to save")?
+                .to_owned(),
+        );
+        if self.vault().is_none() {
+            self.unlock(&format!(
+                "unlock stash to save your login for {host} in {}",
+                self.browser
+            ))?;
+        }
+        let audit_log = self.audit_log.clone();
+        let browser = self.browser.clone();
+        let vault = self.vault_mut().ok_or("stash is locked")?;
+        let user = username.as_deref().unwrap_or("");
+        let (name, action) = match existing_login(vault, &url, user).map_err(|e| e.to_string())? {
+            Some((name, item))
+                if current_password(&item).is_some_and(|p| p.as_str() == password.as_str()) =>
+            {
+                (name, "unchanged")
+            }
+            Some((name, mut item)) => {
+                // Keep the old password, so a mistaken update loses nothing.
+                if let Some(old) = current_password(&item) {
+                    item.set(PREVIOUS_PASSWORD, FieldKind::Concealed, old.as_str());
+                }
+                item.set(PASSWORD, FieldKind::Concealed, password.as_str());
+                vault.put(&name, &item, true).map_err(|e| e.to_string())?;
+                (name, "updated")
+            }
+            None => {
+                let base = site::item_name(&url).ok_or("this page can't be saved")?;
+                let name =
+                    free_name(vault, &base, username.as_deref()).map_err(|e| e.to_string())?;
+                let website = site::origin(&url).ok_or("this page can't be saved")?;
+                let item = Item::login(username.as_deref(), &password, Some(&website));
+                vault.put(&name, &item, false).map_err(|e| e.to_string())?;
+                (name, "created")
+            }
+        };
+        let event = audit::Event {
+            time: audit::now_rfc3339(),
+            client: browser,
+            tool: "autofill-save".into(),
+            secrets: vec![name.clone()],
+            command: None,
+            outcome: "approved".into(),
+            exit_code: None,
+            detail: Some(format!("{action} from {host}")),
+        };
+        if let Err(e) = audit::record(&audit_log, &event) {
+            eprintln!("stash native-host: could not write the audit log: {e:#}");
+        }
+        Ok(json!({ "name": name, "action": action }))
+    }
+
+    fn vault_mut(&mut self) -> Option<&mut Vault> {
+        self.vault()?;
+        self.unlocked.as_mut().map(|(v, _)| v)
+    }
+
     fn fill_login(&mut self, url: &str, name: &str) -> Result<Value, String> {
         let vault = self.vault().ok_or("stash is locked")?;
         let item = vault.item(name).map_err(|e| e.to_string())?;
@@ -587,6 +698,67 @@ fn payment_values(item: &Item) -> Value {
         out.insert("swift".into(), get(SWIFT).into());
     }
     Value::Object(out)
+}
+
+/// Where a replaced password is kept.
+const PREVIOUS_PASSWORD: &str = "previous password";
+
+fn current_password(item: &Item) -> Option<Zeroizing<String>> {
+    item.labeled(PASSWORD)
+        .map(|f| Zeroizing::new(f.value.clone()))
+}
+
+/// The login saved for this page's site with this username (an empty
+/// username matches a login without one).
+fn existing_login(
+    vault: &Vault,
+    url: &str,
+    username: &str,
+) -> stash_core::Result<Option<(String, Item)>> {
+    for summary in vault.summaries()? {
+        if summary.kind != Kind::Login {
+            continue;
+        }
+        let item = vault.item(&summary.name)?;
+        if matches_page(&item, url) && item.username().unwrap_or("") == username {
+            return Ok(Some((summary.name, item)));
+        }
+    }
+    Ok(None)
+}
+
+/// A name that's free: the site's (`github.com`), then the site and the
+/// username (`github.com/octocat`), then numbered.
+fn free_name(vault: &Vault, base: &str, username: Option<&str>) -> stash_core::Result<String> {
+    let mut candidates = vec![base.to_owned()];
+    if let Some(user) = username {
+        let slug: String = user
+            .chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') {
+                    c
+                } else {
+                    '-'
+                }
+            })
+            .collect();
+        let slug = slug.trim_matches(|c| c == '-' || c == '.');
+        if !slug.is_empty() {
+            candidates.push(format!("{base}/{slug}"));
+        }
+    }
+    for candidate in &candidates {
+        if stash_core::validate_name(candidate).is_ok() && !vault.contains(candidate)? {
+            return Ok(candidate.clone());
+        }
+    }
+    for n in 2.. {
+        let candidate = format!("{base}-{n}");
+        if !vault.contains(&candidate)? {
+            return Ok(candidate);
+        }
+    }
+    unreachable!("some numbered name is free")
 }
 
 fn matches_page(item: &Item, url: &str) -> bool {
@@ -932,6 +1104,95 @@ mod tests {
         let r = host.respond(&json!({ "id": 4, "type": "fill", "url": "https://github.com/", "name": "github", "kind": "card" }));
         assert_eq!(r["ok"], false);
         assert!(r.get("password").is_none() && r.get("number").is_none());
+    }
+
+    #[test]
+    fn saves_new_logins_named_after_the_site() {
+        let (dir, mut host, _) = unlocked();
+        let check = |host: &mut Host<TestGate>, user: &str, pw: &str| {
+            host.respond(&json!({ "id": 1, "type": "check_saved", "url": "https://shop.example/login", "username": user, "password": pw }))["state"].clone()
+        };
+        assert_eq!(check(&mut host, "me@x.com", "s3cret"), "new");
+        let r = host.respond(&json!({ "id": 2, "type": "save_login", "url": "https://www.shop.example/login", "username": "me@x.com", "password": "s3cret" }));
+        assert_eq!(
+            (r["name"].as_str(), r["action"].as_str()),
+            (Some("shop.example"), Some("created")),
+            "{r}"
+        );
+        assert_eq!(check(&mut host, "me@x.com", "s3cret"), "same");
+        assert_eq!(check(&mut host, "me@x.com", "other"), "changed");
+        // A second account on the same site gets its own item.
+        let r = host.respond(&json!({ "id": 3, "type": "save_login", "url": "https://shop.example/", "username": "work@x.com", "password": "w" }));
+        assert_eq!(r["name"], "shop.example/work-x.com");
+        // It fills there now.
+        let r = host.respond(&json!({ "id": 4, "type": "fill", "url": "https://shop.example/", "name": "shop.example", "kind": "login" }));
+        assert_eq!(r["password"], "s3cret");
+        let log = std::fs::read_to_string(dir.path().join("audit.log")).unwrap();
+        assert!(log.contains(r#""tool":"autofill-save""#) && !log.contains("s3cret"));
+    }
+
+    #[test]
+    fn updating_a_password_keeps_the_old_one() {
+        let (_dir, mut host, _) = unlocked();
+        let r = host.respond(&json!({ "id": 1, "type": "save_login", "url": "https://github.com/settings", "username": "octocat", "password": "new-pass!" }));
+        assert_eq!(
+            (r["name"].as_str(), r["action"].as_str()),
+            (Some("github"), Some("updated")),
+            "{r}"
+        );
+        let vault = host.vault().unwrap();
+        let item = vault.item("github").unwrap();
+        assert_eq!(item.labeled(PASSWORD).unwrap().value, "new-pass!");
+        let previous = item.labeled(PREVIOUS_PASSWORD).unwrap();
+        assert_eq!(
+            (previous.value.as_str(), previous.kind),
+            ("hunter2!", FieldKind::Concealed)
+        );
+        let r = host.respond(&json!({ "id": 2, "type": "save_login", "url": "https://github.com/", "username": "octocat", "password": "new-pass!" }));
+        assert_eq!(r["action"], "unchanged");
+    }
+
+    #[test]
+    fn saving_never_touches_another_sites_login() {
+        let (_dir, mut host, _) = unlocked();
+        // A page on evil.example "saving" octocat's GitHub password creates
+        // a login for evil.example; github is left alone.
+        let r = host.respond(&json!({ "id": 1, "type": "save_login", "url": "https://github.com.evil.example/", "username": "octocat", "password": "phished" }));
+        assert_eq!(
+            (r["name"].as_str(), r["action"].as_str()),
+            (Some("evil.example"), Some("created")),
+            "{r}"
+        );
+        assert_eq!(
+            host.vault()
+                .unwrap()
+                .item("github")
+                .unwrap()
+                .labeled(PASSWORD)
+                .unwrap()
+                .value,
+            "hunter2!"
+        );
+        let r = host.respond(&json!({ "id": 2, "type": "save_login", "url": "http://plain.example/", "username": "u", "password": "p" }));
+        assert_eq!(r["ok"], false, "never over plain http");
+    }
+
+    #[test]
+    fn saving_while_locked_unlocks_with_a_prompt_naming_the_site() {
+        let (_dir, mut host, prompts) = host();
+        assert_eq!(
+            host.respond(&json!({ "id": 1, "type": "check_saved", "url": "https://shop.example/", "username": "u", "password": "p" }))["state"],
+            "locked"
+        );
+        let r = host.respond(&json!({ "id": 2, "type": "save_login", "url": "https://shop.example/", "username": "u", "password": "p" }));
+        assert_eq!(r["action"], "created", "{r}");
+        assert_eq!(
+            prompts.borrow().seen,
+            vec![
+                "unlock: unlock stash to save your login for shop.example in Test Browser"
+                    .to_owned()
+            ]
+        );
     }
 
     #[test]

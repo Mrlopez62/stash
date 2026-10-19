@@ -1,5 +1,8 @@
 // stash: the popup. Shows logins saved for this site, plus cards and bank
 // accounts, and asks the background script to fill the one you pick.
+//
+// The same page runs as the menu under a sign-in field's stash icon
+// (menu.html), where the background knows the tab from the frame itself.
 
 "use strict";
 
@@ -7,11 +10,12 @@ const main = document.getElementById("main");
 const hostChip = document.getElementById("host");
 const footer = document.getElementById("footer");
 let tabId = null;
+const embedded = document.body.classList.contains("embedded");
 let rows = [];
 let selected = 0;
 
 // Lets the background know the popup is open (to reopen it after Touch ID).
-chrome.runtime.connect({ name: "popup" });
+if (!embedded) chrome.runtime.connect({ name: "popup" });
 
 const send = (message) => chrome.runtime.sendMessage({ ...message, tabId });
 
@@ -51,9 +55,11 @@ function notInstalled() {
 }
 
 async function load() {
-  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  tabId = tab?.id ?? null;
-  if (tabId == null) return message("No page to fill");
+  if (!embedded) {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    tabId = tab?.id ?? null;
+    if (tabId == null) return message("No page to fill");
+  }
   const reply = await send({ type: "suggest" });
   render(reply);
 }
@@ -167,10 +173,21 @@ async function pick(node, name, kind) {
       : "stash didn't find visible payment fields on this page.");
   }
   message("Filled ✓");
-  setTimeout(() => window.close(), 500);
+  setTimeout(close, 500);
 }
 
+function close() {
+  if (embedded) send({ type: "close-menu" });
+  else window.close();
+}
+
+document.getElementById("settings").addEventListener("click", () => {
+  chrome.runtime.openOptionsPage();
+  close();
+});
+
 document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && embedded) return close();
   if (event.key === "ArrowDown") select(selected + 1);
   else if (event.key === "ArrowUp") select(selected - 1);
   else if (event.key === "Enter") visibleRows()[selected]?.click();

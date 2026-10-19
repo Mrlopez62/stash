@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="color-scheme" content="light dark">
+  <title>stash settings</title>
+  <link rel="stylesheet" href="popup.css">
+  <style>
+    body { width: auto; max-width: 560px; margin: 0 auto; }
+    main { max-height: none; padding: 24px 20px; }
+    h1 { font-size: 18px; margin: 0 0 18px; }
+    .setting { display: flex; gap: 12px; align-items: flex-start; padding: 16px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); }
+    .setting input { margin-top: 3px; width: 18px; height: 18px; accent-color: var(--amber); }
+    .setting h2 { margin: 0 0 4px; font-size: 14px; text-transform: none; letter-spacing: 0; color: var(--text); }
+    .setting p { margin: 0 0 6px; color: var(--muted); }
+    .status { margin-top: 12px; color: var(--muted); font-size: 12px; }
+  </style>
+</head>
+<body>
+  <header>
+    <img class="mark" src="icons/icon-32.png" alt="" width="22" height="22">
+    <span class="wordmark">stash<span class="dot">.</span></span>
+  </header>
+  <main>
+    <h1>Settings</h1>
+    <label class="setting">
+      <input id="inline" type="checkbox">
+      <span>
+        <h2>Show stash in sign-in fields, and offer to save logins</h2>
+        <p>A stash icon appears in username and password fields, and after you sign in or sign up, stash offers to save the login (or update a changed password).</p>
+        <p>Your browser will say stash can "read and change your data on all websites": that's what lets it see sign-in forms. It still fills only on a login's own site, never on its own, and nothing is saved until you click Save.</p>
+        <p>Off: stash works only when you click its toolbar button, and only on that tab.</p>
+      </span>
+    </label>
+    <p class="status" id="status"></p>
+  </main>
+  <script src="options.js"></script>
+</body>
+</html>

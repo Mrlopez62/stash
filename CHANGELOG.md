@@ -2,6 +2,17 @@
 
 All notable changes to stash. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/) (pre-1.0: minor versions may change behavior).
 
+## [0.11.0] - 2026-10-19
+
+### Added
+- **stash in sign-in fields (opt-in):** with *Show stash in sign-in fields* on in the extension's Settings, a stash icon appears in username and password fields. Clicking it opens the stash menu right there: logins for the site, cards, and bank accounts, with the same rules as the toolbar popup.
+- **Saving logins:** after you sign in or sign up, stash offers to save the login; after a password change, to update it. Updates keep the old password in the item as `previous password`. A login is only ever saved for the page's own site, over https.
+- **Native host requests** `check_saved` (never returns a value) and `save_login` (unlocks with a prompt naming the site if needed); saves are logged in the audit log.
+
+### Security
+- The feature is **off by default**: turning it on is what grants the extension access to sites, and turning it off removes it. With it off, nothing runs on any page.
+- The menu and the save prompt are **extension pages in frames**, inside a closed shadow root: the page can't read your logins in them or click them for you. The icon only opens for a real click.
+
 ## [0.10.0] - 2026-10-18
 
 ### Added
@@ -157,6 +168,7 @@ Security and correctness fixes for 0.6.0, found by an independent security revie
 ### Added
 - **The first release:** an encrypted vault (Argon2id + XChaCha20-Poly1305) and the `init`, `add`, `get`, `ls`, and `rm` commands.
 
+[0.11.0]: https://github.com/Mrlopez62/stash/pull/16
 [0.10.0]: https://github.com/Mrlopez62/stash/pull/15
 [0.9.1]: https://github.com/Mrlopez62/stash/pull/14
 [0.9.0]: https://github.com/Mrlopez62/stash/pull/13

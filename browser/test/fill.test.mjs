@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 
 const require = createRequire(import.meta.url);
-const { classify, plan, formatExpiry, pickOption, frameAllowed } = require("../extension/fill.js");
+const { classify, plan, capture, formatExpiry, pickOption, frameAllowed } = require("../extension/fill.js");
 
 const input = (props) => ({ tag: "input", type: "text", autocomplete: "", text: "", placeholder: "", maxLength: 0, form: "f", ...props });
 const LOGIN = { username: "octocat", password: "hunter2!", otp: "123456" };
@@ -117,4 +117,32 @@ test("the billing ZIP never goes into a shipping ZIP", () => {
   assert.equal(classify(input({ text: "Shipping ZIP" }), "card"), null);
   const fields = [input({ text: "zip code" }), input({ autocomplete: "cc-number" }), input({ autocomplete: "billing postal-code" })];
   assert.deepEqual(plan(fields, CARD, "card"), [[1, "4242424242424242"], [2, "78666"]]);
+});
+
+test("offers to save the password used to sign in, with its username", () => {
+  const fields = [input({ text: "search", value: "cats", form: "nav" }), input({ type: "email", value: " me@x.com " }), input({ type: "password", value: "s3cret" })];
+  assert.deepEqual(capture(fields), { username: "me@x.com", password: "s3cret" });
+});
+
+test("a sign-up saves the new password, and only if both copies agree", () => {
+  const signup = (confirm) => [
+    input({ autocomplete: "username", value: "octocat" }),
+    input({ type: "password", autocomplete: "new-password", value: "Correct-Horse-1" }),
+    input({ type: "password", autocomplete: "new-password", value: confirm }),
+  ];
+  assert.deepEqual(capture(signup("Correct-Horse-1")), { username: "octocat", password: "Correct-Horse-1" });
+  assert.equal(capture(signup("Correct-Horse-2")), null, "a mistyped confirmation saves nothing");
+});
+
+test("a password change saves the new password, not the old one", () => {
+  const fields = [
+    input({ type: "password", autocomplete: "current-password", value: "old" }),
+    input({ type: "password", autocomplete: "new-password", value: "new!" }),
+  ];
+  assert.deepEqual(capture(fields), { username: "", password: "new!" });
+});
+
+test("nothing to save without a password", () => {
+  assert.equal(capture([input({ type: "email", value: "me@x.com" })]), null);
+  assert.equal(capture([input({ type: "password", value: "" })]), null);
 });

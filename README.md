@@ -197,6 +197,8 @@ Click the stash icon in the toolbar (or press ⌘⇧L) on a page: you'll see the
 - **2FA codes too:** on a sign-in page's 2FA step, the same pick fills the current code.
 - **No secrets in the browser.** The extension holds no data; it asks the vault for one item at a time, right before filling.
 
+**Optional: stash in sign-in fields, and saving logins.** In the extension's Settings, turn on *Show stash in sign-in fields*. A stash icon then appears in username and password fields, and after you sign in or sign up, stash offers to save the login (or to update a password you changed, keeping the old one in the item). It's off by default because it needs access to the sites you visit; with it off, stash only touches the tab whose toolbar button you click.
+
 ### Logins, notes, and passwords
 
 Items come in three kinds: a single **secret** (an API token), a **login** (username, password, website, optional 2FA), or a **note**.
@@ -310,7 +312,8 @@ Rust handles everything that is security-critical and cross-platform. The Swift 
 | v0.8 ✅ | **Payment cards** (card face, brand and checksum validation) and **bank accounts** (routing and IBAN validation), kept away from AI agents by default |
 | v0.9 ✅ | **SSH keys:** an SSH agent with Touch ID per signature, git commit signing, Ed25519 generate and import |
 | v0.10 ✅ | **Browser autofill** for logins, 2FA codes, cards, and bank accounts in Chrome, Brave, Edge, Arc, and Firefox, with Touch ID for every payment fill. See the [design](docs/design/autofill.md) |
-| v0.11 | Autofill: icons in sign-in fields, saving new logins, Safari (needs a signed release) |
+| v0.11 ✅ | Autofill (opt-in): a stash icon in sign-in fields, and saving new logins and changed passwords |
+| v0.12 | Safari (needs a signed release), saving new cards at checkout |
 | v0.x | A configurable Quick Access shortcut, launch at login, a signed and notarized download |
 | Later | Encrypted sync (iCloud Drive or Git), Linux support |
 
