@@ -29,7 +29,7 @@ jobs:
       - run: cargo clippy --all-targets --locked -- -D warnings
       - run: cargo test --locked
       - name: Test the browser extension
-        run: node --test browser/test/fill.test.mjs
+        run: node --test browser/test/fill.test.mjs browser/test/background.test.mjs
       - name: Build Touch ID helper
         if: runner.os == 'macOS'
         run: swift build -c release --package-path swift/stash-touchid

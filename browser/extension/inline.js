@@ -123,33 +123,64 @@
 
   // ---- Offer to save ----
 
-  function inputsOf(form) {
+  /// The fields of a form (or the page), as they were at submit.
+  function snapshot(form, selector) {
     const scope = form || document;
-    return Array.from(scope.querySelectorAll("input")).filter((el) => fields.visible(el) || el.type === "password");
+    return Array.from(scope.querySelectorAll(selector))
+      .filter((el) => fields.visible(el) || el.type === "password")
+      .map((el) => ({ ...fields.describe(el), value: el.value }));
   }
 
-  let lastSent = "";
-  function captureFrom(form) {
-    const elements = inputsOf(form);
-    const descriptors = elements.map((el) => ({ ...fields.describe(el), value: el.value }));
-    const found = fields.capture(descriptors);
-    if (!found) return;
-    const key = `${found.username}\u0000${found.password}`;
-    if (key === lastSent) return;
-    lastSent = key;
-    chrome.runtime.sendMessage({ type: "captured", username: found.username, password: found.password }).catch(() => {});
+  const sent = new Set();
+  function sendOnce(key, message) {
+    if (sent.has(key)) return;
+    sent.add(key);
+    chrome.runtime.sendMessage(message).catch(() => {});
   }
 
-  document.addEventListener("submit", (e) => captureFrom(e.target), true);
-  // Many sign-in forms submit with a script instead of a real submit.
+  /// Offer to save what this form held. A login is offered on any sign-in
+  /// action (many sign-in forms submit with a script); a card only when the
+  /// form is really submitted, so "Apply coupon" or "Back" on a checkout
+  /// never offers to save the card.
+  function captureFrom(form, submitted) {
+    // Logins from text inputs only (a dropdown is never a username).
+    const login = fields.capture(snapshot(form, "input"));
+    if (login) {
+      sendOnce(`login\u0000${login.username}\u0000${login.password}`, {
+        type: "captured",
+        username: login.username,
+        password: login.password,
+      });
+    }
+    if (submitted) {
+      // Cards may use dropdowns for the expiry.
+      const card = fields.captureCard(snapshot(form, "input, select"));
+      if (card) sendOnce(`card\u0000${card.number}`, { type: "captured-card", card });
+    }
+  }
+
+  /// A click on the button that submits its form (not "Apply coupon").
+  function isSubmitButton(el) {
+    if (!el.form) return false;
+    if (el instanceof HTMLInputElement) return el.type === "submit" || el.type === "image";
+    return el instanceof HTMLButtonElement && (el.getAttribute("type") || "submit").toLowerCase() === "submit";
+  }
+
+  document.addEventListener("submit", (e) => captureFrom(e.target, true), true);
   document.addEventListener("click", (e) => {
-    const button = e.target instanceof Element && e.target.closest("button, input[type=submit], [role=button]");
-    if (!button || !e.isTrusted) return;
+    if (!e.isTrusted || !(e.target instanceof Element)) return;
+    const button = e.target.closest("button, input[type=submit], input[type=image], [role=button]");
+    if (!button) return;
+    if (isSubmitButton(button)) return captureFrom(button.form, true);
+    // Many sign-in forms submit with a script instead of a real submit;
+    // those offer a login only.
     const form = button.closest("form") || (field && field.form) || null;
-    if (form || document.querySelector("input[type=password]")) captureFrom(form);
+    if (form || document.querySelector("input[type=password]")) captureFrom(form, false);
   }, true);
   document.addEventListener("keydown", (e) => {
-    if (e.key === "Enter" && e.isTrusted && e.target instanceof HTMLInputElement) captureFrom(e.target.form);
+    // Enter submits a form the usual way (and fires `submit`, above);
+    // here it only stands in for script-driven sign-ins.
+    if (e.key === "Enter" && e.isTrusted && e.target instanceof HTMLInputElement) captureFrom(e.target.form, false);
   }, true);
 
   chrome.runtime.onMessage.addListener((message) => {

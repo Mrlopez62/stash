@@ -146,6 +146,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   else if (kind === "save") work = handleSave(message, sender);
   // The in-page script may only report a sign-in to offer saving.
   else if (kind === "page" && message.type === "captured") work = captured(message, sender);
+  else if (kind === "page" && message.type === "captured-card") work = capturedCard(message.card, sender);
   else return false;
   work
     .then(sendResponse)
@@ -183,6 +184,8 @@ chrome.runtime.onInstalled.addListener(() => syncInline().catch(() => {}));
 /// dropped after a few minutes or once answered.
 const pendingSaves = new Map();
 const SAVE_TIMEOUT = 3 * 60 * 1000;
+/// A card's number and security code wait in memory for less time.
+const CARD_SAVE_TIMEOUT = 60 * 1000;
 
 function randomToken() {
   const bytes = crypto.getRandomValues(new Uint8Array(16));
@@ -211,6 +214,33 @@ async function captured(message, sender) {
   return { ok: true };
 }
 
+/// A card from a submitted checkout: offer to save it if it's new.
+async function capturedCard(card, sender) {
+  const tabId = sender.tab.id;
+  const url = sender.url;
+  const top = await pageOf(tabId).catch(() => null);
+  if (!top || new URL(top).origin !== new URL(url).origin) return { ok: false };
+  if (!card || typeof card.number !== "string") return { ok: false };
+  const fields = {
+    number: card.number,
+    cardholder: String(card.cardholder || ""),
+    exp_month: String(card.exp_month || ""),
+    exp_year: String(card.exp_year || ""),
+    cvv: String(card.cvv || ""),
+    postal_code: String(card.postal_code || ""),
+  };
+  const check = await ask({ type: "check_card", url, number: fields.number, exp_month: fields.exp_month, exp_year: fields.exp_year });
+  if (!check.ok || check.state === "saved" || check.state === "invalid") return { ok: true };
+  const token = randomToken();
+  pendingSaves.set(tabId, { kind: "card", token, url, host: check.host, summary: check.summary, card: fields, state: "new", at: Date.now() });
+  setTimeout(() => {
+    const pending = pendingSaves.get(tabId);
+    if (pending?.token === token) dismissSave(tabId);
+  }, CARD_SAVE_TIMEOUT);
+  showSave(tabId);
+  return { ok: true };
+}
+
 function showSave(tabId) {
   const pending = pendingSaves.get(tabId);
   if (!pending) return;
@@ -235,9 +265,13 @@ async function handleSave(message, sender) {
   if (!pending || pending.token !== message.token) return { ok: false, error: "nothing to save" };
   switch (message.type) {
     case "save-info":
-      return { ok: true, host: pending.host, username: pending.username, state: pending.state };
+      return pending.kind === "card"
+        ? { ok: true, kind: "card", host: pending.host, summary: pending.summary, state: pending.state }
+        : { ok: true, kind: "login", host: pending.host, username: pending.username, state: pending.state };
     case "save-confirm": {
-      const reply = await ask({ type: "save_login", url: pending.url, username: pending.username, password: pending.password });
+      const reply = pending.kind === "card"
+        ? await ask({ type: "save_card", url: pending.url, ...pending.card })
+        : await ask({ type: "save_login", url: pending.url, username: pending.username, password: pending.password });
       if (reply.ok) pendingSaves.delete(tabId);
       return reply;
     }

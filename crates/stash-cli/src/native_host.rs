@@ -401,6 +401,8 @@ impl<G: Gate> Host<G> {
             Some("fill") => self.fill(request),
             Some("check_saved") => self.check_saved(request),
             Some("save_login") => self.save_login(request),
+            Some("check_card") => self.check_card(request),
+            Some("save_card") => self.save_card(request),
             Some("lock") => {
                 self.unlocked = None;
                 Ok(json!({ "locked": true }))
@@ -656,6 +658,81 @@ impl<G: Gate> Host<G> {
         Ok(json!({ "name": name, "action": action }))
     }
 
+    /// Is the card from a checkout already saved? Compared by what the
+    /// summaries show (brand, last four, expiry), so no sensitive key is
+    /// needed and nothing is decrypted: "new", "saved", "locked", or
+    /// "invalid" (not a real card number).
+    fn check_card(&mut self, request: &Value) -> Result<Value, String> {
+        let (_, host) = Self::page(request)?;
+        let card = CapturedCard::from_request(request);
+        let Some(summary) = card.summary() else {
+            return Ok(json!({ "state": "invalid", "host": host }));
+        };
+        let Some(vault) = self.vault() else {
+            return Ok(json!({ "state": "locked", "host": host, "summary": summary }));
+        };
+        let saved = card_already_saved(vault, &summary).map_err(|e| e.to_string())?;
+        Ok(json!({
+            "state": if saved { "saved" } else { "new" },
+            "host": host,
+            "summary": summary,
+        }))
+    }
+
+    /// Save a card typed into a checkout. Sealing it needs the sensitive
+    /// key, so this always takes a Touch ID prompt naming the card and the
+    /// site (which unlocks stash too, if it's locked).
+    fn save_card(&mut self, request: &Value) -> Result<Value, String> {
+        let (_, host) = Self::page(request)?;
+        let card = CapturedCard::from_request(request);
+        let summary = card.summary().ok_or("that isn't a valid card number")?;
+        let item = Item::card(&stash_core::item::CardDetails {
+            cardholder: card.cardholder.as_deref(),
+            number: &card.number,
+            expiry: card.expiry().as_deref(),
+            cvv: card.cvv.as_deref().map(String::as_str),
+            pin: None,
+            billing_zip: card.zip.as_deref(),
+        })
+        .map_err(|e| e.to_string())?;
+        let reason = format!(
+            "save your {} from {host} to stash in {}",
+            text::clean(&summary, 48),
+            self.browser
+        );
+        let locked = self.vault().is_none();
+        self.payment_prompt(&reason, locked)?;
+        let audit_log = self.audit_log.clone();
+        let browser = self.browser.clone();
+        let vault = self.vault_mut().ok_or("stash is locked")?;
+        if card_already_saved(vault, &summary).map_err(|e| e.to_string())? {
+            return Ok(json!({ "action": "unchanged", "summary": summary }));
+        }
+        let brand: String = stash_core::payment::brand(&card.number)
+            .name()
+            .to_lowercase()
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join("-");
+        let base = format!("cards/{brand}-{}", stash_core::payment::last4(&card.number));
+        let name = free_name(vault, &base, None).map_err(|e| e.to_string())?;
+        vault.put(&name, &item, false).map_err(|e| e.to_string())?;
+        let event = audit::Event {
+            time: audit::now_rfc3339(),
+            client: browser,
+            tool: "autofill-save".into(),
+            secrets: vec![name.clone()],
+            command: None,
+            outcome: "approved".into(),
+            exit_code: None,
+            detail: Some(format!("card from {host}")),
+        };
+        if let Err(e) = audit::record(&audit_log, &event) {
+            eprintln!("stash native-host: could not write the audit log: {e:#}");
+        }
+        Ok(json!({ "name": name, "action": "created", "summary": summary }))
+    }
+
     fn vault_mut(&mut self) -> Option<&mut Vault> {
         self.vault()?;
         self.unlocked.as_mut().map(|(v, _)| v)
@@ -736,6 +813,78 @@ fn payment_values(item: &Item) -> Value {
         out.insert("swift".into(), get(SWIFT).into());
     }
     Value::Object(out)
+}
+
+/// A card as typed into a checkout form.
+struct CapturedCard {
+    number: Zeroizing<String>,
+    cardholder: Option<String>,
+    exp_month: Option<u32>,
+    exp_year: Option<u32>,
+    cvv: Option<Zeroizing<String>>,
+    zip: Option<String>,
+}
+
+impl CapturedCard {
+    fn from_request(request: &Value) -> Self {
+        let text = |key: &str| {
+            request
+                .get(key)
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|v| !v.is_empty())
+        };
+        let num = |key: &str| text(key).and_then(|v| v.parse::<u32>().ok());
+        Self {
+            number: stash_core::payment::digits(text("number").unwrap_or("")),
+            cardholder: text("cardholder").map(|v| text::clean(v, 80)),
+            exp_month: num("exp_month").filter(|m| (1..=12).contains(m)),
+            exp_year: num("exp_year").map(|y| if y < 100 { 2000 + y } else { y }),
+            cvv: text("cvv")
+                .filter(|v| v.len() <= 4 && v.chars().all(|c| c.is_ascii_digit()))
+                .map(|v| Zeroizing::new(v.to_owned())),
+            zip: text("postal_code").map(|v| text::clean(v, 16)),
+        }
+    }
+
+    fn expiry(&self) -> Option<String> {
+        Some(stash_core::payment::format_expiry(
+            self.exp_month?,
+            self.exp_year?,
+        ))
+    }
+
+    /// "Visa •••• 4242 · 08/27", as the vault's own summaries say it, if
+    /// the number is a real card number.
+    fn summary(&self) -> Option<String> {
+        stash_core::payment::validate_card_number(&self.number).ok()?;
+        let mut s = format!(
+            "{} •••• {}",
+            stash_core::payment::brand(&self.number).name(),
+            stash_core::payment::last4(&self.number)
+        );
+        if let Some(expiry) = self.expiry() {
+            s.push_str(&format!(" · {expiry}"));
+        }
+        Some(s)
+    }
+}
+
+/// Whether a saved card has this summary (brand, last four, and expiry if
+/// known). Reads only the summaries.
+fn card_already_saved(vault: &Vault, summary: &str) -> stash_core::Result<bool> {
+    let prefix = summary.split(" · ").next().unwrap_or(summary);
+    let has_expiry = summary.contains(" · ");
+    Ok(vault.summaries()?.iter().any(|s| {
+        s.kind == Kind::Card
+            && s.subtitle.as_deref().is_some_and(|sub| {
+                if has_expiry {
+                    sub == summary || sub == prefix
+                } else {
+                    sub.split(" · ").next() == Some(prefix)
+                }
+            })
+    }))
 }
 
 /// Where a replaced password is kept.
@@ -1230,6 +1379,64 @@ mod tests {
                 "unlock: unlock stash to save your login for shop.example in Test Browser"
                     .to_owned()
             ]
+        );
+    }
+
+    #[test]
+    fn offers_to_save_only_new_real_cards() {
+        let (_dir, mut host, _) = unlocked();
+        let check = |host: &mut Host<TestGate>, number: &str, month: &str| {
+            host.respond(&json!({ "id": 1, "type": "check_card", "url": "https://shop.example/pay", "number": number, "exp_month": month, "exp_year": "2027" }))
+        };
+        // The fixture already has a Visa ending 4242, expiring 08/27.
+        assert_eq!(
+            check(&mut host, "4242 4242 4242 4242", "8")["state"],
+            "saved"
+        );
+        let other = check(&mut host, "5555555555554444", "3");
+        assert_eq!(
+            (other["state"].as_str(), other["summary"].as_str()),
+            (Some("new"), Some("Mastercard •••• 4444 · 03/27"))
+        );
+        assert_eq!(
+            check(&mut host, "4242424242424241", "8")["state"],
+            "invalid",
+            "a typo isn't offered"
+        );
+        assert!(!other.to_string().contains("5555555555554444"));
+    }
+
+    #[test]
+    fn saving_a_card_takes_touch_id_naming_it_and_the_site() {
+        let (dir, mut host, prompts) = unlocked();
+        let save = json!({ "id": 1, "type": "save_card", "url": "https://shop.example/pay", "number": "5555 5555 5555 4444",
+                           "exp_month": "03", "exp_year": "27", "cvv": "321", "cardholder": "J Lopez", "postal_code": "78666" });
+        let r = host.respond(&save);
+        assert_eq!(
+            (r["name"].as_str(), r["action"].as_str()),
+            (Some("cards/mastercard-4444"), Some("created")),
+            "{r}"
+        );
+        assert_eq!(
+            prompts.borrow().seen,
+            vec!["approve: save your Mastercard •••• 4444 · 03/27 from shop.example to stash in Test Browser".to_owned()]
+        );
+        // It's a full card, sealed, and filled like any other.
+        let r = host.respond(&json!({ "id": 2, "type": "fill", "url": "https://other.example/", "name": "cards/mastercard-4444", "kind": "card" }));
+        assert_eq!(
+            (r["cvv"].as_str(), r["exp_month"].as_str()),
+            (Some("321"), Some("03"))
+        );
+        // Saving it again changes nothing; declining saves nothing.
+        assert_eq!(host.respond(&save)["action"], "unchanged");
+        prompts.borrow_mut().deny = true;
+        let r = host.respond(&json!({ "id": 3, "type": "save_card", "url": "https://shop.example/", "number": "378282246310005", "exp_month": "1", "exp_year": "2030" }));
+        assert_eq!(r["ok"], false);
+        let log = std::fs::read_to_string(dir.path().join("audit.log")).unwrap();
+        assert!(
+            log.contains("card from shop.example")
+                && !log.contains("5555555555554444")
+                && !log.contains("321")
         );
     }
 
