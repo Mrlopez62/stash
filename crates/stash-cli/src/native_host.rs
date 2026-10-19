@@ -54,35 +54,49 @@ const MAX_REQUEST: usize = 64 * 1024;
 const DENIAL_COOLDOWN: Duration = Duration::from_secs(10);
 
 /// The browsers that may start the host (macOS): each app's code-signing
-/// Team ID *and* its app identifier. The Team alone isn't enough: a
-/// browser maker also signs builds meant for automation (Google's Chrome
-/// for Testing loads any extension from the command line), and a rogue
-/// extension can copy stash's public manifest key to get stash's ID.
+/// Team ID *and* its app identifier, with the name prompts use. The Team
+/// alone isn't enough: a browser maker also signs builds meant for
+/// automation (Google's Chrome for Testing loads any extension from the
+/// command line), and a rogue extension can copy stash's public manifest
+/// key to get stash's ID.
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-const BROWSERS: &[(&str, &str)] = &[
-    ("EQHXZ8M8AV", "com.google.Chrome"),
-    ("EQHXZ8M8AV", "com.google.Chrome.beta"),
-    ("EQHXZ8M8AV", "com.google.Chrome.dev"),
-    ("EQHXZ8M8AV", "com.google.Chrome.canary"),
-    ("43AQ936H96", "org.mozilla.firefox"),
-    ("43AQ936H96", "org.mozilla.firefoxdeveloperedition"),
-    ("43AQ936H96", "org.mozilla.nightly"),
-    ("KL8N8XSYF4", "com.brave.Browser"),
-    ("KL8N8XSYF4", "com.brave.Browser.beta"),
-    ("KL8N8XSYF4", "com.brave.Browser.nightly"),
-    ("UBF8T346G9", "com.microsoft.edgemac"),
-    ("UBF8T346G9", "com.microsoft.edgemac.Beta"),
-    ("UBF8T346G9", "com.microsoft.edgemac.Dev"),
-    ("S6N382Y83G", "company.thebrowser.Browser"),
+const BROWSERS: &[(&str, &str, &str)] = &[
+    ("EQHXZ8M8AV", "com.google.Chrome", "Google Chrome"),
+    ("EQHXZ8M8AV", "com.google.Chrome.beta", "Google Chrome Beta"),
+    ("EQHXZ8M8AV", "com.google.Chrome.dev", "Google Chrome Dev"),
+    (
+        "EQHXZ8M8AV",
+        "com.google.Chrome.canary",
+        "Google Chrome Canary",
+    ),
+    // Not Firefox Developer Edition or Nightly: they can be set to run
+    // unsigned add-ons, which could claim stash's Firefox ID.
+    ("43AQ936H96", "org.mozilla.firefox", "Firefox"),
+    ("KL8N8XSYF4", "com.brave.Browser", "Brave"),
+    ("KL8N8XSYF4", "com.brave.Browser.beta", "Brave Beta"),
+    ("KL8N8XSYF4", "com.brave.Browser.nightly", "Brave Nightly"),
+    ("UBF8T346G9", "com.microsoft.edgemac", "Microsoft Edge"),
+    (
+        "UBF8T346G9",
+        "com.microsoft.edgemac.Beta",
+        "Microsoft Edge Beta",
+    ),
+    (
+        "UBF8T346G9",
+        "com.microsoft.edgemac.Dev",
+        "Microsoft Edge Dev",
+    ),
+    ("S6N382Y83G", "company.thebrowser.Browser", "Arc"),
 ];
 
-/// A browser app that started us, verified by its code signature.
+/// A browser that started us, verified by its code signature.
 #[derive(Debug)]
 pub struct BrowserApp {
-    /// What the prompt calls it: the app's own name ("Google Chrome").
+    /// What the prompt calls it ("Google Chrome").
     pub name: String,
+    /// macOS: (Team ID, app identifier). Linux: (executable path, "").
     #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-    bundle: PathBuf,
+    id: (String, String),
 }
 
 /// Is this launch from one of stash's extensions? Chrome passes the
@@ -95,14 +109,6 @@ pub fn caller_is_allowed(args: &[String]) -> bool {
         .any(|a| *a == chrome || *a == FIREFOX_EXTENSION_ID)
 }
 
-/// The `.app` bundle an executable belongs to.
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-fn app_bundle(exe: &Path) -> Option<PathBuf> {
-    exe.ancestors()
-        .find(|p| p.extension().is_some_and(|e| e == "app"))
-        .map(Path::to_owned)
-}
-
 /// A `Key=value` line from `codesign -dv` output.
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn codesign_field<'a>(output: &'a str, key: &str) -> Option<&'a str> {
@@ -113,23 +119,27 @@ fn codesign_field<'a>(output: &'a str, key: &str) -> Option<&'a str> {
         .filter(|t| !t.is_empty() && *t != "not set")
 }
 
-/// A bundle's verified signature: (Team ID, app identifier).
+/// The verified code signature of a running process or an app: (Team ID,
+/// app identifier). Checking the *running* code, not a file, covers
+/// browsers that run from a private copy of their app (Chrome does, to
+/// survive updates) and can't be fooled by swapping files on disk.
 #[cfg(target_os = "macos")]
-fn signature(bundle: &Path) -> Result<(String, String), String> {
+fn signature(target: &std::ffi::OsStr) -> Result<(String, String), String> {
     use std::process::Command;
-    // A valid signature (nothing in the app's code was changed)…
+    // From `/`, so a number can only ever mean a process, never a file.
     let verify = Command::new("/usr/bin/codesign")
-        .args(["--verify", "--strict"])
-        .arg(bundle)
+        .current_dir("/")
+        .arg("--verify")
+        .arg(target)
         .output()
         .map_err(|e| format!("couldn't run codesign: {e}"))?;
     if !verify.status.success() {
-        return Err(format!("{} isn't validly signed", bundle.display()));
+        return Err("its code signature isn't valid".to_owned());
     }
-    // …and who signed it, as what.
     let info = Command::new("/usr/bin/codesign")
+        .current_dir("/")
         .args(["-dv", "--verbose=2"])
-        .arg(bundle)
+        .arg(target)
         .output()
         .map_err(|e| format!("couldn't run codesign: {e}"))?;
     let details = String::from_utf8_lossy(&info.stderr);
@@ -138,40 +148,38 @@ fn signature(bundle: &Path) -> Result<(String, String), String> {
     Ok((team.to_owned(), id.to_owned()))
 }
 
-/// Process `pid`, if it's an allowed browser app.
 #[cfg(target_os = "macos")]
-fn verified_browser(pid: i32) -> Result<BrowserApp, String> {
-    let exe = procinfo::exe_path(pid).ok_or("couldn't tell which program started stash")?;
-    let bundle = app_bundle(&exe).ok_or_else(|| format!("{} isn't a browser", exe.display()))?;
-    let (team, id) = signature(&bundle)?;
-    if !BROWSERS.iter().any(|(t, i)| *t == team && *i == id) {
-        return Err(format!(
-            "{} ({id}, Team ID {team}) isn't a supported browser",
-            bundle.display()
-        ));
-    }
-    let name = bundle
-        .file_stem()
-        .map(|n| text::clean(&n.to_string_lossy(), 40))
-        .unwrap_or_else(|| "your browser".into());
-    Ok(BrowserApp { name, bundle })
+fn signature_of(pid: i32) -> Result<(String, String), String> {
+    signature(std::ffi::OsStr::new(&pid.to_string()))
 }
 
-/// Process `pid` is a helper app inside `browser`, signed by the same
-/// maker (Chrome can start hosts from its helper processes).
+/// Process `pid`, if it's an allowed browser.
+#[cfg(target_os = "macos")]
+fn verified_browser(pid: i32) -> Result<BrowserApp, String> {
+    let describe = || {
+        procinfo::exe_path(pid)
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|| format!("process {pid}"))
+    };
+    let (team, id) = signature_of(pid).map_err(|why| format!("{}: {why}", describe()))?;
+    match BROWSERS.iter().find(|(t, i, _)| *t == team && *i == id) {
+        Some((_, _, name)) => Ok(BrowserApp {
+            name: (*name).to_owned(),
+            id: (team, id),
+        }),
+        None => Err(format!(
+            "{} ({id}, Team ID {team}) isn't a supported browser",
+            describe()
+        )),
+    }
+}
+
+/// Process `pid` is one of `browser`'s own helpers: signed by the same
+/// maker, under the browser's identifier (`com.google.Chrome.helper`).
 #[cfg(target_os = "macos")]
 fn is_helper_of(pid: i32, browser: &BrowserApp) -> bool {
-    let Some(exe) = procinfo::exe_path(pid) else {
-        return false;
-    };
-    let Some(helper) = app_bundle(&exe) else {
-        return false;
-    };
-    if !helper.starts_with(&browser.bundle) {
-        return false;
-    }
-    let browser_team = signature(&browser.bundle).map(|(t, _)| t);
-    matches!((signature(&helper), browser_team), (Ok((t, _)), Ok(bt)) if t == bt)
+    let (team, id) = &browser.id;
+    signature_of(pid).is_ok_and(|(t, i)| t == *team && i.starts_with(&format!("{id}.")))
 }
 
 /// On Linux there are no code signatures to check; a browser installed by
@@ -191,7 +199,7 @@ fn verified_browser(pid: i32) -> Result<BrowserApp, String> {
     if meta.uid() == 0 && meta.mode() & 0o022 == 0 && known {
         Ok(BrowserApp {
             name: text::clean(&name, 40),
-            bundle: exe,
+            id: (exe.to_string_lossy().into_owned(), String::new()),
         })
     } else {
         Err(format!(
@@ -208,7 +216,7 @@ fn is_helper_of(pid: i32, browser: &BrowserApp) -> bool {
     let Some(exe) = procinfo::exe_path(pid) else {
         return false;
     };
-    exe.parent() == browser.bundle.parent()
+    exe.parent() == Path::new(&browser.id.0).parent()
         && std::fs::metadata(&exe).is_ok_and(|m| m.uid() == 0 && m.mode() & 0o022 == 0)
 }
 
@@ -401,9 +409,12 @@ impl<G: Gate> Host<G> {
     fn unlock_and_suggest(&mut self, request: &Value) -> Result<Value, String> {
         let (_, host) = Self::page(request)?;
         if self.vault().is_none() {
+            // One unlock covers login fills on every site until stash
+            // locks, so the prompt says so.
             self.unlock(&format!(
-                "unlock stash to fill logins and payments on {host} in {}",
-                self.browser
+                "unlock stash for autofill in {}: logins on any site for the next {} minutes, starting with {host}",
+                self.browser,
+                IDLE_LOCK.as_secs() / 60
             ))?;
         }
         self.suggest(request)
@@ -740,17 +751,25 @@ mod tests {
             None
         );
         // Chrome for Testing is signed by Google, but isn't on the list.
-        assert!(!BROWSERS.iter().any(|(_, id)| id.contains("testing")));
-        assert_eq!(
-            app_bundle(Path::new(
-                "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
-            )),
-            Some(PathBuf::from("/Applications/Google Chrome.app"))
-        );
-        assert_eq!(app_bundle(Path::new("/usr/bin/python3")), None);
+        assert!(!BROWSERS.iter().any(|(_, id, _)| id.contains("testing")));
     }
 
-    /// Runs against the real Chrome where it's installed.
+    fn first_pid(args: &[&str]) -> Option<i32> {
+        let out = std::process::Command::new("/usr/bin/pgrep")
+            .args(args)
+            .output()
+            .ok()?;
+        String::from_utf8(out.stdout)
+            .ok()?
+            .lines()
+            .next()?
+            .trim()
+            .parse()
+            .ok()
+    }
+
+    /// Runs against the real Chrome where it's installed, and a running
+    /// Chrome (which runs from a private copy of its app) when there is one.
     #[cfg(target_os = "macos")]
     #[test]
     fn reads_real_browser_signatures() {
@@ -758,21 +777,24 @@ mod tests {
         if !chrome.exists() {
             return;
         }
-        let (team, id) = signature(chrome).unwrap();
+        let (team, id) = signature(chrome.as_os_str()).unwrap();
         assert_eq!(
             (team.as_str(), id.as_str()),
             ("EQHXZ8M8AV", "com.google.Chrome")
         );
-        assert!(BROWSERS.iter().any(|(t, i)| *t == team && *i == id));
-        // Its helpers are signed by the same team, under their own IDs.
-        let helper = chrome.join("Contents/Frameworks/Google Chrome Framework.framework/Helpers/Google Chrome Helper.app");
-        if helper.exists() {
-            let (helper_team, helper_id) = signature(&helper).unwrap();
-            assert_eq!(helper_team, team);
-            assert!(
-                !BROWSERS.iter().any(|(_, i)| *i == helper_id),
-                "a helper isn't a browser by itself"
-            );
+        if let Some(pid) = first_pid(&["-x", "Google Chrome"]) {
+            let app = verified_browser(pid).unwrap();
+            assert_eq!(app.name, "Google Chrome");
+            if let Some(helper) = first_pid(&["-f", "Google Chrome Helper"]) {
+                assert!(
+                    is_helper_of(helper, &app),
+                    "Chrome's helpers count as Chrome"
+                );
+                assert!(
+                    verified_browser(helper).is_err(),
+                    "but aren't browsers by themselves"
+                );
+            }
         }
     }
 

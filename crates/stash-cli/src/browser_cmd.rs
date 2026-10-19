@@ -6,7 +6,8 @@
 //! 2. registers it with each installed browser (a native messaging host
 //!    manifest that only stash's extension IDs may use),
 //! 3. unpacks the extension (built into this binary) to
-//!    `~/.stash/browser-extension`, ready for "Load unpacked".
+//!    `~/.stash/browser-extension/chrome` and `.../firefox`, each with a
+//!    manifest for that browser, ready for "Load unpacked".
 
 use std::fs;
 use std::io::Write;
@@ -14,7 +15,7 @@ use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use serde_json::json;
+use serde_json::{Value, json};
 
 use crate::native_host::{CHROME_EXTENSION_ID, FIREFOX_EXTENSION_ID, HOST_NAME};
 
@@ -104,6 +105,63 @@ fn browsers() -> Vec<(&'static str, Family, &'static str)> {
     }
 }
 
+impl Family {
+    /// Where its copy of the extension is unpacked, under browser-extension/.
+    fn folder(self) -> &'static str {
+        match self {
+            Family::Chromium => "chrome",
+            Family::Firefox => "firefox",
+        }
+    }
+}
+
+/// The extension's manifest for one browser family. The shared manifest has
+/// both browsers' keys (Chrome's service worker and fixed-ID `key`,
+/// Firefox's background scripts and add-on ID); each browser warns about
+/// the other's, so each copy gets only its own.
+fn manifest_for(family: Family) -> Vec<u8> {
+    let base = EXTENSION
+        .iter()
+        .find(|(f, _)| *f == "manifest.json")
+        .expect("the extension has a manifest")
+        .1;
+    let mut manifest: Value = serde_json::from_slice(base).expect("the manifest is valid JSON");
+    let top = manifest.as_object_mut().expect("the manifest is an object");
+    let drop_background = match family {
+        Family::Chromium => {
+            top.remove("browser_specific_settings");
+            "scripts"
+        }
+        Family::Firefox => {
+            top.remove("key");
+            top.remove("minimum_chrome_version");
+            "service_worker"
+        }
+    };
+    if let Some(background) = top.get_mut("background").and_then(Value::as_object_mut) {
+        background.remove(drop_background);
+    }
+    let mut bytes = serde_json::to_vec_pretty(&manifest).expect("JSON serializes");
+    bytes.push(b'\n');
+    bytes
+}
+
+/// Every file of the unpacked extensions, by path under browser-extension/.
+fn unpacked_files() -> Vec<(String, Vec<u8>)> {
+    let mut files = Vec::new();
+    for family in [Family::Chromium, Family::Firefox] {
+        for (file, bytes) in EXTENSION {
+            let bytes = if *file == "manifest.json" {
+                manifest_for(family)
+            } else {
+                bytes.to_vec()
+            };
+            files.push((format!("{}/{file}", family.folder()), bytes));
+        }
+    }
+    files
+}
+
 fn manifest_dir(profile: &Path, family: Family) -> PathBuf {
     match family {
         Family::Chromium => profile.join("NativeMessagingHosts"),
@@ -148,11 +206,12 @@ pub(crate) fn tampered(extension: &Path) -> Option<String> {
     }
     let mut files = Vec::new();
     walk(extension, extension, &mut files);
+    let shipped = unpacked_files();
     for (rel, path) in files {
-        let expected = EXTENSION.iter().find(|(f, _)| *f == rel).map(|(_, b)| *b);
+        let expected = shipped.iter().find(|(f, _)| *f == rel).map(|(_, b)| b);
         let changed = match expected {
             None => true,
-            Some(bytes) => fs::read(&path).map_or(true, |actual| actual != bytes),
+            Some(bytes) => fs::read(&path).map_or(true, |actual| actual != *bytes),
         };
         if changed {
             return Some(format!(
@@ -216,10 +275,15 @@ pub fn install(vault: &Path) -> Result<()> {
         registered.push((name, family));
     }
 
-    // 3. The extension itself.
+    // 3. The extension itself, one copy per browser family. Start clean,
+    // so files from an older version (or anything else) don't linger.
     let extension = stash_dir.join("browser-extension");
-    for (file, bytes) in EXTENSION {
-        let path = extension.join(file);
+    if extension.exists() {
+        fs::remove_dir_all(&extension)
+            .with_context(|| format!("could not replace {}", extension.display()))?;
+    }
+    for (file, bytes) in unpacked_files() {
+        let path = extension.join(&file);
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
@@ -239,13 +303,14 @@ pub fn install(vault: &Path) -> Result<()> {
             "  1. Open chrome://extensions (brave://, edge://, or arc:// for those browsers)"
         );
         eprintln!("  2. Turn on Developer mode, then click Load unpacked");
-        eprintln!("  3. Choose {}", extension.display());
+        eprintln!("  3. Choose {}", extension.join("chrome").display());
+        eprintln!("  (Already loaded from an older stash? Remove it, then load this folder.)");
     }
     if registered.iter().any(|(_, f)| *f == Family::Firefox) {
         eprintln!(
             "Firefox: open about:debugging → This Firefox → Load Temporary Add-on, and choose"
         );
-        eprintln!("  {}", extension.join("manifest.json").display());
+        eprintln!("  {}", extension.join("firefox/manifest.json").display());
         eprintln!("  (Firefox keeps unsigned add-ons only until it restarts.)");
     }
     eprintln!();
@@ -372,19 +437,46 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         let ext = dir.path().join("browser-extension");
         assert_eq!(tampered(&ext), None, "not unpacked: nothing to check");
-        for (file, bytes) in EXTENSION {
+        for (file, bytes) in unpacked_files() {
             let path = ext.join(file);
             fs::create_dir_all(path.parent().unwrap()).unwrap();
             fs::write(path, bytes).unwrap();
         }
-        fs::create_dir_all(ext.join("_metadata")).unwrap();
-        fs::write(ext.join("_metadata/x"), "browser data").unwrap();
+        fs::create_dir_all(ext.join("chrome/_metadata")).unwrap();
+        fs::write(ext.join("chrome/_metadata/x"), "browser data").unwrap();
         assert_eq!(tampered(&ext), None);
-        fs::write(ext.join("background.js"), "steal()").unwrap();
-        assert!(tampered(&ext).unwrap().contains("background.js"));
-        fs::write(ext.join("background.js"), EXTENSION[1].1).unwrap();
-        fs::write(ext.join("extra.js"), "steal()").unwrap();
-        assert!(tampered(&ext).unwrap().contains("extra.js"));
+        fs::write(ext.join("firefox/background.js"), "steal()").unwrap();
+        assert!(tampered(&ext).unwrap().contains("firefox/background.js"));
+        fs::write(ext.join("firefox/background.js"), EXTENSION[1].1).unwrap();
+        fs::write(ext.join("chrome/extra.js"), "steal()").unwrap();
+        assert!(tampered(&ext).unwrap().contains("chrome/extra.js"));
+        fs::remove_file(ext.join("chrome/extra.js")).unwrap();
+        // A copy of the old single-folder layout isn't stash's either.
+        fs::write(ext.join("manifest.json"), "{}").unwrap();
+        assert!(tampered(&ext).is_some());
+    }
+
+    #[test]
+    fn each_browser_gets_a_manifest_without_the_others_keys() {
+        let chrome: Value = serde_json::from_slice(&manifest_for(Family::Chromium)).unwrap();
+        assert!(chrome.get("browser_specific_settings").is_none());
+        assert!(chrome["background"].get("scripts").is_none());
+        assert_eq!(chrome["background"]["service_worker"], "background.js");
+        assert!(
+            chrome.get("key").is_some(),
+            "Chrome keeps the key that fixes its ID"
+        );
+        let firefox: Value = serde_json::from_slice(&manifest_for(Family::Firefox)).unwrap();
+        assert!(firefox.get("key").is_none() && firefox.get("minimum_chrome_version").is_none());
+        assert!(firefox["background"].get("service_worker").is_none());
+        assert_eq!(firefox["background"]["scripts"], json!(["background.js"]));
+        assert_eq!(
+            firefox["browser_specific_settings"]["gecko"]["id"],
+            FIREFOX_EXTENSION_ID
+        );
+        // Everything else is the same in both.
+        assert_eq!(chrome["permissions"], firefox["permissions"]);
+        assert_eq!(chrome["host_permissions"], firefox["host_permissions"]);
     }
 
     #[test]

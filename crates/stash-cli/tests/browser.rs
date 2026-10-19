@@ -166,9 +166,11 @@ fn unlocks_suggests_and_fills_a_login() {
         1,
         "one unlock covers login fills: {prompts:?}"
     );
+    assert!(prompts[0].starts_with("unwrap: unlock stash for autofill in "));
     assert!(
         prompts[0]
-            .starts_with("unwrap: unlock stash to fill logins and payments on github.com in ")
+            .ends_with(": logins on any site for the next 10 minutes, starting with github.com"),
+        "the prompt says how far one unlock reaches: {prompts:?}"
     );
 }
 
@@ -226,18 +228,11 @@ fn install_registers_the_host_and_unpacks_the_extension() {
         std::fs::metadata(&launcher).unwrap().permissions().mode() & 0o777,
         0o700
     );
-    assert!(
-        f.dir
-            .path()
-            .join("browser-extension/manifest.json")
-            .is_file()
-    );
-    assert!(
-        f.dir
-            .path()
-            .join("browser-extension/icons/icon-128.png")
-            .is_file()
-    );
+    for browser in ["chrome", "firefox"] {
+        let ext = f.dir.path().join("browser-extension").join(browser);
+        assert!(ext.join("manifest.json").is_file(), "{browser}");
+        assert!(ext.join("icons/icon-128.png").is_file(), "{browser}");
+    }
 
     f.cli()
         .args(["browser", "status"])

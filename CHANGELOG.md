@@ -9,7 +9,7 @@ All notable changes to stash. The format follows [Keep a Changelog](https://keep
   - **Logins** fill only on their own site, matched by registrable domain (`github.com.evil.io` never matches `github.com`), on https pages or `localhost`. A 2FA step gets the current code.
   - **Cards and bank accounts** fill on any https page, with Touch ID every time, on a prompt naming the card and the site. Cards also fill Stripe and Braintree card frames inside the approved page.
   - **Fields are found** by the HTML `autocomplete` standard, then by names and labels; hidden fields are never filled.
-- **`stash browser install | uninstall | status`:** connects your browsers to the vault and unpacks the extension to `~/.stash/browser-extension`.
+- **`stash browser install | uninstall | status`:** connects your browsers to the vault and unpacks the extension to `~/.stash/browser-extension/chrome` (Chrome, Brave, Edge, Arc) and `.../firefox`, each with a manifest for that browser so neither shows warnings about the other's settings.
 - **`stash native-host`:** the extension's bridge to the vault.
   - It serves only an allowed browser (a valid signature from a listed maker *and* a listed app identifier, so Chrome for Testing and other automation builds are refused), started directly or by one of that browser's own signed helpers, and only stash's extension IDs.
   - It refuses everything if the unpacked extension's files were changed.
