@@ -10,6 +10,7 @@ mod name;
 pub mod otp;
 pub mod payment;
 pub mod reference;
+pub mod site;
 pub mod ssh;
 mod vault;
 

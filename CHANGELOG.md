@@ -2,6 +2,20 @@
 
 All notable changes to stash. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/) (pre-1.0: minor versions may change behavior).
 
+## [0.10.0] - 2026-10-18
+
+### Added
+- **Browser autofill** for Chrome, Brave, Edge, Arc, and Firefox: the stash extension's toolbar popup (⌘⇧L) lists the logins saved for the page, plus your cards and bank accounts, and fills the one you pick.
+  - **Logins** fill only on their own site, matched by registrable domain (`github.com.evil.io` never matches `github.com`), on https pages or `localhost`. A 2FA step gets the current code.
+  - **Cards and bank accounts** fill on any https page, with Touch ID every time, on a prompt naming the card and the site. Cards also fill Stripe and Braintree card frames inside the approved page.
+  - **Fields are found** by the HTML `autocomplete` standard, then by names and labels; hidden fields are never filled.
+- **`stash browser install | uninstall | status`:** connects your browsers to the vault and unpacks the extension to `~/.stash/browser-extension/chrome` (Chrome, Brave, Edge, Arc) and `.../firefox`, each with a manifest for that browser so neither shows warnings about the other's settings.
+- **`stash native-host`:** the extension's bridge to the vault.
+  - It serves only an allowed browser (a valid signature from a listed maker *and* a listed app identifier, so Chrome for Testing and other automation builds are refused), started directly or by one of that browser's own signed helpers, and only stash's extension IDs.
+  - It refuses everything if the unpacked extension's files were changed.
+  - It re-checks the site on every fill, pauses payment fills for 10 seconds after a declined prompt, and logs every fill in the audit log.
+- **The extension** asks each frame whether it may be filled before sending any value, fills card frames only when they sit directly in the approved page, and fills nothing if the page changed while Touch ID was up.
+
 ## [0.9.1] - 2026-10-18
 
 A security release, from a review of what a program running as you (an AI agent's shell, a malicious package script) could do.
@@ -143,6 +157,7 @@ Security and correctness fixes for 0.6.0, found by an independent security revie
 ### Added
 - **The first release:** an encrypted vault (Argon2id + XChaCha20-Poly1305) and the `init`, `add`, `get`, `ls`, and `rm` commands.
 
+[0.10.0]: https://github.com/Mrlopez62/stash/pull/15
 [0.9.1]: https://github.com/Mrlopez62/stash/pull/14
 [0.9.0]: https://github.com/Mrlopez62/stash/pull/13
 [0.8.0]: https://github.com/Mrlopez62/stash/pull/12

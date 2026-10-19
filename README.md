@@ -181,6 +181,22 @@ Then add the `IdentityAgent` line that `install` prints to the top of `~/.ssh/co
 - **Ed25519 keys,** in OpenSSH's format. Keys made by stash work with `ssh-keygen`, and `ssh-keygen` keys (including passphrase-protected ones) import into stash.
 - **Every signature is logged** in the audit log (`stash audit`), by key name.
 
+### Browser autofill
+
+Fill sign-in forms and checkout pages from the vault, in Chrome, Brave, Edge, Arc, and Firefox.
+
+```sh
+stash browser install     # connects your browsers, then shows how to load the extension
+```
+
+Click the stash icon in the toolbar (or press ⌘⇧L) on a page: you'll see the logins saved for that site, plus your cards and bank accounts. Pick one and stash fills it in.
+
+- **Logins only fill on their own site.** `github.com.evil.io` never gets your GitHub password; it isn't even suggested. Pages must be https (except `localhost`).
+- **Every card or bank fill asks for Touch ID,** on a prompt that names the card and the site.
+- **Nothing fills by itself.** Only your click in the stash popup fills a page, and the extension can only touch the tab you clicked it on. Hidden fields are never filled.
+- **2FA codes too:** on a sign-in page's 2FA step, the same pick fills the current code.
+- **No secrets in the browser.** The extension holds no data; it asks the vault for one item at a time, right before filling.
+
 ### Logins, notes, and passwords
 
 Items come in three kinds: a single **secret** (an API token), a **login** (username, password, website, optional 2FA), or a **note**.
@@ -293,7 +309,8 @@ Rust handles everything that is security-critical and cross-platform. The Swift 
 | v0.7.1 ✅ | 1Password-style redesign, bundled brand fonts, 2FA QR scanning and authenticator QR export |
 | v0.8 ✅ | **Payment cards** (card face, brand and checksum validation) and **bank accounts** (routing and IBAN validation), kept away from AI agents by default |
 | v0.9 ✅ | **SSH keys:** an SSH agent with Touch ID per signature, git commit signing, Ed25519 generate and import |
-| v0.10 | **Browser autofill for logins and payments**: Chrome and Firefox first, then Safari. See the [design](docs/design/autofill.md) |
+| v0.10 ✅ | **Browser autofill** for logins, 2FA codes, cards, and bank accounts in Chrome, Brave, Edge, Arc, and Firefox, with Touch ID for every payment fill. See the [design](docs/design/autofill.md) |
+| v0.11 | Autofill: icons in sign-in fields, saving new logins, Safari (needs a signed release) |
 | v0.x | A configurable Quick Access shortcut, launch at login, a signed and notarized download |
 | Later | Encrypted sync (iCloud Drive or Git), Linux support |
 
@@ -309,7 +326,7 @@ This compares stash's planned v1 with the other tools.
 | MCP / AI-agent support | ✅ built in, with per-use Touch ID approval | Limited | ❌ | ❌ |
 | Data stays local | ✅ | ❌ (cloud) | ❌ unless self-hosted | ✅ |
 | SSH agent + git signing | ✅ with Touch ID per signature | ✅ | ❌ | ❌ |
-| Browser autofill | Later | ✅ | ✅ | Via plugins |
+| Browser autofill | ✅ with Touch ID per payment | ✅ | ✅ | Via plugins |
 
 ## Brand
 

@@ -208,10 +208,39 @@ The agent serves the vault's SSH keys over the standard agent protocol on `~/.st
 
 Git signing uses a small wrapper (`~/.stash/git-ssh-sign`) that runs `ssh-keygen` with the agent's socket, so `SSH_AUTH_SOCK` doesn't have to change for the rest of the system.
 
+## Browser autofill
+
+The browser extension fills pages; the vault and every rule stay in `stash native-host`, which the browser starts over native messaging.
+
+- **Only a real browser reaches the host.** The host checks the process that started it: on macOS, a browser app with a valid code signature whose Team ID *and* app identifier are on a fixed list (`com.google.Chrome`, `org.mozilla.firefox`, `com.brave.Browser`, `com.microsoft.edgemac`, `company.thebrowser.Browser`, and the Chrome, Brave, and Edge beta/dev channels; not Firefox Developer Edition or Nightly, which can be set to run unsigned add-ons). The Team alone isn't enough: Google also signs Chrome for Testing, which loads any extension from the command line, and a rogue extension can copy stash's public manifest key to get stash's ID. If the parent is a helper, it must be one inside that same browser app, signed by the same maker, so another extension's native helper can't pass itself off as the browser. On Linux, a root-owned system browser. The prompt names the actual app. A program that runs `stash native-host` itself is refused before it can ask for anything.
+- **A changed extension is refused.** Browsers don't verify unpacked extensions, so the host compares `~/.stash/browser-extension` with the copy built into `stash` and refuses everything if a file was changed or added. (An extension loaded from somewhere else can't be checked; store-signed releases will close this.)
+- **Logins fill only on their site.** A login fills only where a saved website matches the page by registrable domain (Public Suffix List), compared in punycode, on https pages (or `localhost`). The check runs in the host on every fill, not only when suggesting, and the page address comes from the browser, not from the page.
+- **One unlock covers logins everywhere, and says so.** The unlock prompt reads "unlock stash for autofill in Google Chrome: logins on any site for the next 10 minutes, starting with github.com", because that's what it allows.
+- **Payments always ask.** Every card or bank fill needs Touch ID, on a prompt naming the item and the site, even while unlocked. A fill that arrives while locked unlocks with that same prompt. After a declined prompt, payment fills are refused for 10 seconds.
+- **Fills need a click in the popup.** There's no content script on any page. The extension uses `activeTab`, so it can touch only the tab whose toolbar button you clicked, then injects the fill code into it. Pages can't message the extension, and the background only answers its own popup.
+- **Frames.** Logins fill only in frames of exactly the approved origin. Cards also fill in the card frames of two payment processors (Stripe, Braintree), only on https pages, and only when that frame sits *directly* in the approved page (its parent is the top page, and where the browser reports ancestors, the nearest one is the approved origin), never nested inside another frame like an ad. Each frame is asked first whether it may be filled; values are sent only to the frames that may.
+- **Navigation during Touch ID.** If the tab moved to another site while the prompt was up, nothing is filled.
+- **Hidden fields are never filled.** Fields must be visible (size, `display`, `visibility`, opacity), enabled, and editable, in a visible document.
+- **Nothing kept in the browser.** The extension has no storage. Values go from the host straight into the page.
+- **Audit:** each fill, and each refusal, is logged by item name and site.
+
+| Threat | Protected? | How |
+|---|---|---|
+| A phishing site (`github.com.evil.io`, `githuЬ.com`) | ✅ | Registrable-domain matching in punycode; the login isn't even suggested. |
+| A malicious page triggering a fill | ✅ | No content scripts; fills start only from a click in the extension's own popup. |
+| Invisible forms harvesting autofill | ✅ | Hidden and zero-size fields are skipped. |
+| A malicious page reading a payment card | Partial | A card fills only after a Touch ID prompt naming the site, so read it. After filling, the page has what it asked for, as with typing it yourself. |
+| A program running `stash native-host` to read the vault | ✅ | Refused unless started by a signed browser. |
+| A program starting `stash native-host` from inside the browser (another extension's helper) | ✅ | Only the browser itself, or one of its own signed helpers, may be the parent. |
+| An automation build of a browser (Chrome for Testing) with a rogue extension using stash's ID | ✅ | The app identifier must be on the list, not just the maker's Team ID. |
+| A program launching a separate Firefox with a temporary add-on that claims stash's ID | Partial | Release Firefox loads temporary add-ons through its remote-debugging interface, and a Firefox add-on ID isn't tied to a key, so such an add-on can reach the host. It still needs your Touch ID to unlock, on a prompt naming Firefox; if you're not using Firefox right then, decline. Store-signed releases with a key-bound channel are planned. |
+| Edited files in the unpacked extension | Partial | Detected for `~/.stash/browser-extension`; not for an extension loaded from elsewhere. |
+| A compromised browser, or a program adding an extension to your browser profile | ❌ | The browser sees what it fills. |
+
 ## Planned features and their open questions
 
 - **Repeated approvals:** a prompt for every agent request is safe but can get tiring. A future option may let you approve one exact command for a few minutes.
 - **Programs started directly from the unlocked shell** can still use its session (see sessions above). Tighter options, like checking the requesting executable or binding sessions to a terminal device, are being considered.
-- **Linux:** there's no Touch ID equivalent yet, so `stash mcp` and SSH agent approvals only work on macOS for now.
+- **Linux:** there's no Touch ID equivalent yet, so `stash mcp`, SSH agent, and browser autofill approvals only work on macOS for now.
 - **SSH approvals for a while:** a prompt per signature is the safe default. A future option may approve one key for one program for a few minutes, as 1Password does.
 - **More SSH key types:** RSA and ECDSA keys aren't supported yet; Ed25519 is what GitHub, GitLab, and `ssh-keygen` recommend.
