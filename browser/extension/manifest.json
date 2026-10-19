@@ -1,30 +1,79 @@
 {
   "manifest_version": 3,
   "name": "stash",
-  "version": "0.10.0",
+  "version": "0.12.0",
   "description": "Fill logins, cards, and bank accounts from your stash vault. Free and open source.",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA4RRmvCHjKiK9dgdek4NoFF1QXKoZJeypF3LwI6pqQeGDCuhFV98oqfR6yaTBpBi7kaBRCOo/vHOfzDk/jLOFlJvVcejtBUnXz+ry0OuaSOHAyi5Ge5QRlmlss81X84lqrz7C/P4ZDhpyHxaNg0MfL+dF4AE2ZjOpLVzelQJg/wH004ldyclNf9zy5AJgRe+6sZaH08hC9accpcs5IIz1av2g01El6RkYL7A8Oie6LkbhF24Ymv40nO4IzaDtkVQPvOb3vG1wykhw+bTaHcBnWcIIOmvSaDjXTZT6Oo9s6ZE9BrgOV4IE4Jgf/uq6MBd59BLFHtw3hgxhNdD0Oas7twIDAQAB",
   "minimum_chrome_version": "121",
-  "permissions": ["activeTab", "scripting", "nativeMessaging"],
-  "host_permissions": ["https://js.stripe.com/*", "https://assets.braintreegateway.com/*"],
+  "permissions": [
+    "activeTab",
+    "scripting",
+    "nativeMessaging"
+  ],
+  "host_permissions": [
+    "https://js.stripe.com/*",
+    "https://assets.braintreegateway.com/*"
+  ],
+  "optional_host_permissions": [
+    "https://*/*",
+    "http://localhost/*",
+    "http://127.0.0.1/*"
+  ],
   "background": {
     "service_worker": "background.js",
-    "scripts": ["background.js"]
+    "scripts": [
+      "background.js"
+    ]
   },
   "action": {
     "default_title": "stash",
     "default_popup": "popup.html",
-    "default_icon": { "16": "icons/icon-16.png", "32": "icons/icon-32.png" }
+    "default_icon": {
+      "16": "icons/icon-16.png",
+      "32": "icons/icon-32.png"
+    }
   },
+  "options_ui": {
+    "page": "options.html",
+    "open_in_tab": true
+  },
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "menu.html",
+        "save.html",
+        "icons/icon-32.png"
+      ],
+      "matches": [
+        "https://*/*",
+        "http://localhost/*",
+        "http://127.0.0.1/*"
+      ],
+      "use_dynamic_url": true
+    }
+  ],
   "commands": {
     "_execute_action": {
-      "suggested_key": { "default": "Ctrl+Shift+L", "mac": "Command+Shift+L" },
+      "suggested_key": {
+        "default": "Ctrl+Shift+L",
+        "mac": "Command+Shift+L"
+      },
       "description": "Open stash"
     }
   },
-  "icons": { "16": "icons/icon-16.png", "32": "icons/icon-32.png", "48": "icons/icon-48.png", "128": "icons/icon-128.png" },
-  "content_security_policy": { "extension_pages": "script-src 'self'; object-src 'none'; base-uri 'none'" },
+  "icons": {
+    "16": "icons/icon-16.png",
+    "32": "icons/icon-32.png",
+    "48": "icons/icon-48.png",
+    "128": "icons/icon-128.png"
+  },
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'none'; base-uri 'none'"
+  },
   "browser_specific_settings": {
-    "gecko": { "id": "autofill@stash.dev", "strict_min_version": "128.0" }
+    "gecko": {
+      "id": "autofill@stash.dev",
+      "strict_min_version": "128.0"
+    }
   }
 }

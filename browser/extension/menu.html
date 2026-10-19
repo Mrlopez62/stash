@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="color-scheme" content="light dark">
+  <title>stash</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body class="embedded">
+  <header>
+    <img class="mark" src="icons/icon-32.png" alt="" width="22" height="22">
+    <span class="wordmark">stash<span class="dot">.</span></span>
+    <span id="host" class="host" hidden></span>
+  </header>
+
+  <main id="main" aria-live="polite">
+    <p class="status">Connecting…</p>
+  </main>
+
+  <footer id="footer" hidden>
+    <span id="hint">↑↓ to choose · ↩ to fill</span>
+    <span>
+      <button id="settings" class="link" type="button">Settings</button> ·
+      <button id="lock" class="link" type="button">Lock</button>
+    </span>
+  </footer>
+
+  <script src="popup.js"></script>
+</body>
+</html>

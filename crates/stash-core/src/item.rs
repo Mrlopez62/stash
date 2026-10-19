@@ -16,7 +16,7 @@
 use std::fmt;
 
 use serde::{Deserialize, Serialize};
-use zeroize::Zeroize;
+use zeroize::{Zeroize, Zeroizing};
 
 use crate::{Error, payment, ssh};
 
@@ -35,6 +35,13 @@ impl Kind {
     /// Cards and bank accounts: kept away from AI agents unless allowed.
     pub fn is_payment(self) -> bool {
         matches!(self, Kind::Card | Kind::Bank)
+    }
+
+    /// Items sealed under the vault's separate *sensitive* key (cards, bank
+    /// accounts, SSH keys): their secret values can't be read with the key
+    /// a session holds, only after a fresh Touch ID or master password.
+    pub fn is_sensitive(self) -> bool {
+        matches!(self, Kind::Card | Kind::Bank | Kind::Ssh)
     }
 }
 
@@ -120,6 +127,11 @@ pub struct Item {
     pub created: u64,
     #[serde(default)]
     pub updated: u64,
+    /// Set only on the redacted copy of a sensitive item (see
+    /// [`Item::redacted`]): its summary, since the values it's computed
+    /// from aren't there.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
 }
 
 impl Drop for Item {
@@ -255,16 +267,26 @@ impl Item {
         push(
             ROUTING_NUMBER,
             FieldKind::Text,
-            b.routing.map(payment::digits).as_deref(),
+            b.routing
+                .map(payment::digits)
+                .as_deref()
+                .map(String::as_str),
         );
         push(ACCOUNT_NUMBER, FieldKind::Concealed, b.account_number);
         let iban = b.iban.map(|i| {
-            i.chars()
-                .filter(|c| !c.is_whitespace())
-                .collect::<String>()
-                .to_uppercase()
+            let mut compact = Zeroizing::new(String::with_capacity(i.len()));
+            compact.extend(
+                i.chars()
+                    .filter(|c| !c.is_whitespace())
+                    .map(|c| c.to_ascii_uppercase()),
+            );
+            compact
         });
-        push(IBAN, FieldKind::Concealed, iban.as_deref());
+        push(
+            IBAN,
+            FieldKind::Concealed,
+            iban.as_deref().map(String::as_str),
+        );
         push(
             SWIFT,
             FieldKind::Text,
@@ -303,6 +325,19 @@ impl Item {
     /// routing numbers, MM/YY expiry, compact uppercase IBAN). Done on every
     /// save, so edits from any client end up the same as new items.
     pub fn normalize(&mut self) {
+        // The secret parts of cards, bank accounts, and SSH keys are always
+        // concealed, whatever kind a client sent them as.
+        let secret_labels: &[&str] = match self.kind {
+            Kind::Card => &[CARD_NUMBER, CVV, PIN],
+            Kind::Bank => &[ACCOUNT_NUMBER, IBAN, PIN],
+            Kind::Ssh => &[PRIVATE_KEY],
+            _ => &[],
+        };
+        for field in &mut self.fields {
+            if secret_labels.contains(&field.label.as_str()) {
+                field.kind = FieldKind::Concealed;
+            }
+        }
         if self.kind == Kind::Ssh {
             self.derive_ssh_fields();
             return;
@@ -312,7 +347,7 @@ impl Item {
         }
         for field in &mut self.fields {
             let normalized = match field.label.as_str() {
-                CARD_NUMBER | ROUTING_NUMBER => Some(payment::digits(&field.value)),
+                CARD_NUMBER | ROUTING_NUMBER => Some(payment::digits(&field.value).to_string()),
                 EXPIRY => payment::parse_expiry(&field.value)
                     .ok()
                     .map(|(m, y)| payment::format_expiry(m, y)),
@@ -327,9 +362,14 @@ impl Item {
                 SWIFT => Some(field.value.trim().to_uppercase()),
                 _ => None,
             };
-            if let Some(v) = normalized.filter(|v| *v != field.value) {
-                field.value.zeroize();
-                field.value = v;
+            match normalized {
+                Some(v) if v != field.value => {
+                    field.value.zeroize();
+                    field.value = v;
+                }
+                // Unchanged: wipe the copy before it's freed.
+                Some(mut v) => v.zeroize(),
+                None => {}
             }
         }
     }
@@ -392,6 +432,9 @@ impl Item {
     /// A one-line description with nothing sensitive in it, for lists:
     /// "Visa •••• 4242 · 08/27", "Chase · Checking •••• 6789".
     pub fn subtitle(&self) -> Option<String> {
+        if let Some(summary) = &self.summary {
+            return Some(summary.clone());
+        }
         let value = |label: &str| self.labeled(label).map(|f| f.value.as_str());
         match self.kind {
             Kind::Card => {
@@ -443,6 +486,7 @@ impl Item {
             notes: String::new(),
             created: 0,
             updated: 0,
+            summary: None,
         }
     }
 
@@ -540,6 +584,45 @@ impl Item {
             .iter()
             .find(|f| f.kind == FieldKind::Url)
             .map(|f| f.value.as_str())
+    }
+
+    /// The copy of a sensitive item that the session key can read: every
+    /// field's label and kind, non-secret values (cardholder, expiry, SSH
+    /// public key), and the summary, but no concealed or 2FA value and no
+    /// notes. The full item is sealed separately.
+    pub fn redacted(&self) -> Item {
+        let mut copy = self.clone();
+        copy.summary = self.subtitle();
+        // An allowlist, not the field's kind: a kind can be changed by
+        // whoever edits the item, but a value is only shown here if it's
+        // one of these known non-secret details.
+        let public: &[&str] = match self.kind {
+            Kind::Card => &[CARDHOLDER, EXPIRY, BILLING_ZIP],
+            Kind::Bank => &[
+                BANK_NAME,
+                ACCOUNT_HOLDER,
+                ACCOUNT_TYPE,
+                ROUTING_NUMBER,
+                SWIFT,
+            ],
+            Kind::Ssh => &[PUBLIC_KEY, FINGERPRINT],
+            _ => &[],
+        };
+        for field in &mut copy.fields {
+            if !public.contains(&field.label.as_str()) {
+                field.value.zeroize();
+                field.value.clear();
+                field.kind = FieldKind::Concealed;
+            }
+        }
+        copy.notes.zeroize();
+        copy.notes.clear();
+        copy
+    }
+
+    /// Whether this is a redacted copy (see [`Item::redacted`]).
+    pub fn is_redacted(&self) -> bool {
+        self.summary.is_some()
     }
 
     pub fn has_otp(&self) -> bool {
@@ -763,5 +846,45 @@ mod tests {
         assert!(item.validate().is_ok());
         item.fields[0].value = "not a key".into();
         assert!(item.validate().is_err());
+    }
+
+    #[test]
+    fn redaction_ignores_what_kind_a_client_says_a_field_is() {
+        let pair = crate::ssh::KeyPair::generate("me").unwrap();
+        let mut item = Item::ssh_key(&pair);
+        // A client (or someone who edited the redacted copy) marks the
+        // private key as plain text, and adds a custom field.
+        item.fields[0].kind = FieldKind::Text;
+        item.set("recovery note", FieldKind::Text, "my secret phrase");
+        let redacted = item.redacted();
+        assert_eq!(redacted.labeled(PRIVATE_KEY).unwrap().value, "");
+        assert_eq!(redacted.labeled("recovery note").unwrap().value, "");
+        assert_eq!(
+            redacted.labeled(PUBLIC_KEY).unwrap().value,
+            pair.public_line()
+        );
+        // And on save, the private key is concealed again.
+        item.normalize();
+        assert_eq!(
+            item.labeled(PRIVATE_KEY).unwrap().kind,
+            FieldKind::Concealed
+        );
+
+        let mut card = Item::card(&CardDetails {
+            number: "4242424242424242",
+            cvv: Some("123"),
+            cardholder: Some("J"),
+            ..Default::default()
+        })
+        .unwrap();
+        card.fields
+            .iter_mut()
+            .for_each(|f| f.kind = FieldKind::Text);
+        let redacted = card.redacted();
+        assert_eq!(redacted.labeled(CARD_NUMBER).unwrap().value, "");
+        assert_eq!(redacted.labeled(CVV).unwrap().value, "");
+        assert_eq!(redacted.labeled(CARDHOLDER).unwrap().value, "J");
+        card.normalize();
+        assert_eq!(card.labeled(CVV).unwrap().kind, FieldKind::Concealed);
     }
 }

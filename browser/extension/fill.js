@@ -188,6 +188,32 @@
     return out;
   }
 
+  /// What to offer to save from a submitted form, or null. `fields` are
+  /// descriptors with the `value` each held at submit: a sign-up or
+  /// password change saves the new password, a sign-in the password used.
+  function capture(fields) {
+    const kinds = fields.map((f) => classify(f, "login"));
+    const withValue = (i) => (fields[i].value || "").length > 0;
+    const newPw = kinds.findIndex((k, i) => k === "new-password" && withValue(i));
+    const curPw = kinds.findIndex((k, i) => k === "password" && withValue(i));
+    const pw = newPw >= 0 ? newPw : curPw;
+    if (pw < 0) return null;
+    // A sign-up's "confirm password" must agree, or it was a typo.
+    const confirm = kinds.findIndex((k, i) => k === "new-password" && i !== newPw && withValue(i));
+    if (newPw >= 0 && confirm >= 0 && fields[confirm].value !== fields[newPw].value) return null;
+    let user = kinds.findIndex((k, i) => k === "username" && withValue(i));
+    if (user < 0) {
+      for (let i = Math.min(curPw >= 0 ? curPw : pw, pw) - 1; i >= 0; i--) {
+        const t = (fields[i].type || "").toLowerCase();
+        if (fields[i].tag === "input" && ["text", "email", "tel", ""].includes(t) && withValue(i) && fields[i].form === fields[pw].form) {
+          user = i;
+          break;
+        }
+      }
+    }
+    return { username: user >= 0 ? fields[user].value.trim() : "", password: fields[pw].value };
+  }
+
   // ---- DOM ----
 
   function labelText(el) {
@@ -289,11 +315,13 @@
     return { filled };
   }
 
-  const api = { classify, plan, formatExpiry, pickOption, frameAllowed, PAYMENT_PROCESSORS };
+  const api = { classify, plan, capture, formatExpiry, pickOption, frameAllowed, PAYMENT_PROCESSORS };
   if (typeof module !== "undefined" && module.exports) {
     module.exports = api;
   } else {
     globalThis.__stashCheck = check;
     globalThis.__stashFill = fill;
+    // For inline.js (stash in sign-in fields), in the same isolated world.
+    globalThis.__stashFields = { classify, capture, describe, visible };
   }
 })();

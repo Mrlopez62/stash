@@ -76,7 +76,8 @@ func wrappingKey(_ shared: SharedSecret, ephemeral: Data, recipient: Data) -> Sy
 func wrap() throws {
     try checkAvailable()
     let vaultKey = try hexDecode(readStdin())
-    guard vaultKey.count == 32 else { throw Failure("vault key must be 32 bytes") }
+    // The main key, or the main and sensitive keys together (version 3).
+    guard vaultKey.count == 32 || vaultKey.count == 64 else { throw Failure("vault keys must be 32 or 64 bytes") }
 
     var cfError: Unmanaged<CFError>?
     guard let access = SecAccessControlCreateWithFlags(
@@ -162,6 +163,14 @@ func calledByStash() -> Bool {
     guard let me = executable(of: getpid()), let parent = executable(of: getppid()) else { return false }
     let sibling = me.deletingLastPathComponent().appendingPathComponent("stash").resolvingSymlinksInPath()
     return parent == sibling
+}
+
+// Keys pass through this process: no debugger may attach to it
+// (ptrace(PT_DENY_ATTACH), which Swift doesn't import directly).
+typealias PtraceFunction = @convention(c) (CInt, pid_t, UnsafeMutablePointer<CChar>?, CInt) -> CInt
+if let symbol = dlsym(UnsafeMutableRawPointer(bitPattern: -2), "ptrace") {
+    let ptraceDenyAttach: CInt = 31
+    _ = unsafeBitCast(symbol, to: PtraceFunction.self)(ptraceDenyAttach, 0, nil, 0)
 }
 
 let args = CommandLine.arguments.dropFirst()

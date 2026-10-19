@@ -55,10 +55,11 @@ pub fn inject(opts: Options, unlock: impl FnOnce(&str) -> Result<Vault>) -> Resu
             .output
             .as_ref()
             .map_or("stdout".to_owned(), |p| p.display().to_string());
-        let vault = unlock(&format!(
-            "inject {} into {target}",
-            crate::run::summarize(&names)
-        ))?;
+        let purpose = format!("inject {} into {target}", crate::run::summarize(&names));
+        let mut vault = unlock(&purpose)?;
+        if crate::needs_sensitive(&vault, placeholders.iter().map(|p| p.reference.name))? {
+            crate::ensure_sensitive(&mut vault, &purpose)?;
+        }
         let now = crate::unix_now();
         let mut last = 0;
         for placeholder in &placeholders {

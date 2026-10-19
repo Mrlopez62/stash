@@ -2,6 +2,43 @@
 
 All notable changes to stash. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/) (pre-1.0: minor versions may change behavior).
 
+## [0.12.0] - 2026-10-19
+
+A security release, from an audit of how stash encrypts your data.
+
+### Security
+- **Vault format 3,** upgraded automatically on your next master-password unlock (or with `stash upgrade`), after copying the old file to `vault.db.v2-backup`:
+  - **A separate key for cards, bank accounts, and SSH keys.** Their secret values are sealed under a *sensitive key* that sessions never hold; a redacted copy (cardholder, expiry, "Visa •••• 4242", SSH public keys) keeps lists working. Every use takes a fresh Touch ID or the master password, so the prompts for payment fills, SSH signatures, AI-agent requests, and `stash get cards/…` are now enforced by encryption, not just by policy.
+  - **Tamper detection for the whole vault:** a MAC over every item and a write counter, checked on every open. Removing, adding, swapping, or rolling back items is now detected (before, only changes *within* an item were).
+  - **New keys on upgrade**, and subkeys derived per purpose (item encryption, row ids, the vault MAC, key checks).
+- **`stash passwd`** changes the master password and replaces both keys, re-encrypting every item, so an old copy of the vault with an old password opens nothing current. **`stash rekey`** replaces the keys without changing the password.
+- **Stronger key derivation:** Argon2id now uses 256 MiB, 3 passes, 4 lanes (was 64 MiB, 1 lane); older vaults are re-wrapped on their next password unlock. Settings in the file are bounded before Argon2 runs, so an edited file can't make an unlock exhaust memory.
+- **Touch ID carries both keys**; the helper denies debugger attach.
+- **Card numbers and IBANs** are no longer copied into un-wiped memory while validating, summarizing, or normalizing.
+- **`stash add --card`** asks for the cardholder, expiry, and ZIP when they aren't given as flags, keeping them out of shell history.
+- **Clearer errors:** "wrong master password (or the vault's header was modified)", and a distinct error for a tampered vault.
+- **Fixes from a second audit of format 3** (before release):
+  - A process that unlocked before `stash passwd` or `rekey` could write with the old keys and leave the vault unopenable; every write now checks the keys still match ("unlock again") and `rekey` keeps a safety copy until the new vault verifies.
+  - The vault-wide MAC is checked again under the write lock before every write, so a write can't sign over tampering done since the vault was opened; open-time checks run in one read transaction (no false "tampered" during concurrent writes).
+  - The redacted copy of a card, bank account, or SSH key keeps values only from a fixed list of non-secret fields, whatever kind a client sends, and secret fields are always stored concealed (a crafted edit could otherwise have copied an SSH private key into it); the app server keeps a kept value's stored kind.
+  - Unsplit card or SSH items are refused; upgrades through `stash mcp` and the SSH agent re-enroll Touch ID and end sessions too (or turn Touch ID off if they can't); backups use SQLite's `VACUUM INTO`, and a failed backup opens the old vault read-only instead of failing; `rekey` reads under the write lock; the sensitive key is dropped on every error path; the SSH agent no longer counts a password-from-the-environment unlock as approving a signature.
+- **Fixes from a third audit** (also before release): a redacted copy relabeled as another kind is refused, and the app won't change a card's or SSH key's kind (either could have let an edit save hidden values under the main key); KDF strengthening, upgrades, and key replacement all run under the write lock with full checks (a concurrent rekey or a second upgrading process could otherwise lose data); the rekey safety copy is taken under the lock and removed on every failure; sessions and Touch ID follow new keys even if the post-rekey check fails.
+- **The threat model** describes format 3, and corrects two claims: deleted items can survive in journals, snapshots, and backups (still encrypted), and the audit log records item names in plain text.
+
+### Changed
+- In the Mac app, revealing or editing a card, bank account, or SSH key asks for Touch ID each time. The app keeps only the main key.
+
+## [0.11.0] - 2026-10-19
+
+### Added
+- **stash in sign-in fields (opt-in):** with *Show stash in sign-in fields* on in the extension's Settings, a stash icon appears in username and password fields. Clicking it opens the stash menu right there: logins for the site, cards, and bank accounts, with the same rules as the toolbar popup.
+- **Saving logins:** after you sign in or sign up, stash offers to save the login; after a password change, to update it. Updates keep the old password in the item as `previous password`. A login is only ever saved for the page's own site, over https.
+- **Native host requests** `check_saved` (never returns a value) and `save_login` (unlocks with a prompt naming the site if needed); saves are logged in the audit log.
+
+### Security
+- The feature is **off by default**: turning it on is what grants the extension access to sites, and turning it off removes it. With it off, nothing runs on any page.
+- The menu and the save prompt are **extension pages in frames**, inside a closed shadow root: the page can't read your logins in them or click them for you. The icon only opens for a real click.
+
 ## [0.10.0] - 2026-10-18
 
 ### Added
@@ -157,6 +194,8 @@ Security and correctness fixes for 0.6.0, found by an independent security revie
 ### Added
 - **The first release:** an encrypted vault (Argon2id + XChaCha20-Poly1305) and the `init`, `add`, `get`, `ls`, and `rm` commands.
 
+[0.12.0]: https://github.com/Mrlopez62/stash/pull/16
+[0.11.0]: https://github.com/Mrlopez62/stash/pull/16
 [0.10.0]: https://github.com/Mrlopez62/stash/pull/15
 [0.9.1]: https://github.com/Mrlopez62/stash/pull/14
 [0.9.0]: https://github.com/Mrlopez62/stash/pull/13

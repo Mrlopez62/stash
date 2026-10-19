@@ -187,7 +187,9 @@ fn every_card_fill_asks_touch_id_naming_the_site() {
         prompts[0]
             .starts_with("unwrap: fill your payment details “cards/visa” on shop.example in ")
     );
-    assert!(prompts[1].starts_with("confirm: fill Visa •••• 4242 · 08/27 on shop.example in "));
+    // The second fill decrypts the card with a fresh fingerprint, not just an
+    // approval: the fingerprint is what unlocks the card.
+    assert!(prompts[1].starts_with("unwrap: fill Visa •••• 4242 · 08/27 on shop.example in "));
 
     std::fs::write(f.dir.path().join("deny"), "").unwrap();
     let (r, _) = f.host(
@@ -244,4 +246,37 @@ fn install_registers_the_host_and_unpacks_the_extension() {
         .args(["browser", "status"])
         .assert()
         .stdout(predicates::str::contains("Google Chrome: not connected"));
+}
+
+#[test]
+fn saves_a_new_login_from_a_sign_in_after_one_unlock() {
+    let f = Fixture::new();
+    let url = "https://www.shop.example/login";
+    let (r, _) = f.host(
+        &[CHROME_ORIGIN],
+        &[
+            json!({ "id": 1, "type": "check_saved", "url": url, "username": "me@x.com", "password": "s3cret" }),
+            json!({ "id": 2, "type": "save_login", "url": url, "username": "me@x.com", "password": "s3cret" }),
+            json!({ "id": 3, "type": "check_saved", "url": url, "username": "me@x.com", "password": "s3cret" }),
+        ],
+    );
+    assert_eq!(r[0]["state"], "locked");
+    assert_eq!(
+        (r[1]["name"].as_str(), r[1]["action"].as_str()),
+        (Some("shop.example"), Some("created")),
+        "{}",
+        r[1]
+    );
+    assert_eq!(r[2]["state"], "same");
+    let prompts = f.prompts();
+    assert_eq!(prompts.len(), 1, "{prompts:?}");
+    assert!(
+        prompts[0].starts_with("unwrap: unlock stash to save your login for www.shop.example in ")
+    );
+    // It's a normal login now, with the site as its website.
+    f.cli()
+        .args(["get", "shop.example#website"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("https://www.shop.example"));
 }

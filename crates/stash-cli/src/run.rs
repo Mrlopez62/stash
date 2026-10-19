@@ -93,11 +93,15 @@ pub fn run(opts: Options, unlock: impl FnOnce(&str) -> Result<Vault>) -> Result<
     if !references.is_empty() {
         let described: Vec<String> = references.iter().map(|(_, r)| r.describe()).collect();
         let names: Vec<&str> = described.iter().map(String::as_str).collect();
-        let vault = unlock(&format!(
+        let purpose = format!(
             "run {} with {}",
             program.to_string_lossy(),
             summarize(&names)
-        ))?;
+        );
+        let mut vault = unlock(&purpose)?;
+        if crate::needs_sensitive(&vault, references.iter().map(|(_, r)| r.name.as_str()))? {
+            crate::ensure_sensitive(&mut vault, &purpose)?;
+        }
         let now = crate::unix_now();
         for (key, r) in references {
             let bytes = vault

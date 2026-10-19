@@ -278,7 +278,7 @@ fn the_agent_asks_touch_id_for_every_signature() {
     let prompts = f.prompts();
     assert_eq!(prompts.len(), 2, "{prompts:?}");
     assert!(
-        prompts[1].starts_with("confirm: use SSH key “ssh/github” to log in as git, for "),
+        prompts[1].starts_with("unwrap: use SSH key “ssh/github” to log in as git, for "),
         "{prompts:?}"
     );
 

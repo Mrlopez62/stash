@@ -151,13 +151,14 @@ pub fn add_login(vault: &mut Vault, name: &str, login: &LoginArgs, force: bool) 
 
 #[derive(Args, Debug, Clone)]
 pub struct PaymentArgs {
-    /// Name on the card
+    /// Name on the card (leave out to be asked, which keeps it out of your
+    /// shell history)
     #[arg(long, value_name = "NAME")]
     pub cardholder: Option<String>,
-    /// Card expiry, MM/YY
+    /// Card expiry, MM/YY (leave out to be asked)
     #[arg(long, value_name = "MM/YY")]
     pub expiry: Option<String>,
-    /// Billing ZIP or postal code
+    /// Billing ZIP or postal code (leave out to be asked)
     #[arg(long, value_name = "ZIP")]
     pub zip: Option<String>,
     /// Also store a PIN (asked for without echo)
@@ -206,6 +207,21 @@ impl Secrets {
         })
     }
 
+    /// A detail that isn't secret but shouldn't be in shell history either
+    /// (cardholder, expiry, ZIP): the flag if given, else, on a terminal, a
+    /// visible prompt. Piped input is only ever for the secret values.
+    fn detail(&self, flag: Option<&str>, prompt: &str) -> Result<Option<String>> {
+        if flag.is_some() || self.piped.is_some() {
+            return Ok(flag.map(str::to_owned));
+        }
+        eprint!("{prompt}");
+        io::Write::flush(&mut io::stderr())?;
+        let mut line = String::new();
+        io::BufRead::read_line(&mut io::stdin().lock(), &mut line)?;
+        let line = line.trim().to_owned();
+        Ok((!line.is_empty()).then_some(line))
+    }
+
     /// The next value; empty or missing is `None`.
     fn next(&mut self, prompt: &str) -> Result<Option<Zeroizing<String>>> {
         let value = match &mut self.piped {
@@ -224,20 +240,29 @@ impl Secrets {
 pub fn add_card(vault: &mut Vault, name: &str, p: &PaymentArgs, force: bool) -> Result<()> {
     check_can_add(vault, name, force, true)?;
     let mut secrets = Secrets::new()?;
+    let cardholder = secrets.detail(
+        p.cardholder.as_deref(),
+        "Name on the card (Enter to skip): ",
+    )?;
     let number = secrets.required("Card number: ", "the card number")?;
+    let expiry = secrets.detail(p.expiry.as_deref(), "Expiry, MM/YY (Enter to skip): ")?;
     let brand = stash_core::payment::validate_card_number(&number)?;
     let cvv = secrets.next(&format!(
         "Security code ({} digits, Enter to skip): ",
         brand.cvv_length()
     ))?;
     let pin = if p.pin { secrets.next("PIN: ")? } else { None };
+    let zip = secrets.detail(
+        p.zip.as_deref(),
+        "Billing ZIP or postal code (Enter to skip): ",
+    )?;
     let card = Item::card(&stash_core::item::CardDetails {
-        cardholder: p.cardholder.as_deref(),
+        cardholder: cardholder.as_deref(),
         number: &number,
-        expiry: p.expiry.as_deref(),
+        expiry: expiry.as_deref(),
         cvv: cvv.as_deref().map(String::as_str),
         pin: pin.as_deref().map(String::as_str),
-        billing_zip: p.zip.as_deref(),
+        billing_zip: zip.as_deref(),
     })?;
     vault.put(name, &card, force)?;
     eprintln!(
@@ -482,7 +507,12 @@ fn check_settable(item: &Item, label: &str) -> Result<()> {
 const HIDDEN: &str = "••••••••";
 
 pub fn show(vault: &Vault, name: &str, reveal: bool) -> Result<()> {
-    let item = vault.item(name)?;
+    // Without --reveal, a card's or SSH key's shape needs no Touch ID.
+    let item = if reveal {
+        vault.item(name)?
+    } else {
+        vault.item_redacted(name)?
+    };
     let mut out = io::stdout().lock();
     writeln!(out, "{name}  ({})", item.kind)?;
     let width = item

@@ -33,6 +33,12 @@ pub(crate) const EXTENSION: &[(&str, &[u8])] = extension_files![
     "popup.html",
     "popup.css",
     "popup.js",
+    "menu.html",
+    "inline.js",
+    "save.html",
+    "save.js",
+    "options.html",
+    "options.js",
     "icons/icon-16.png",
     "icons/icon-32.png",
     "icons/icon-48.png",
@@ -135,6 +141,15 @@ fn manifest_for(family: Family) -> Vec<u8> {
         Family::Firefox => {
             top.remove("key");
             top.remove("minimum_chrome_version");
+            // Chrome-only: a per-session URL for the menu and save frames.
+            if let Some(list) = top
+                .get_mut("web_accessible_resources")
+                .and_then(Value::as_array_mut)
+            {
+                for entry in list.iter_mut().filter_map(Value::as_object_mut) {
+                    entry.remove("use_dynamic_url");
+                }
+            }
             "service_worker"
         }
     };
@@ -429,7 +444,13 @@ mod tests {
                 "https://assets.braintreegateway.com/*"
             ])
         );
+        // No content script runs anywhere unless the user turns on stash in
+        // sign-in fields, which grants these, and only these, origins.
         assert!(manifest.get("content_scripts").is_none());
+        assert_eq!(
+            manifest["optional_host_permissions"],
+            json!(["https://*/*", "http://localhost/*", "http://127.0.0.1/*"])
+        );
     }
 
     #[test]

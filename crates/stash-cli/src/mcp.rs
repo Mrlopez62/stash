@@ -83,6 +83,9 @@ pub fn serve(vault_path: PathBuf, opts: Options) -> Result<()> {
 struct Unlocked {
     vault: Vault,
     last_used: Instant,
+    /// The sensitive key from the Touch ID unlock this request just did,
+    /// usable by this request only.
+    fresh_sensitive: Option<stash_core::crypto::SecretKey>,
 }
 
 struct Server {
@@ -152,7 +155,12 @@ impl Server {
             "initialize" => Ok(self.initialize(&params)),
             "ping" => Ok(json!({})),
             "tools/list" => Ok(json!({ "tools": self.tool_definitions() })),
-            "tools/call" => Ok(self.call_tool(&params)),
+            "tools/call" => {
+                let result = self.call_tool(&params);
+                // Whatever happened, no sensitive key outlives the request.
+                self.forget_sensitive();
+                Ok(result)
+            }
             _ => Err((-32601, format!("method not found: {method}"))),
         };
         Some(match result {
@@ -315,9 +323,13 @@ impl Server {
         }
         self.unlocked = None;
 
-        let (vault, approved) = if let Ok(password) = std::env::var(PASSWORD_ENV) {
+        let (vault, approved, fresh_sensitive) = if let Ok(password) = std::env::var(PASSWORD_ENV) {
             let password = Zeroizing::new(password);
-            (Vault::open(&self.vault_path, password.as_bytes())?, false)
+            let mut vault = Vault::open(&self.vault_path, password.as_bytes())?;
+            crate::after_password_unlock(&self.vault_path, &vault);
+            // Kept only for the moment of use (see `sensitive_for`).
+            vault.lock_sensitive();
+            (vault, false, None)
         } else {
             let helper = self.touch_id_helper()?;
             if !touchid::is_enrolled(&self.vault_path) {
@@ -326,13 +338,18 @@ impl Server {
                     "stash mcp needs Touch ID unlock. Ask the user to run `stash touchid enable`.",
                 ));
             }
-            let key = touchid::unlock(&helper, &self.vault_path, &self.reason(purpose))
+            let keys = touchid::unlock(&helper, &self.vault_path, &self.reason(purpose))
                 .map_err(touch_id_refusal)?;
-            (Vault::open_with_key(&self.vault_path, &key)?, true)
+            (
+                Vault::open_with_key(&self.vault_path, &keys.main)?,
+                true,
+                keys.sensitive,
+            )
         };
         let unlocked = self.unlocked.insert(Unlocked {
             vault,
             last_used: Instant::now(),
+            fresh_sensitive,
         });
         Ok((&unlocked.vault, approved))
     }
@@ -357,6 +374,65 @@ impl Server {
         }
         let helper = self.touch_id_helper()?;
         touchid::confirm(&helper, &self.reason(purpose)).map_err(touch_id_refusal)
+    }
+
+    /// Approve a request that uses a card or bank account, and unlock the
+    /// sensitive key for it, in one step: the fingerprint that unlocks the
+    /// key is the approval. (The server never keeps that key between
+    /// requests; see `forget_sensitive`.)
+    fn sensitive_for(&mut self, purpose: &str, approved: bool) -> Result<(), Refusal> {
+        let reason = self.reason(purpose);
+        let no_approval = self.opts.no_approval;
+        let path = self.vault_path.clone();
+        let helper = if no_approval {
+            None
+        } else {
+            Some(self.touch_id_helper()?)
+        };
+        let unlocked = self
+            .unlocked
+            .as_mut()
+            .ok_or_else(|| Refusal::new("error", "stash is locked"))?;
+        let fresh = unlocked.fresh_sensitive.take();
+        if !unlocked.vault.is_current() || unlocked.vault.has_sensitive() {
+            return Ok(());
+        }
+        if approved && let Some(key) = fresh {
+            unlocked.vault.unlock_sensitive_with_key(&key)?;
+            return Ok(());
+        }
+        if no_approval {
+            let password = Zeroizing::new(std::env::var(PASSWORD_ENV).unwrap_or_default());
+            unlocked.vault.unlock_sensitive(password.as_bytes())?;
+            return Ok(());
+        }
+        let keys = touchid::unlock(&helper.expect("set unless no_approval"), &path, &reason)
+            .map_err(touch_id_refusal)?;
+        let key = keys.sensitive.ok_or_else(|| {
+            Refusal::new(
+                "error",
+                "Touch ID needs updating for this vault. Ask the user to run `stash touchid enable`.",
+            )
+        })?;
+        unlocked.vault.unlock_sensitive_with_key(&key)?;
+        Ok(())
+    }
+
+    /// After every request: the sensitive key (and any unused fresh one)
+    /// is dropped.
+    fn forget_sensitive(&mut self) {
+        if let Some(unlocked) = self.unlocked.as_mut() {
+            unlocked.vault.lock_sensitive();
+            unlocked.fresh_sensitive = None;
+        }
+    }
+
+    /// Do any of these items need the sensitive key?
+    fn uses_sensitive(&self, names: &[&str]) -> bool {
+        let Some(unlocked) = &self.unlocked else {
+            return false;
+        };
+        crate::needs_sensitive(&unlocked.vault, names.iter().copied()).unwrap_or(false)
     }
 
     fn touch_id_helper(&self) -> Result<PathBuf, Refusal> {
@@ -447,19 +523,29 @@ impl Server {
                 }
                 approved
             };
-            self.approve(&purpose, approved)?;
-            let vault = self.after_approval(&purpose)?;
-            let now = crate::unix_now();
-            for (key, r) in &request.references {
-                let value = vault.resolve(&r.as_ref(), now)?;
-                if value.contains(&0) {
-                    return Err(Refusal::new(
-                        "error",
-                        format!("{} contains a NUL byte", r.describe()),
-                    ));
-                }
-                resolved.push((key.clone(), value));
+            let sensitive = self.uses_sensitive(&names);
+            if sensitive {
+                self.sensitive_for(&purpose, approved)?;
+            } else {
+                self.approve(&purpose, approved)?;
             }
+            let result = (|| {
+                let vault = self.after_approval(&purpose)?;
+                let now = crate::unix_now();
+                for (key, r) in &request.references {
+                    let value = vault.resolve(&r.as_ref(), now)?;
+                    if value.contains(&0) {
+                        return Err(Refusal::new(
+                            "error",
+                            format!("{} contains a NUL byte", r.describe()),
+                        ));
+                    }
+                    resolved.push((key.clone(), value));
+                }
+                Ok(())
+            })();
+            self.forget_sensitive();
+            result?;
         }
 
         let output = execute(&request, &resolved).map_err(Refusal::from)?;
@@ -510,9 +596,16 @@ impl Server {
             check_exists(vault, &r.as_ref(), allow_payments)?;
             approved
         };
-        self.approve(&purpose, approved)?;
-        let vault = self.after_approval(&purpose)?;
-        let value = vault.resolve(&r.as_ref(), crate::unix_now())?;
+        if self.uses_sensitive(&[&r.name]) {
+            self.sensitive_for(&purpose, approved)?;
+        } else {
+            self.approve(&purpose, approved)?;
+        }
+        let value = self
+            .after_approval(&purpose)
+            .and_then(|vault| Ok(vault.resolve(&r.as_ref(), crate::unix_now())?));
+        self.forget_sensitive();
+        let value = value?;
         let text = String::from_utf8(value.to_vec())
             .map_err(|_| Refusal::new("error", format!("{shown} isn't text")))?;
         Ok(json!({ "content": [{ "type": "text", "text": text }] }))
@@ -557,7 +650,7 @@ fn check_exists(
         ));
     }
     if let Some(field) = r.field
-        && vault.item(r.name)?.field(field).is_none()
+        && vault.item_redacted(r.name)?.field(field).is_none()
     {
         return Err(stash_core::Error::NoSuchField(r.name.to_owned(), field.to_owned()).into());
     }
@@ -963,6 +1056,7 @@ mod tests {
         s.unlocked = Some(Unlocked {
             vault,
             last_used: long_ago,
+            fresh_sensitive: None,
         });
         // Calling `vault()` here would re-unlock (a second prompt);
         // `after_approval` must hand back the key that was just approved.

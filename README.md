@@ -197,6 +197,8 @@ Click the stash icon in the toolbar (or press ⌘⇧L) on a page: you'll see the
 - **2FA codes too:** on a sign-in page's 2FA step, the same pick fills the current code.
 - **No secrets in the browser.** The extension holds no data; it asks the vault for one item at a time, right before filling.
 
+**Optional: stash in sign-in fields, and saving logins.** In the extension's Settings, turn on *Show stash in sign-in fields*. A stash icon then appears in username and password fields, and after you sign in or sign up, stash offers to save the login (or to update a password you changed, keeping the old one in the item). It's off by default because it needs access to the sites you visit; with it off, stash only touches the tab whose toolbar button you click.
+
 ### Logins, notes, and passwords
 
 Items come in three kinds: a single **secret** (an API token), a **login** (username, password, website, optional 2FA), or a **note**.
@@ -276,10 +278,11 @@ More safeguards:
 
 ## Security model
 
-- **Vault:** one SQLite file at `~/.stash/vault.db`. Each item is encrypted separately with XChaCha20-Poly1305. Secret names are encrypted too, so the file doesn't reveal which services you use.
-- **Keys:** the master password goes through Argon2id to produce a key-encryption key. That key wraps a random 256-bit vault key, so changing the master password doesn't mean re-encrypting every item.
-- **Touch ID:** the vault key is encrypted to a Secure Enclave key that only works after a fingerprint match (`biometryCurrentSet`). The Secure Enclave key never leaves the chip, and no Keychain entitlements or code signing are needed. If someone adds or removes a fingerprint, Touch ID unlock stops working until you run `stash touchid enable` again.
-- **Sessions:** the agent keeps unlocked keys only in memory. It answers only processes running as your user, over a `0600` socket, and exits once it holds no keys.
+- **Vault:** one SQLite file at `~/.stash/vault.db`. Each item is encrypted separately with XChaCha20-Poly1305. Secret names are encrypted too, so the file doesn't reveal which services you use. A MAC over the whole vault detects items being removed, added, or rolled back.
+- **Keys:** the master password goes through Argon2id (256 MiB) to produce a key-encryption key. That wraps two random 256-bit keys: the *main key* for everyday items, and a *sensitive key* that alone can read card numbers, CVVs, PINs, bank account numbers, and SSH private keys. Sessions only ever hold the main key, so those always need a fresh Touch ID or the master password.
+- **Changing keys:** `stash passwd` changes the master password and replaces both keys (re-encrypting everything), so an old copy of the vault with an old password opens nothing current. `stash rekey` replaces the keys alone.
+- **Touch ID:** the vault's keys are encrypted to a Secure Enclave key that only works after a fingerprint match (`biometryCurrentSet`). The Secure Enclave key never leaves the chip, and no Keychain entitlements or code signing are needed. If someone adds or removes a fingerprint, Touch ID unlock stops working until you run `stash touchid enable` again.
+- **Sessions:** the agent keeps the main key only in memory, and only hands it to the real stash agent. It answers only processes running as your user, over a `0600` socket, and exits once it holds no keys.
 - **Memory:** secrets are wiped from memory after use (`zeroize`) and never logged.
 - **Threat model:** see [docs/threat-model.md](docs/threat-model.md), including what `stash` does *not* protect against, such as malware already running as your user.
 
@@ -310,7 +313,9 @@ Rust handles everything that is security-critical and cross-platform. The Swift 
 | v0.8 ✅ | **Payment cards** (card face, brand and checksum validation) and **bank accounts** (routing and IBAN validation), kept away from AI agents by default |
 | v0.9 ✅ | **SSH keys:** an SSH agent with Touch ID per signature, git commit signing, Ed25519 generate and import |
 | v0.10 ✅ | **Browser autofill** for logins, 2FA codes, cards, and bank accounts in Chrome, Brave, Edge, Arc, and Firefox, with Touch ID for every payment fill. See the [design](docs/design/autofill.md) |
-| v0.11 | Autofill: icons in sign-in fields, saving new logins, Safari (needs a signed release) |
+| v0.11 ✅ | Autofill (opt-in): a stash icon in sign-in fields, and saving new logins and changed passwords |
+| v0.12 ✅ | **Security:** vault format 3 (a separate key for cards, bank accounts, and SSH keys; tamper detection for the whole vault), `stash passwd` and `stash rekey`, stronger Argon2id |
+| v0.13 | Safari (needs a signed release), saving new cards at checkout |
 | v0.x | A configurable Quick Access shortcut, launch at login, a signed and notarized download |
 | Later | Encrypted sync (iCloud Drive or Git), Linux support |
 

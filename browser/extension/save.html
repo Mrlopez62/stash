@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="color-scheme" content="light dark">
+  <title>Save to stash</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body class="embedded save">
+  <header>
+    <img class="mark" src="icons/icon-32.png" alt="" width="20" height="20">
+    <span class="wordmark">stash<span class="dot">.</span></span>
+  </header>
+  <main id="main" aria-live="polite">
+    <p class="title" id="title">Save this login?</p>
+    <p class="note" id="detail"></p>
+    <div class="actions">
+      <button id="no" class="link" type="button">Not now</button>
+      <button id="yes" class="primary" type="button">Save</button>
+    </div>
+  </main>
+  <script src="save.js"></script>
+</body>
+</html>
