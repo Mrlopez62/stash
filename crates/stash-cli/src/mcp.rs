@@ -90,7 +90,7 @@ struct Unlocked {
 
 struct Server {
     vault_path: PathBuf,
-    audit_log: PathBuf,
+    audit_log: audit::Log,
     opts: Options,
     client: String,
     /// The process chain that started this server (e.g. "claude ← zsh"),
@@ -972,8 +972,9 @@ mod tests {
     fn server() -> Server {
         Server {
             vault_path: PathBuf::from("/nonexistent/vault.db"),
-            audit_log: std::env::temp_dir()
-                .join(format!("stash-test-audit-{}", std::process::id())),
+            audit_log: audit::path_for(
+                &std::env::temp_dir().join(format!("stash-test-audit-{}.db", std::process::id())),
+            ),
             opts: Options {
                 allow: vec!["github/*".into()],
                 allow_reveal: false,
@@ -1033,7 +1034,7 @@ mod tests {
             text.contains("not allowed for AI agents: stripe/secret"),
             "{text}"
         );
-        let _ = std::fs::remove_file(&s.audit_log);
+        let _ = std::fs::remove_file(s.audit_log.file());
     }
 
     #[test]
@@ -1062,6 +1063,6 @@ mod tests {
         // `after_approval` must hand back the key that was just approved.
         assert!(s.after_approval("test").is_ok());
         assert!(s.unlocked.as_ref().unwrap().last_used > long_ago);
-        let _ = std::fs::remove_file(&s.audit_log);
+        let _ = std::fs::remove_file(s.audit_log.file());
     }
 }

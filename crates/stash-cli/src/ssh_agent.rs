@@ -138,7 +138,7 @@ const DENIAL_COOLDOWN: Duration = Duration::from_secs(10);
 
 pub struct Agent<G: Gate> {
     vault_path: PathBuf,
-    audit_log: PathBuf,
+    audit_log: audit::Log,
     lock_after: Duration,
     gate: G,
     unlocked: Option<(Vault, Instant)>,
@@ -655,8 +655,10 @@ mod tests {
         gate.lock().unwrap().allow = false;
         let reply = agent.respond(&sign_request(&pair.public_blob(), b"data"), "evil");
         assert_eq!(reply, vec![FAILURE]);
-        let log = audit::recent(&dir.path().join("audit.log"), 10).unwrap();
-        let last = log.last().unwrap();
+        let vault = Vault::open(&dir.path().join("vault.db"), b"pw").unwrap();
+        let secret = vault.audit_secret().unwrap();
+        let log = audit::read(&audit::path_for(vault.path()), &secret, 10).unwrap();
+        let last = log.events.last().unwrap();
         assert_eq!(
             (last.tool.as_str(), last.outcome.as_str()),
             ("ssh-sign", "denied")

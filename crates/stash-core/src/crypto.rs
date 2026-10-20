@@ -6,6 +6,7 @@
 use argon2::{Algorithm, Argon2, Params, Version};
 use chacha20poly1305::aead::{Aead, KeyInit, Payload};
 use chacha20poly1305::{XChaCha20Poly1305, XNonce};
+use curve25519_dalek::MontgomeryPoint;
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
 use zeroize::Zeroizing;
@@ -111,6 +112,58 @@ pub fn open(key: &[u8; KEY_LEN], aad: &[u8], blob: &[u8]) -> Result<Zeroizing<Ve
         .map_err(|_| Error::Decrypt)
 }
 
+/// The X25519 public key for a secret key.
+pub fn x25519_public(secret: &[u8; KEY_LEN]) -> [u8; 32] {
+    MontgomeryPoint::mul_base_clamped(*secret).to_bytes()
+}
+
+/// Encrypt to a public key: anyone holding `public` can write, only the
+/// holder of its secret key can read. An ephemeral X25519 key agrees a
+/// one-time key with `public`, then [`seal`] encrypts. Returns
+/// `ephemeral public key || nonce || ciphertext`.
+pub fn seal_to(public: &[u8; 32], label: &[u8], plaintext: &[u8]) -> Result<Vec<u8>, Error> {
+    let ephemeral = random_key()?;
+    let ephemeral_public = x25519_public(&ephemeral);
+    let shared = Zeroizing::new(MontgomeryPoint(*public).mul_clamped(*ephemeral).to_bytes());
+    let key = sealed_key(&shared, label, &ephemeral_public, public)?;
+    let mut out = ephemeral_public.to_vec();
+    out.extend(seal(&key, label, plaintext)?);
+    Ok(out)
+}
+
+/// Decrypt a blob produced by [`seal_to`] with the matching secret key.
+pub fn open_sealed(
+    secret: &[u8; KEY_LEN],
+    label: &[u8],
+    blob: &[u8],
+) -> Result<Zeroizing<Vec<u8>>, Error> {
+    let (ephemeral_public, sealed) = blob.split_first_chunk::<32>().ok_or(Error::Decrypt)?;
+    let shared = Zeroizing::new(
+        MontgomeryPoint(*ephemeral_public)
+            .mul_clamped(*secret)
+            .to_bytes(),
+    );
+    let key = sealed_key(&shared, label, ephemeral_public, &x25519_public(secret))?;
+    open(&key, label, sealed)
+}
+
+fn sealed_key(
+    shared: &[u8; 32],
+    label: &[u8],
+    ephemeral_public: &[u8; 32],
+    public: &[u8; 32],
+) -> Result<SecretKey, Error> {
+    // A low-order public key makes the shared secret all zeros: refuse it
+    // rather than encrypt under a key anyone can compute.
+    if ct_eq(shared, &[0u8; 32]) {
+        return Err(Error::Decrypt);
+    }
+    let mut data = label.to_vec();
+    data.extend_from_slice(ephemeral_public);
+    data.extend_from_slice(public);
+    Ok(Zeroizing::new(hmac(shared, &data)))
+}
+
 /// HMAC-SHA256, used to derive subkeys and opaque item ids.
 pub fn hmac(key: &[u8], data: &[u8]) -> [u8; 32] {
     let mut mac = Hmac::<Sha256>::new_from_slice(key).expect("HMAC accepts any key length");
@@ -150,6 +203,27 @@ pub fn key_from_hex(hex: &str) -> Option<SecretKey> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sealing_to_a_public_key_opens_only_with_its_secret() {
+        let secret = random_key().unwrap();
+        let public = x25519_public(&secret);
+        let blob = seal_to(&public, b"label", b"hello").unwrap();
+        assert_eq!(
+            open_sealed(&secret, b"label", &blob).unwrap().as_slice(),
+            b"hello"
+        );
+        assert!(open_sealed(&secret, b"other", &blob).is_err());
+        assert!(open_sealed(&random_key().unwrap(), b"label", &blob).is_err());
+        let mut flipped = blob.clone();
+        *flipped.last_mut().unwrap() ^= 1;
+        assert!(open_sealed(&secret, b"label", &flipped).is_err());
+        assert!(open_sealed(&secret, b"label", &blob[..20]).is_err());
+        // Two seals of the same message differ.
+        assert_ne!(blob, seal_to(&public, b"label", b"hello").unwrap());
+        // A low-order "public key" is refused.
+        assert!(seal_to(&[0u8; 32], b"label", b"hello").is_err());
+    }
 
     #[test]
     fn seal_then_open_round_trips() {

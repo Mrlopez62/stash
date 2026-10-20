@@ -2,6 +2,17 @@
 
 All notable changes to stash. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/) (pre-1.0: minor versions may change behavior).
 
+## [0.14.0] - 2026-10-19
+
+### Added
+- **New `.env` files and templates ask first.** The first time `stash run --env-file` or `stash inject -i` uses a file that asks for secrets, and whenever the secrets it asks for change, stash asks for Touch ID or your master password, naming the file and the secrets, even in an unlocked session. A repository you clone can no longer pick your secrets with a `.env` file. Changing plain values doesn't ask again. When the unlock itself was a fresh Touch ID or password prompt, it counts.
+- **`stash trust FILE…`** approves files ahead of time (after the same check); `--remove` withdraws an approval, and `--reset` withdraws them all.
+- **`stash audit --json`** prints one JSON object per line.
+
+### Changed
+- **The audit log is encrypted.** Each entry is sealed to a key only the unlocked vault has, so the names of your secrets, your commands, and the sites you fill aren't in plain text anymore. Locked processes (the SSH agent, the browser host, the MCP server) can still add entries. `stash audit` now unlocks the vault, encrypts older plain-text entries, and also shows browser and SSH entries.
+- `stash passwd` and `stash rekey` move the audit history to the new keys, and withdraw file approvals (they're asked for again).
+
 ## [0.13.0] - 2026-10-19
 
 ### Added

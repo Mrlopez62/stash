@@ -11,7 +11,7 @@ use anyhow::{Context, Result, bail};
 use stash_core::{Vault, reference};
 use zeroize::Zeroizing;
 
-use crate::ui;
+use crate::{trust, ui};
 
 pub struct Options {
     pub input: Option<PathBuf>,
@@ -19,7 +19,11 @@ pub struct Options {
     pub force: bool,
 }
 
-pub fn inject(opts: Options, unlock: impl FnOnce(&str) -> Result<Vault>) -> Result<()> {
+pub fn inject(
+    opts: Options,
+    unlock: impl FnOnce(&str) -> Result<Vault>,
+    approve: impl FnOnce(&mut Vault, &str) -> Result<()>,
+) -> Result<()> {
     let template = match &opts.input {
         Some(path) => std::fs::read_to_string(path)
             .with_context(|| format!("could not read {}", path.display()))?,
@@ -55,8 +59,23 @@ pub fn inject(opts: Options, unlock: impl FnOnce(&str) -> Result<Vault>) -> Resu
             .output
             .as_ref()
             .map_or("stdout".to_owned(), |p| p.display().to_string());
-        let purpose = format!("inject {} into {target}", crate::run::summarize(&names));
+        // A template file (not stdin) may come from someone else's repo.
+        let request = match &opts.input {
+            Some(path) => trust::Request::new(trust::Kind::Template, path, &template)?,
+            None => None,
+        };
+        let mut purpose = format!("inject {} into {target}", crate::run::summarize(&names));
+        if let Some(request) = &request {
+            purpose.push_str(&format!(" from {}", request.path.display()));
+        }
         let mut vault = unlock(&purpose)?;
+        let requests: Vec<_> = request.into_iter().collect();
+        trust::ensure(
+            &mut vault,
+            &requests,
+            &format!("write secrets into {target}"),
+            approve,
+        )?;
         if crate::needs_sensitive(&vault, placeholders.iter().map(|p| p.reference.name))? {
             crate::ensure_sensitive(&mut vault, &purpose)?;
         }

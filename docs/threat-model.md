@@ -37,7 +37,7 @@ The vault is a single SQLite file, `~/.stash/vault.db` by default.
 | A program that has the main key editing the vault | Partial | The MAC key comes from the main key, so such a program can delete or roll back items (including a card's sealed part) and re-sign. It still can't *read* sensitive values, and stash refuses a card or SSH key that isn't split. |
 | A program that gets the main key (from a session, or a running stash process) reading your cards or SSH keys | ✅ | Those values are sealed under the sensitive key, which no session holds. Every use needs a fresh Touch ID or the master password, and long-lived processes forget the key right after each use. |
 | An old backup plus an old password | ✅ after `stash passwd` | Changing the password replaces the keys, so the old pair decrypts only that old copy. |
-| Someone learns what services you use from the secret names | Partial | Names are encrypted. The number of items and their encrypted sizes are visible (sizes can hint at an item's kind), and the audit log (`audit.log`, mode `0600`) records item names and sites in plain text. |
+| Someone learns what services you use from the secret names | Partial | Names are encrypted, and so is each audit log entry (see "The audit log" below). The number of items and their encrypted sizes are visible (sizes can hint at an item's kind), as are the number and times of audit entries. |
 | Other user accounts on the same Mac | ✅ | File permissions keep them out. |
 | Secrets left lying around in memory | Partial | Keys, passwords, and values are wiped when they're no longer needed (`zeroize`), including card numbers during validation. But temporary copies made by the OS, the terminal, JSON parsing, or growing buffers can't all be guaranteed wiped. |
 | Weak master password | Partial | stash requires at least 8 characters and Argon2id slows guessing down. A short password can still be cracked offline. Use a long passphrase. |
@@ -61,7 +61,7 @@ What stays possible for a program running as you, and how to limit it:
 | Reading the clipboard | Any app can read the clipboard while a copied secret is on it (up to 90 seconds). | Prefer `stash run` and `stash inject` while an AI agent is active. |
 | Typing into your unlocked terminal | With macOS Automation permission for your terminal, a program can run commands inside it (`osascript … do script`), reusing that shell's session. | Don't grant Automation access to terminals to agents; `stash lock` (or `STASH_SESSION_TIMEOUT=0`) while agents run. |
 | Replacing the `stash` binary or editing shell startup files | Files you can write, a program running as you can write. | Install `stash.app` in `/Applications` (admin-owned). Signed, notarized releases are planned. |
-| Editing the audit log | It's a file you own. | Treat the log as a record, not proof. |
+| Editing the audit log | It's a file you own, and anyone can add entries (that's how locked processes write). Entries can be deleted, and fake ones added. | Treat the log as a record, not proof. Entries stash can't decrypt are counted, not shown. |
 
 ## What stash does *not* protect against
 
@@ -127,6 +127,10 @@ After an unlock, `stash` starts `stash agent` in the background. The agent keeps
 | Other processes reading the child's environment | Partial | Other users can't. Processes running as *you* can read it (for example, with `ps eww` on some systems). That's inherent to environment variables. |
 | The child itself misusing the secrets it was given | ❌ | You're choosing to give that program those secrets. It can't reach *other* secrets without a prompt (see sessions above). Only `stash run` programs you trust. |
 | Rendered `stash inject` files left on disk | Partial | They're `0600`, but they hold plaintext. Prefer `stash run` where possible, and keep rendered files out of git. |
+| A cloned repository's `.env` file or template choosing your secrets | ✅ | The first time a file asks for secrets, and whenever the set of secrets (or the variables they go to) changes, stash asks for a fresh Touch ID or the master password, naming the file and the secrets. A session isn't enough. Plain values can change freely. Covered by the `new_or_changed_env_files_and_templates_need_a_fresh_approval_even_in_a_session` test. |
+| A program running as you approving a file for itself | ✅ | Approvals are kept in `trusted-files` as HMAC tags under a key derived from the vault's main key (`stash/v3/trust-key`), over the file's canonical path and its references. Without the key, a tag can't be made, so the list can only be deleted (which means being asked again). It reveals no paths or names. `stash trust` itself needs the same fresh approval. |
+| A program running as you editing an approved file's plain values | ❌ | Approvals cover which secrets go to which variables, not the rest of the file or the command. `NODE_OPTIONS` or a changed script can still misuse secrets given to a command you run. Read a repository before running it. |
+| `STASH_PASSWORD` | — | With the master password in the environment, files aren't asked about: whoever set it can unlock everything anyway. |
 
 ## Clipboard copy (`--copy`)
 
@@ -138,6 +142,16 @@ After an unlock, `stash` starts `stash agent` in the background. The agent keeps
 | A secret left on the clipboard | ✅ | Cleared after 30 seconds (`STASH_CLIPBOARD_TIMEOUT`). |
 | Clipboard history managers and Universal Clipboard (Handoff) | ✅ in the Mac app, ❌ in the CLI | The app marks copies `org.nspasteboard.ConcealedType` and `TransientType`, so well-behaved managers skip them, and keeps them on this Mac only (no Universal Clipboard). The CLI's `pbcopy` can't set those types. |
 | Apps that read the clipboard while it holds the secret | ❌ | Any app can read the clipboard. Prefer `stash run` where you can. |
+
+## The audit log
+
+`audit.log` (mode `0600`, next to the vault) records requests from AI agents (`stash mcp`), the browser (`stash native-host`), and SSH clients (`stash ssh-agent`): who asked, the tool, secret names, sites, commands, and outcomes, never values.
+
+- **Each entry is encrypted to the vault.** Entries are sealed to an X25519 public key (an ephemeral key per entry, then XChaCha20-Poly1305). The secret key is derived from the vault's main key (`stash/v3/audit-key`), so only an unlocked vault reads the log (`stash audit`). Processes that are locked can still write, because writing needs only the public key.
+- **The public key is published in the vault file** by every unlock, which also puts it back if it was replaced. A program running as you could swap it between unlocks so that entries are sealed to its own key; those entries then show up in `stash audit` as unreadable, and the next unlock repairs the key.
+- **Before the first unlock** with v0.14, there's no public key yet, so an entry keeps only who asked, the tool, and the outcome.
+- **Older plain-text entries** are read, then encrypted, by `stash audit`. `stash passwd` and `stash rekey` re-encrypt the history to the new keys.
+- **What's still visible:** the number of entries, their sizes, and the file's timestamps.
 
 ## The Mac app
 

@@ -50,6 +50,25 @@ impl Fixture {
         f
     }
 
+    /// The audit log, decrypted by `stash audit --json`. (The file itself
+    /// is sealed: it never shows names, commands, or sites.)
+    fn audit_log(&self) -> String {
+        let raw = std::fs::read_to_string(self.dir.path().join("audit.log")).unwrap_or_default();
+        assert!(
+            !raw.contains("outcome"),
+            "the audit log isn't sealed: {raw}"
+        );
+        let out = self
+            .cli()
+            .args(["audit", "--json", "-n", "100000"])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+        String::from_utf8(out).unwrap()
+    }
+
     fn cli(&self) -> Command {
         let mut cmd = Command::cargo_bin("stash").unwrap();
         cmd.env("STASH_VAULT", self.dir.path().join("vault.db"))
@@ -289,7 +308,7 @@ fn the_agent_asks_touch_id_for_every_signature() {
     assert_eq!(f.prompts().len(), 3);
 
     // The audit log names the key and the outcome, never key material.
-    let log = std::fs::read_to_string(f.dir.path().join("audit.log")).unwrap();
+    let log = f.audit_log();
     assert!(log.contains(r#""tool":"ssh-sign""#));
     assert!(log.contains(r#""outcome":"approved""#));
     assert!(log.contains(r#""outcome":"denied""#));

@@ -14,7 +14,7 @@
 
 A free, developer-first secrets manager for macOS. Unlock with Touch ID, pass API tokens into commands safely, and let AI agents use your secrets without ever seeing them.
 
-> **Status: early development (v0.8).** The **stash Mac app** (menu bar, Quick Access, vault browser and editor) and the full CLI work today: the encrypted vault, logins, notes, **payment cards and bank accounts**, the password generator, Touch ID, sessions scoped to your shell, `stash://` references, `stash run`, `stash inject`, the MCP server for AI agents, clipboard copy, and 2FA codes. Don't trust it with production secrets until it has been reviewed.
+> **Status: early development (v0.14).** The **stash Mac app** (menu bar, Quick Access, vault browser and editor) and the full CLI work today: the encrypted vault, logins, notes, **payment cards and bank accounts**, the password generator, Touch ID, sessions scoped to your shell, `stash://` references, `stash run`, `stash inject`, the MCP server for AI agents, clipboard copy, and 2FA codes. Don't trust it with production secrets until it has been reviewed.
 
 ## The Mac app
 
@@ -131,6 +131,7 @@ stash run --env-file .env -- npm start
 - **Output masking:** if the command prints a secret, stash replaces it with `<concealed by stash>`. Use `--no-masking` to turn this off. Values shorter than 4 characters aren't masked.
 - **Ctrl-C and exit codes:** both behave as if you ran the command directly.
 - **No unlock without references:** if no references are found, stash runs the command without unlocking anything.
+- **New `.env` files ask first:** a `.env` file in a repository you cloned was written by someone else, and it chooses which of your secrets the command gets. So the first time a file asks for secrets, and whenever the secrets it asks for change, stash asks for Touch ID (or your master password) naming the file and the secrets, even in an unlocked session. Changing plain values like `PORT` doesn't ask again. Approve ahead of time with `stash trust .env`, and withdraw with `stash trust --remove .env` (or `stash trust --reset` for all). Templates for `stash inject -i` work the same way. With `STASH_PASSWORD` set (scripts and CI), files aren't asked about.
 
 ### `stash inject`: fill in config templates
 
@@ -274,7 +275,7 @@ claude mcp add stash -- stash mcp --allow 'github/*' --allow 'openai/*'
 More safeguards:
 - **No shell session.** The MCP server never creates or reuses one, so the agent's own shell commands can't read your vault either. It keeps the key in its own memory and forgets it after 10 idle minutes.
 - **A clean environment for commands.** Commands get no stdin, and they're killed after a timeout (120 s by default, 900 s at most).
-- **An audit log.** Every request (who, what, which secret names, approved/denied/blocked, exit code) goes to `~/.stash/audit.log`. It never holds values. View it with `stash audit`.
+- **An encrypted audit log.** Every request (who, what, which secret names, approved/denied/blocked, exit code) goes to `~/.stash/audit.log`. It never holds values, and each entry is encrypted to the vault, so the names of your secrets and sites aren't readable without unlocking. View it with `stash audit` (`--json` for one JSON object per line).
 
 ## Security model
 
@@ -316,7 +317,8 @@ Rust handles everything that is security-critical and cross-platform. The Swift 
 | v0.11 ✅ | Autofill (opt-in): a stash icon in sign-in fields, and saving new logins and changed passwords |
 | v0.12 ✅ | **Security:** vault format 3 (a separate key for cards, bank accounts, and SSH keys; tamper detection for the whole vault), `stash passwd` and `stash rekey`, stronger Argon2id |
 | v0.13 ✅ | Saving new cards at checkout (opt-in, Touch ID to save) |
-| v0.14 | Safari (needs a signed release), the remaining hardening (per-folder `.env` trust, an encrypted audit log) |
+| v0.14 ✅ | Hardening: new or changed `.env` files and templates need a fresh approval (`stash trust`), an encrypted audit log |
+| v0.15 | Safari (needs a signed release), clipboard and terminal hardening |
 | v0.x | A configurable Quick Access shortcut, launch at login, a signed and notarized download |
 | Later | Encrypted sync (iCloud Drive or Git), Linux support |
 

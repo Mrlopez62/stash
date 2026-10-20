@@ -291,7 +291,7 @@ impl Gate for TouchIdGate {
 
 pub struct Host<G: Gate> {
     vault_path: PathBuf,
-    audit_log: PathBuf,
+    audit_log: audit::Log,
     browser: String,
     gate: G,
     unlocked: Option<(Vault, Instant)>,
@@ -1090,6 +1090,22 @@ mod tests {
         (dir, host, prompts)
     }
 
+    /// The audit log, decrypted, as JSON lines. (The file itself is
+    /// sealed: it never shows names or sites.)
+    fn audit_text(dir: &TempDir) -> String {
+        let vault = Vault::open(&dir.path().join("vault.db"), b"pw").unwrap();
+        let log = audit::path_for(vault.path());
+        let raw = std::fs::read_to_string(log.file()).unwrap();
+        assert!(!raw.contains("outcome"), "the log isn't sealed: {raw}");
+        audit::read(&log, &vault.audit_secret().unwrap(), 1000)
+            .unwrap()
+            .events
+            .iter()
+            .map(|e| serde_json::to_string(e).unwrap())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
     #[test]
     fn only_trusts_stash_extensions_and_browser_signatures() {
         let chrome = format!("chrome-extension://{CHROME_EXTENSION_ID}/");
@@ -1199,7 +1215,7 @@ mod tests {
             &json!({ "id": 1, "type": "fill", "url": "https://github.com/", "name": "token" }),
         );
         assert_eq!(r["ok"], false, "secrets aren't filled: {r}");
-        let log = std::fs::read_to_string(dir.path().join("audit.log")).unwrap();
+        let log = audit_text(&dir);
         assert!(log.contains(r#""outcome":"blocked""#) && !log.contains("hunter2"));
     }
 
@@ -1226,7 +1242,7 @@ mod tests {
         let r = host.respond(&fill);
         assert_eq!(r["ok"], false);
         assert!(r.get("number").is_none());
-        let log = std::fs::read_to_string(dir.path().join("audit.log")).unwrap();
+        let log = audit_text(&dir);
         assert!(log.contains(r#""outcome":"denied""#) && !log.contains("4242424242424242"));
         // Never on plain http.
         let r = host.respond(&json!({ "id": 1, "type": "fill", "url": "http://shop.example/", "name": "cards/visa" }));
@@ -1314,7 +1330,7 @@ mod tests {
         // It fills there now.
         let r = host.respond(&json!({ "id": 4, "type": "fill", "url": "https://shop.example/", "name": "shop.example", "kind": "login" }));
         assert_eq!(r["password"], "s3cret");
-        let log = std::fs::read_to_string(dir.path().join("audit.log")).unwrap();
+        let log = audit_text(&dir);
         assert!(log.contains(r#""tool":"autofill-save""#) && !log.contains("s3cret"));
     }
 
@@ -1432,7 +1448,7 @@ mod tests {
         prompts.borrow_mut().deny = true;
         let r = host.respond(&json!({ "id": 3, "type": "save_card", "url": "https://shop.example/", "number": "378282246310005", "exp_month": "1", "exp_year": "2030" }));
         assert_eq!(r["ok"], false);
-        let log = std::fs::read_to_string(dir.path().join("audit.log")).unwrap();
+        let log = audit_text(&dir);
         assert!(
             log.contains("card from shop.example")
                 && !log.contains("5555555555554444")
