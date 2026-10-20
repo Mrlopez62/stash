@@ -1,9 +1,21 @@
 name: CI
 
+# Private repos pay for Actions minutes, and macOS minutes count 10x. So:
+# - pull requests run everything (that's where dev is checked before main);
+# - pushes to main (merges, already checked in their PR) run Linux only;
+# - pushes to dev run nothing on their own: the open PR's run covers them;
+# - docs-only changes run nothing;
+# - a newer push cancels the older run for the same branch.
 on:
   push:
-    branches: [main, dev]
+    branches: [main]
+    paths-ignore: ["**.md", "docs/**", "LICENSE"]
   pull_request:
+    paths-ignore: ["**.md", "docs/**", "LICENSE"]
+
+concurrency:
+  group: ci-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
@@ -17,7 +29,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: ${{ github.event_name == 'pull_request' && fromJSON('["ubuntu-latest", "macos-latest"]') || fromJSON('["ubuntu-latest"]') }}
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
