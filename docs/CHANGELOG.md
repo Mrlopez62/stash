@@ -126,7 +126,7 @@ A security release, from a review of what a program running as you (an AI agent'
 - **Bank accounts:** bank, holder, type, routing number (ABA checksum), account number, IBAN (mod-97), SWIFT/BIC, and PIN.
 - **Payment items in the CLI:** `stash add --card` and `--bank`. Numbers come only from hidden prompts (or one per line from stdin). New field aliases: `#cvv`, `#cvc`, `#expiry`, `#name`, `#zip`, `#routing`, `#account`.
 - **`stash mcp --allow-payments`:** without it, AI agents can't list or use payment items.
-- **Design doc for browser autofill** of logins and payments ([docs/design/autofill.md](docs/design/autofill.md)).
+- **Design doc for browser autofill** of logins and payments ([docs/design/autofill.md](design/autofill.md)).
 
 ### Changed
 - **Every save normalizes and validates payment fields** (card numbers, expiry, routing numbers, IBANs) in the core, so edits from the CLI, the app, and future clients are held to the same rules.

@@ -342,9 +342,9 @@ The logo, colors, and type are documented in [docs/brand](docs/brand/README.md).
 
 ## Contributing
 
-Contributions are welcome! Start with [CONTRIBUTING.md](CONTRIBUTING.md). In short: branch from `dev` and open pull requests against `dev`. `main` is the stable branch and only gets updated from `dev`.
+Contributions are welcome! Start with [CONTRIBUTING.md](docs/CONTRIBUTING.md). In short: branch from `dev` and open pull requests against `dev`. `main` is the stable branch and only gets updated from `dev`.
 
-Report security issues privately as described in [SECURITY.md](SECURITY.md). Please don't open public issues for them.
+Report security issues privately as described in [SECURITY.md](docs/SECURITY.md). Please don't open public issues for them.
 
 ## License
 
