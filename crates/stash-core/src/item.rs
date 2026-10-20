@@ -725,7 +725,7 @@ mod tests {
 
     fn visa() -> Item {
         Item::card(&CardDetails {
-            cardholder: Some("J Lopez"),
+            cardholder: Some("Samus Aran"),
             number: "4242 4242 4242 4242",
             expiry: Some("8/2027"),
             cvv: Some("123"),
@@ -747,7 +747,7 @@ mod tests {
         assert_eq!(plain("cvc"), "123");
         assert_eq!(plain("expiration"), "08/27");
         assert_eq!(plain("card number"), "4242424242424242");
-        assert_eq!(plain("name"), "J Lopez");
+        assert_eq!(plain("name"), "Samus Aran");
         assert!(!format!("{card:?}").contains("4242424242424242"));
     }
 

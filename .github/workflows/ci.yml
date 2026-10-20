@@ -1,9 +1,20 @@
 name: CI
 
+# - Pull requests run everything, always: main requires these checks, so
+#   even docs-only PRs need them.
+# - Pushes to main (merges, already checked in their PR) run Linux only, and
+#   skip docs-only changes.
+# - Pushes to dev run nothing on their own: the open PR's run covers them.
+# - A newer push cancels the older run for the same branch.
 on:
   push:
-    branches: [main, dev]
+    branches: [main]
+    paths-ignore: ["**.md", "docs/**", "LICENSE"]
   pull_request:
+
+concurrency:
+  group: ci-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
@@ -17,7 +28,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: ${{ github.event_name == 'pull_request' && fromJSON('["ubuntu-latest", "macos-latest"]') || fromJSON('["ubuntu-latest"]') }}
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7

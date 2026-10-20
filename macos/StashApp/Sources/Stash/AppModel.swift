@@ -284,11 +284,11 @@ final class MockBackend: VaultBackend {
             .init(name: "openai/api-key", kind: .secret, username: nil, url: nil, hasOtp: false, updated: now - 86_400),
             .init(name: "stripe/secret-key", kind: .secret, username: nil, url: nil, hasOtp: false, updated: now - 3 * 86_400),
             .init(name: "stripe/dashboard", kind: .login, username: "billing@acme.dev", url: "https://dashboard.stripe.com", hasOtp: true, updated: now - 5 * 86_400),
-            .init(name: "work/aws-console", kind: .login, username: "j.lopez@acme.dev", url: "https://console.aws.amazon.com", hasOtp: true, updated: now - 9 * 86_400),
-            .init(name: "work/vercel", kind: .login, username: "joshua", url: "https://vercel.com", hasOtp: false, updated: now - 12 * 86_400),
+            .init(name: "work/aws-console", kind: .login, username: "s.aran@acme.dev", url: "https://console.aws.amazon.com", hasOtp: true, updated: now - 9 * 86_400),
+            .init(name: "work/vercel", kind: .login, username: "samus", url: "https://vercel.com", hasOtp: false, updated: now - 12 * 86_400),
             .init(name: "work/database-url", kind: .secret, username: nil, url: nil, hasOtp: false, updated: now - 20 * 86_400),
             .init(name: "cloudflare/api-token", kind: .secret, username: nil, url: nil, hasOtp: false, updated: now - 26 * 86_400),
-            .init(name: "linear", kind: .login, username: "joshua@acme.dev", url: "https://linear.app", hasOtp: false, updated: now - 40 * 86_400),
+            .init(name: "linear", kind: .login, username: "samus@acme.dev", url: "https://linear.app", hasOtp: false, updated: now - 40 * 86_400),
             .init(name: "notes/home-wifi", kind: .note, username: nil, url: nil, hasOtp: false, updated: now - 60 * 86_400),
             .init(name: "cards/visa", kind: .card, username: nil, url: nil, hasOtp: false, updated: now - 4 * 86_400,
                   subtitle: "Visa •••• 4242 · 08/27"),
@@ -339,23 +339,23 @@ final class MockBackend: VaultBackend {
             fields = []
         case .card:
             fields = [
-                .init(label: "cardholder", kind: .text, value: "Joshua Lopez"),
+                .init(label: "cardholder", kind: .text, value: "Samus Aran"),
                 .init(label: "number", kind: .concealed, value: nil),
                 .init(label: "expiry", kind: .text, value: "08/27"),
                 .init(label: "cvv", kind: .concealed, value: nil),
-                .init(label: "billing zip", kind: .text, value: "78666"),
+                .init(label: "billing zip", kind: .text, value: "12345"),
             ]
         case .ssh:
             fields = [
                 .init(label: "private key", kind: .concealed, value: nil),
                 .init(label: "public key", kind: .text,
-                      value: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIO60iQ4pgY5/xWYrWhdrOrpEvKYcKJnSet59LRMQ1vFq joshua@mac"),
+                      value: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIO60iQ4pgY5/xWYrWhdrOrpEvKYcKJnSet59LRMQ1vFq samus@mac"),
                 .init(label: "fingerprint", kind: .text, value: "SHA256:2OdYwq/ygWHlId1JmNr04FYAgHKLr7ntZGcoJfk2lDY"),
             ]
         case .bank:
             fields = [
                 .init(label: "bank", kind: .text, value: "Chase"),
-                .init(label: "account holder", kind: .text, value: "Joshua Lopez"),
+                .init(label: "account holder", kind: .text, value: "Samus Aran"),
                 .init(label: "account type", kind: .text, value: "checking"),
                 .init(label: "routing number", kind: .text, value: "021000021"),
                 .init(label: "account number", kind: .concealed, value: nil),

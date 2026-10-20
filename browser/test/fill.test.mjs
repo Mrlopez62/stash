@@ -8,7 +8,7 @@ const { classify, plan, capture, captureCard, formatExpiry, pickOption, frameAll
 
 const input = (props) => ({ tag: "input", type: "text", autocomplete: "", text: "", placeholder: "", maxLength: 0, form: "f", ...props });
 const LOGIN = { username: "octocat", password: "hunter2!", otp: "123456" };
-const CARD = { number: "4242424242424242", cvv: "123", cardholder: "J Lopez", exp_month: "08", exp_year: "2027", postal_code: "78666" };
+const CARD = { number: "4242424242424242", cvv: "123", cardholder: "Samus Aran", exp_month: "08", exp_year: "2027", postal_code: "12345" };
 
 test("finds login fields by autocomplete first, then by name", () => {
   assert.equal(classify(input({ autocomplete: "username" }), "login"), "username");
@@ -56,7 +56,7 @@ test("fills a standard checkout form", () => {
     input({ autocomplete: "billing postal-code" }),
   ];
   assert.deepEqual(plan(fields, CARD, "card"), [
-    [0, "J Lopez"], [1, "4242424242424242"], [2, "08 / 27"], [3, "123"], [4, "78666"],
+    [0, "Samus Aran"], [1, "4242424242424242"], [2, "08 / 27"], [3, "123"], [4, "12345"],
   ]);
 });
 
@@ -86,8 +86,8 @@ test("picks month and year options in selects", () => {
 
 test("fills bank account fields", () => {
   const fields = [input({ text: "Routing number" }), input({ text: "Account number" }), input({ text: "Account holder name" })];
-  assert.deepEqual(plan(fields, { routing: "021000021", account: "000123456789", holder: "J Lopez" }, "bank"), [
-    [0, "021000021"], [1, "000123456789"], [2, "J Lopez"],
+  assert.deepEqual(plan(fields, { routing: "021000021", account: "000123456789", holder: "Samus Aran" }, "bank"), [
+    [0, "021000021"], [1, "000123456789"], [2, "Samus Aran"],
   ]);
 });
 
@@ -116,7 +116,7 @@ test("a card frame nested inside another frame (like an ad) never gets the card"
 test("the billing ZIP never goes into a shipping ZIP", () => {
   assert.equal(classify(input({ text: "Shipping ZIP" }), "card"), null);
   const fields = [input({ text: "zip code" }), input({ autocomplete: "cc-number" }), input({ autocomplete: "billing postal-code" })];
-  assert.deepEqual(plan(fields, CARD, "card"), [[1, "4242424242424242"], [2, "78666"]]);
+  assert.deepEqual(plan(fields, CARD, "card"), [[1, "4242424242424242"], [2, "12345"]]);
 });
 
 test("offers to save the password used to sign in, with its username", () => {
@@ -149,13 +149,13 @@ test("nothing to save without a password", () => {
 
 test("finds the card in a submitted checkout, whatever the expiry fields look like", () => {
   const card = (exp) => [
-    input({ autocomplete: "cc-name", value: "J Lopez" }),
+    input({ autocomplete: "cc-name", value: "Samus Aran" }),
     input({ autocomplete: "cc-number", value: "4242 4242 4242 4242" }),
     ...exp,
     input({ autocomplete: "cc-csc", value: "123" }),
-    input({ autocomplete: "billing postal-code", value: "78666" }),
+    input({ autocomplete: "billing postal-code", value: "12345" }),
   ];
-  const want = { number: "4242424242424242", cardholder: "J Lopez", exp_month: "08", exp_year: "2027", cvv: "123", postal_code: "78666" };
+  const want = { number: "4242424242424242", cardholder: "Samus Aran", exp_month: "08", exp_year: "2027", cvv: "123", postal_code: "12345" };
   assert.deepEqual(captureCard(card([input({ autocomplete: "cc-exp", value: "08 / 27" })])), want);
   assert.deepEqual(captureCard(card([input({ autocomplete: "cc-exp", value: "0827" })])), want);
   assert.deepEqual(

@@ -24,4 +24,4 @@ stash is pre-1.0. Only the latest release and the `main` branch get security fix
 
 ## Scope
 
-[docs/threat-model.md](docs/threat-model.md) lists what stash is designed to protect against and what it isn't. Reports about the documented non-goals are still welcome, but we'll treat them as hardening work rather than vulnerabilities.
+[docs/threat-model.md](threat-model.md) lists what stash is designed to protect against and what it isn't. Reports about the documented non-goals are still welcome, but we'll treat them as hardening work rather than vulnerabilities.

@@ -4,6 +4,7 @@ mod audit;
 mod browser_cmd;
 mod clipboard;
 mod envfile;
+mod filelock;
 mod harden;
 mod inject;
 mod items;
@@ -16,6 +17,7 @@ mod ssh_agent;
 mod ssh_cmd;
 mod text;
 mod touchid;
+mod trust;
 mod ui;
 
 use std::ffi::OsString;
@@ -49,7 +51,7 @@ enum Command {
     /// Store a secret, login, or note (secret values are read from stdin or
     /// a prompt without echo, never from flags)
     #[command(
-        after_help = "Examples:\n  stash add openai/api-key                     # a single secret\n  stash add github --login --username octocat --url https://github.com --generate\n  stash add github --login --otp               # asks for the password and 2FA secret\n  stash add notes/wifi --note\n  stash add cards/visa --card --cardholder 'J Lopez' --expiry 08/27\n  stash add banks/chase --bank --bank-name Chase --routing 021000021 --account-type checking"
+        after_help = "Examples:\n  stash add openai/api-key                     # a single secret\n  stash add github --login --username octocat --url https://github.com --generate\n  stash add github --login --otp               # asks for the password and 2FA secret\n  stash add notes/wifi --note\n  stash add cards/visa --card --cardholder 'Samus Aran' --expiry 08/27\n  stash add banks/chase --bank --bank-name Chase --routing 021000021 --account-type checking"
     )]
     Add {
         /// Item name, e.g. `github/token`
@@ -200,11 +202,32 @@ enum Command {
         #[arg(long)]
         no_approval: bool,
     },
-    /// Show recent AI-agent requests from the audit log
+    /// Approve a .env file or template to give its secrets to commands
+    ///
+    /// The first time `stash run --env-file` or `stash inject -i` uses a
+    /// file that asks for secrets (and whenever the secrets it asks for
+    /// change), stash asks for Touch ID or your master password, even in an
+    /// unlocked session. This approves files ahead of time, after the same
+    /// check.
+    Trust {
+        /// The .env files or templates
+        #[arg(required_unless_present = "reset", value_name = "FILE")]
+        files: Vec<PathBuf>,
+        /// Withdraw the approval for these files instead
+        #[arg(long, conflicts_with = "reset")]
+        remove: bool,
+        /// Withdraw every approval
+        #[arg(long)]
+        reset: bool,
+    },
+    /// Show recent requests from AI agents, the browser, and SSH from the audit log
     Audit {
         /// How many entries to show
         #[arg(long, short = 'n', default_value_t = 20)]
         limit: usize,
+        /// One JSON object per line
+        #[arg(long)]
+        json: bool,
     },
     /// End the unlocked session, so the next command asks again
     Lock,
@@ -508,7 +531,11 @@ fn run(cli: Cli) -> Result<ExitCode> {
                 no_masking,
                 command,
             };
-            return run::run(opts, |purpose| unlock(&path, purpose));
+            return run::run(
+                opts,
+                |purpose| unlock_checked(&path, purpose),
+                confirm_fresh,
+            );
         }
         Command::Inject {
             input,
@@ -520,7 +547,11 @@ fn run(cli: Cli) -> Result<ExitCode> {
                 output,
                 force,
             };
-            inject::inject(opts, |purpose| unlock(&path, purpose))?;
+            inject::inject(
+                opts,
+                |purpose| unlock_checked(&path, purpose),
+                confirm_fresh,
+            )?;
         }
         Command::Mcp {
             allow,
@@ -549,14 +580,99 @@ fn run(cli: Cli) -> Result<ExitCode> {
             };
             mcp::serve(path, opts)?;
         }
-        Command::Audit { limit } => {
-            let events = audit::recent(&audit::path_for(&path), limit)?;
-            if events.is_empty() {
-                eprintln!("No AI-agent requests recorded yet.");
+        Command::Trust {
+            files,
+            remove,
+            reset,
+        } => {
+            if reset {
+                trust::forget_all(&path);
+                eprintln!("Withdrew every approval; files will ask again.");
+                return Ok(ExitCode::SUCCESS);
+            }
+            let mut requests = Vec::new();
+            for file in &files {
+                let contents = std::fs::read_to_string(file)
+                    .with_context(|| format!("could not read {}", file.display()))?;
+                let mut found = Vec::new();
+                let mut problems = Vec::new();
+                for (kind, what) in [
+                    (trust::Kind::Env, "as a .env file"),
+                    (trust::Kind::Template, "as a template"),
+                ] {
+                    match trust::Request::new(kind, file, &contents) {
+                        Ok(Some(request)) => found.push(request),
+                        Ok(None) => {}
+                        Err(e) => problems.push(format!("{what}: {e:#}")),
+                    }
+                }
+                if found.is_empty() {
+                    if problems.is_empty() {
+                        bail!("{} asks for no secrets", file.display());
+                    }
+                    bail!(
+                        "{} asks for no secrets stash can read ({})",
+                        file.display(),
+                        problems.join("; ")
+                    );
+                }
+                requests.extend(found);
+            }
+            if remove {
+                let vault = unlock(&path, "withdraw approvals")?;
+                for request in &requests {
+                    if trust::forget(&vault, request)? {
+                        eprintln!("Withdrew {}", request.path.display());
+                    }
+                }
+            } else {
+                // The unlock prompt names every file and its secrets, so a
+                // fresh unlock is itself the approval.
+                let described: Vec<String> = requests.iter().map(|r| r.describe()).collect();
+                let mut unlocked = unlock_checked(
+                    &path,
+                    &format!("allow {} to give secrets to commands", described.join("; ")),
+                )?;
+                trust::ensure(
+                    &mut unlocked,
+                    &requests,
+                    "give secrets to commands",
+                    confirm_fresh,
+                )?;
+                for request in &requests {
+                    eprintln!("Allowed: {}", request.describe());
+                }
+            }
+        }
+        Command::Audit { limit, json } => {
+            let vault = unlock(&path, "read the audit log")?;
+            let secret = vault.audit_secret()?;
+            let log = audit::path_for(&path);
+            let contents = audit::read(&log, &secret, limit)?;
+            if contents.events.is_empty() {
+                eprintln!("Nothing recorded yet.");
             }
             let mut out = io::stdout().lock();
-            for event in &events {
-                writeln!(out, "{}", audit::describe(event))?;
+            for event in &contents.events {
+                if json {
+                    writeln!(out, "{}", serde_json::to_string(event)?)?;
+                } else {
+                    writeln!(out, "{}", audit::describe(event))?;
+                }
+            }
+            if contents.unreadable > 0 {
+                eprintln!(
+                    "stash: {} entries can't be read with this vault's key (written for a key \
+                     since replaced, or not by stash)",
+                    contents.unreadable
+                );
+            }
+            // Entries from before the log was encrypted: seal them now.
+            if contents.plain > 0
+                && let Err(e) =
+                    audit::rewrite(&log, None, &stash_core::crypto::x25519_public(&secret))
+            {
+                eprintln!("stash: warning: could not encrypt older audit entries ({e:#})");
             }
         }
         Command::Ssh { action } => {
@@ -650,11 +766,13 @@ fn run(cli: Cli) -> Result<ExitCode> {
             if new.chars().count() < MIN_PASSWORD_LEN {
                 bail!("master password must be at least {MIN_PASSWORD_LEN} characters");
             }
+            let old_audit = vault.audit_secret()?;
             let result = vault.rekey(password.as_bytes(), Some(new.as_bytes()));
             // The keys changed even if the final double-check didn't pass:
             // sessions and Touch ID must follow either way.
             if matches!(result, Ok(()) | Err(stash_core::Error::RekeyUnverified(..))) {
                 refresh_unlock_methods(&path, &vault);
+                after_new_keys(&path, &vault, &old_audit);
             }
             result?;
             eprintln!("Changed the master password and replaced the vault's keys.");
@@ -664,11 +782,13 @@ fn run(cli: Cli) -> Result<ExitCode> {
             let password = read_password(&path, "replace the vault's keys")?;
             let mut vault = Vault::open(&path, password.as_bytes())?;
             after_password_unlock(&path, &vault);
+            let old_audit = vault.audit_secret()?;
             let result = vault.rekey(password.as_bytes(), None);
             // The keys changed even if the final double-check didn't pass:
             // sessions and Touch ID must follow either way.
             if matches!(result, Ok(()) | Err(stash_core::Error::RekeyUnverified(..))) {
                 refresh_unlock_methods(&path, &vault);
+                after_new_keys(&path, &vault, &old_audit);
             }
             result?;
             eprintln!("Replaced the vault's keys and re-encrypted every item.");
@@ -769,8 +889,22 @@ fn default_vault_path() -> Result<PathBuf> {
 /// `STASH_PASSWORD` skips sessions and Touch ID entirely, so scripts never
 /// start background processes or show prompts.
 fn unlock(path: &Path, purpose: &str) -> Result<Vault> {
+    Ok(unlock_checked(path, purpose)?.vault)
+}
+
+/// An unlocked vault, and whether unlocking it took a fresh Touch ID or the
+/// master password (not a session). A fresh unlock whose prompt named what
+/// it's for counts as approving that.
+pub(crate) struct Unlocked {
+    pub vault: Vault,
+    pub fresh: bool,
+}
+
+/// [`unlock`], saying whether it was fresh.
+fn unlock_checked(path: &Path, purpose: &str) -> Result<Unlocked> {
     if std::env::var_os(PASSWORD_ENV).is_some() {
-        return unlock_with_password(path, purpose);
+        let vault = unlock_with_password(path, purpose)?;
+        return Ok(Unlocked { vault, fresh: true });
     }
     if !path.exists() {
         return Err(stash_core::Error::VaultMissing(path.to_owned()).into());
@@ -783,7 +917,10 @@ fn unlock(path: &Path, purpose: &str) -> Result<Vault> {
         && let Some(key) = agent::get(&socket, &canonical)
         && let Ok(vault) = Vault::open_with_key(path, &key)
     {
-        return Ok(vault);
+        return Ok(Unlocked {
+            vault,
+            fresh: false,
+        });
     }
 
     let vault = match unlock_with_touch_id(path, purpose)? {
@@ -795,7 +932,41 @@ fn unlock(path: &Path, purpose: &str) -> Result<Vault> {
     {
         eprintln!("stash: warning: could not start a session ({e:#}); you'll be asked again");
     }
-    Ok(vault)
+    Ok(Unlocked { vault, fresh: true })
+}
+
+/// A fresh approval: Touch ID or the master password, never a session.
+/// `reason` is shown on the prompt. `STASH_PASSWORD` (scripts and CI)
+/// counts as holding the password.
+fn confirm_fresh(vault: &mut Vault, reason: &str) -> Result<()> {
+    if std::env::var_os(PASSWORD_ENV).is_some() {
+        return Ok(());
+    }
+    let path = vault.path().to_owned();
+    let chain = procinfo::requester_chain(2);
+    if touchid::is_enrolled(&path)
+        && let Some(helper) = touchid::helper()
+    {
+        match touchid::unlock(&helper, &path, &format!("{reason}, requested by {chain}")) {
+            Ok(keys) if stash_core::crypto::ct_eq(keys.main.as_ref(), vault.key()) => {
+                return Ok(());
+            }
+            Ok(_) => eprintln!("stash: Touch ID data is out of date; run `stash touchid enable`"),
+            Err(touchid::UnlockError::Cancelled) => bail!("Touch ID was cancelled"),
+            Err(touchid::UnlockError::Unavailable(why)) => eprintln!("stash: {why}"),
+            Err(touchid::UnlockError::Failed(why)) => eprintln!("stash: Touch ID failed: {why}"),
+        }
+    }
+    eprintln!("stash: {reason}, requested by {chain}");
+    let password = Zeroizing::new(rpassword::prompt_password("Master password: ")?);
+    // Checking the password unwraps the sensitive key; keep it only if
+    // this command already had it.
+    let had = vault.has_sensitive();
+    vault.unlock_sensitive(password.as_bytes())?;
+    if !had {
+        vault.lock_sensitive();
+    }
+    Ok(())
 }
 
 /// `Ok(None)` means "fall back to the master password".
@@ -896,6 +1067,23 @@ fn refresh_unlock_methods(path: &Path, vault: &Vault) {
             }
         }
     }
+}
+
+/// The audit log and trusted files were tied to the old keys: reseal the
+/// log's history to the new ones, and forget approvals (they're asked for
+/// again).
+fn after_new_keys(path: &Path, vault: &Vault, old_audit: &[u8; 32]) {
+    let resealed = vault
+        .audit_secret()
+        .map_err(anyhow::Error::from)
+        .and_then(|new| {
+            let public = stash_core::crypto::x25519_public(&new);
+            audit::rewrite(&audit::path_for(path), Some(old_audit), &public)
+        });
+    if let Err(e) = resealed {
+        eprintln!("stash: warning: could not move the audit log to the new keys ({e:#})");
+    }
+    trust::forget_all(path);
 }
 
 /// Do any of these items need the sensitive key (cards, bank accounts,

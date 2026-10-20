@@ -124,7 +124,8 @@ fn init_refuses_short_password_and_existing_vault() {
 
 /// A stand-in for the Swift helper that "wraps" by prefixing, so the full
 /// Touch ID and session flow can be tested on any OS without a fingerprint.
-/// Each unwrap (i.e. each Touch ID prompt) appends its reason to `unwraps`.
+/// Each unwrap (i.e. each Touch ID prompt) appends its reason to `unwraps`,
+/// and is declined while `deny` exists.
 fn fake_touch_id(dir: &TempDir) -> std::path::PathBuf {
     use std::os::unix::fs::PermissionsExt;
     let path = dir.path().join("stash-touchid");
@@ -134,7 +135,7 @@ fn fake_touch_id(dir: &TempDir) -> std::path::PathBuf {
 case "$1" in
   available) exit 0 ;;
   wrap) read k; echo "fake:$k" ;;
-  unwrap) echo "$2" >> "$(dirname "$0")/unwraps"; read b; echo "${b#fake:}" ;;
+  unwrap) echo "$2" >> "$(dirname "$0")/unwraps"; [ -e "$(dirname "$0")/deny" ] && exit 2; read b; echo "${b#fake:}" ;;
   *) exit 1 ;;
 esac
 "#,
@@ -490,6 +491,128 @@ fn run_children_cannot_ride_the_session() {
     let mut lock = stash(&dir);
     session(&mut lock);
     lock.arg("lock").assert().success();
+}
+
+#[test]
+fn new_or_changed_env_files_and_templates_need_a_fresh_approval_even_in_a_session() {
+    let (dir, helper) = init_with_touch_id();
+    let session = |cmd: &mut Command| {
+        cmd.env_remove("STASH_PASSWORD")
+            .env("STASH_TOUCHID_HELPER", &helper)
+            .env("STASH_SESSION_TIMEOUT", "30");
+    };
+    let stash_s = || {
+        let mut cmd = stash(&dir);
+        session(&mut cmd);
+        cmd
+    };
+    let env = dir.path().join(".env");
+    let run = || {
+        let mut cmd = stash_s();
+        cmd.args(["run", "--env-file"])
+            .arg(&env)
+            .args(["--", "sh", "-c", r#"printf %s "$T""#]);
+        cmd
+    };
+    stash_s().arg("ls").assert().success();
+    assert_eq!(prompts(&dir), 1);
+
+    // A file someone else may have written: the session isn't enough.
+    std::fs::write(&env, "T=stash://k\nPORT=1\n").unwrap();
+    run().assert().success().stdout("v");
+    assert_eq!(prompts(&dir), 2);
+    let reason = prompt_reasons(&dir).pop().unwrap();
+    assert!(reason.starts_with("allow "), "{reason}");
+    assert!(
+        reason.contains(".env (k) to give secrets to sh"),
+        "{reason}"
+    );
+
+    // Approved once: the session covers it, even with plain values changed.
+    std::fs::write(&env, "T=stash://k\nPORT=2\n").unwrap();
+    run().assert().success().stdout("v");
+    assert_eq!(prompts(&dir), 2);
+
+    // Asking for other secrets needs a new approval; declining runs nothing.
+    std::fs::write(&env, "T=stash://k\nU=stash://k\n").unwrap();
+    std::fs::write(dir.path().join("deny"), "").unwrap();
+    run()
+        .assert()
+        .failure()
+        .stdout("")
+        .stderr(predicate::str::contains("not allowed"));
+    std::fs::remove_file(dir.path().join("deny")).unwrap();
+    assert_eq!(prompts(&dir), 3);
+
+    // `stash trust` approves ahead of time, with the same check.
+    stash_s().arg("trust").arg(&env).assert().success();
+    assert_eq!(prompts(&dir), 4);
+    run().assert().success().stdout("v");
+    assert_eq!(prompts(&dir), 4);
+    stash_s()
+        .args(["trust", "--remove"])
+        .arg(&env)
+        .assert()
+        .success();
+    run().assert().success();
+    assert_eq!(prompts(&dir), 5);
+
+    // Templates for `stash inject` too.
+    let tpl = dir.path().join("config.tpl");
+    std::fs::write(&tpl, "key: {{ stash://k }}\n").unwrap();
+    let inject = || {
+        let mut cmd = stash_s();
+        cmd.args(["inject", "-i"]).arg(&tpl);
+        cmd
+    };
+    inject().assert().success().stdout("key: v\n");
+    assert_eq!(prompts(&dir), 6);
+    inject().assert().success();
+    assert_eq!(prompts(&dir), 6);
+
+    // References from your own environment (not a file) need nothing more.
+    stash_s()
+        .env("T", "stash://k")
+        .args(["run", "--", "true"])
+        .assert()
+        .success();
+    assert_eq!(prompts(&dir), 6);
+
+    stash_s().arg("lock").assert().success();
+}
+
+#[test]
+fn stash_trust_names_the_files_on_its_prompt_and_reports_unreadable_ones() {
+    let (dir, helper) = init_with_touch_id();
+    let env = dir.path().join(".env");
+    std::fs::write(&env, "T=stash://k\n").unwrap();
+    // No session: the unlock prompt is the approval, so it names the file.
+    stash_interactive(&dir, &helper)
+        .env("STASH_SESSION_TIMEOUT", "0")
+        .arg("trust")
+        .arg(&env)
+        .assert()
+        .success();
+    assert_eq!(prompts(&dir), 1);
+    let reason = prompt_reasons(&dir).pop().unwrap();
+    assert!(
+        reason.contains(".env (k) to give secrets to commands"),
+        "{reason}"
+    );
+
+    std::fs::write(&env, "not a valid line\n").unwrap();
+    stash(&dir)
+        .arg("trust")
+        .arg(&env)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("as a .env file: line 1"));
+    stash(&dir)
+        .arg("trust")
+        .arg(dir.path().join("missing.env"))
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("could not read"));
 }
 
 #[test]

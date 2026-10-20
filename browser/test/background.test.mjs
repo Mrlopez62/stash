@@ -63,7 +63,7 @@ function load(host, tabUrl = "https://shop.example/checkout") {
 }
 
 const page = { url: "https://shop.example/checkout", tab: { id: 1 } };
-const card = { number: "5555555555554444", cardholder: "J Lopez", exp_month: "03", exp_year: "2028", cvv: "321", postal_code: "" };
+const card = { number: "5555555555554444", cardholder: "Samus Aran", exp_month: "03", exp_year: "2028", cvv: "321", postal_code: "" };
 
 function cardHost(message) {
   if (message.type === "check_card") return { ok: true, state: "new", host: "shop.example", summary: "Mastercard •••• 4444 · 03/28" };

@@ -132,8 +132,23 @@ impl Fixture {
             .collect()
     }
 
+    /// The audit log, decrypted by `stash audit --json`. (The file itself
+    /// is sealed: it never shows names, commands, or sites.)
     fn audit_log(&self) -> String {
-        std::fs::read_to_string(self.dir.path().join("audit.log")).unwrap_or_default()
+        let raw = std::fs::read_to_string(self.dir.path().join("audit.log")).unwrap_or_default();
+        assert!(
+            !raw.contains("outcome"),
+            "the audit log isn't sealed: {raw}"
+        );
+        let out = self
+            .cli()
+            .args(["audit", "--json", "-n", "100000"])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+        String::from_utf8(out).unwrap()
     }
 }
 
@@ -303,6 +318,10 @@ fn the_audit_log_records_requests_but_never_values() {
     assert!(shown.contains("mcp-test"), "{shown}");
     assert!(shown.contains("run_with_secrets"), "{shown}");
     assert!(shown.contains("[github/token]"), "{shown}");
+
+    // New keys: the history moves with them.
+    f.cli().arg("rekey").assert().success();
+    assert!(f.audit_log().contains(r#""secrets":["github/token"]"#));
 }
 
 #[test]

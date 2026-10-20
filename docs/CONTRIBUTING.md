@@ -73,7 +73,7 @@ cargo test
 
 - **Add tests.** Bug fixes need a test that fails without the fix. New behavior needs tests that cover it.
 - **Keep it focused.** One logical change per pull request.
-- **Update the changelog.** Add a line to `CHANGELOG.md` for anything users would notice.
+- **Update the changelog.** Add a line to `docs/CHANGELOG.md` for anything users would notice.
 - **Write clear commit messages.** Use an imperative subject line of 72 characters or fewer, like "Add `stash rm` confirmation".
 
 ## Rules for security-sensitive code
@@ -83,7 +83,7 @@ These apply to everything in `crates/stash-core` and any code that touches secre
 - **Never log, print, or `Debug`-format a secret value.** Wrap secrets in `Zeroizing` or `secrecy` types.
 - **Don't write your own crypto.** Use the audited [RustCrypto](https://github.com/RustCrypto) crates the project already depends on. Adding a new crypto dependency needs discussion in an issue first.
 - **Version the vault format.** Any change to the on-disk format must bump `FORMAT_VERSION` and include a migration path. Existing vaults must keep opening.
-- **Update the threat model.** If a change affects what stash protects against, update [docs/threat-model.md](docs/threat-model.md).
+- **Update the threat model.** If a change affects what stash protects against, update [docs/threat-model.md](threat-model.md).
 
 ## Project layout
 
@@ -98,4 +98,4 @@ docs/               design and security docs
 
 ## License
 
-By contributing, you agree that your contributions are licensed under the [MIT License](LICENSE).
+By contributing, you agree that your contributions are licensed under the [MIT License](../LICENSE).

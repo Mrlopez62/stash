@@ -220,13 +220,9 @@ impl Vault {
             let keys = Keys::new(main, FORMAT_VERSION);
             bump_mac(&tx, &keys)?;
             tx.commit()?;
-            Ok(Self::from_parts(
-                conn,
-                keys,
-                Some(sensitive),
-                path,
-                FORMAT_VERSION,
-            ))
+            let vault = Self::from_parts(conn, keys, Some(sensitive), path, FORMAT_VERSION);
+            vault.publish_audit_key();
+            Ok(vault)
         })();
         if result.is_err() {
             let _ = fs::remove_file(path);
@@ -254,6 +250,7 @@ impl Vault {
                     let mut vault =
                         Self::from_parts(conn, keys, Some(sensitive), path, FORMAT_VERSION);
                     vault.backup = Some(backup);
+                    vault.publish_audit_key();
                     Ok(vault)
                 }
                 Ok(None) => {
@@ -305,7 +302,9 @@ impl Vault {
                 Ok(())
             })();
         }
-        Ok(Self::from_parts(conn, keys, Some(sensitive), path, version))
+        let vault = Self::from_parts(conn, keys, Some(sensitive), path, version);
+        vault.publish_audit_key();
+        Ok(vault)
     }
 
     /// Open an existing vault with its main key, as handed back by Touch ID
@@ -324,7 +323,9 @@ impl Vault {
             }
             snapshot.commit()?;
         }
-        Ok(Self::from_parts(conn, keys, None, path, version))
+        let vault = Self::from_parts(conn, keys, None, path, version);
+        vault.publish_audit_key();
+        Ok(vault)
     }
 
     fn from_parts(
@@ -365,6 +366,79 @@ impl Vault {
     /// If this unlock upgraded the vault: where the old file was copied.
     pub fn upgrade_backup(&self) -> Option<&Path> {
         self.backup.as_deref()
+    }
+
+    /// The audit log's secret key: the log is sealed to its public key
+    /// (see [`Vault::audit_public_key`]), so only an unlocked vault can
+    /// read it.
+    pub fn audit_secret(&self) -> Result<SecretKey> {
+        self.subkey(b"stash/v3/audit-key")
+    }
+
+    /// The public key the audit log is sealed to, as published in the
+    /// vault file by the last unlock. Needs no password, so processes can
+    /// add to the log while locked. `None` until a current-format vault
+    /// has been unlocked once.
+    pub fn audit_public_key(path: &Path) -> Result<Option<[u8; 32]>> {
+        if !path.exists() {
+            return Err(Error::VaultMissing(path.to_owned()));
+        }
+        let conn = Connection::open_with_flags(
+            path,
+            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )?;
+        conn.busy_timeout(std::time::Duration::from_secs(5))?;
+        let found: Option<Vec<u8>> = conn
+            .query_row(
+                "SELECT value FROM meta WHERE key = 'audit_public_key'",
+                [],
+                |r| r.get(0),
+            )
+            .optional()?;
+        Ok(found.and_then(|key| key.try_into().ok()))
+    }
+
+    /// A tag only this vault's key can make, for remembering decisions
+    /// outside the vault (like trusted `.env` files) so they can't be
+    /// forged.
+    pub fn trust_tag(&self, data: &[u8]) -> Result<[u8; 32]> {
+        Ok(crypto::hmac(
+            self.subkey(b"stash/v3/trust-key")?.as_ref(),
+            data,
+        ))
+    }
+
+    fn subkey(&self, label: &[u8]) -> Result<SecretKey> {
+        if self.keys.legacy {
+            return Err(self.upgrade_error());
+        }
+        Ok(Zeroizing::new(crypto::hmac(self.keys.main.as_ref(), label)))
+    }
+
+    /// Put the audit log's public key in the vault file (if it's missing
+    /// or was replaced), so locked processes seal log lines to the right
+    /// key. Best effort: a read-only or busy vault is left alone.
+    fn publish_audit_key(&self) {
+        let Ok(secret) = self.audit_secret() else {
+            return;
+        };
+        let public = crypto::x25519_public(&secret);
+        let stored: Option<Vec<u8>> = self
+            .conn
+            .query_row(
+                "SELECT value FROM meta WHERE key = 'audit_public_key'",
+                [],
+                |r| r.get(0),
+            )
+            .optional()
+            .ok()
+            .flatten();
+        if stored.as_deref() != Some(public.as_slice()) {
+            let _ = self.conn.execute(
+                "INSERT OR REPLACE INTO meta (key, value) VALUES ('audit_public_key', ?1)",
+                [public.as_slice()],
+            );
+        }
     }
 
     /// Whether an item with this name exists.
@@ -1356,6 +1430,39 @@ mod tests {
     }
 
     #[test]
+    fn the_audit_key_is_published_and_trust_tags_belong_to_one_vault() {
+        let (dir, path, vault) = new_vault();
+        let secret = vault.audit_secret().unwrap();
+        let public = crypto::x25519_public(&secret);
+        assert_eq!(Vault::audit_public_key(&path).unwrap(), Some(public));
+
+        // A replaced public key is put back by the next unlock.
+        let conn = Connection::open(&path).unwrap();
+        conn.execute(
+            "UPDATE meta SET value = ?1 WHERE key = 'audit_public_key'",
+            [[7u8; 32].as_slice()],
+        )
+        .unwrap();
+        let reopened = Vault::open_with_key(&path, vault.key()).unwrap();
+        assert_eq!(Vault::audit_public_key(&path).unwrap(), Some(public));
+
+        assert_eq!(
+            vault.trust_tag(b"x").unwrap(),
+            reopened.trust_tag(b"x").unwrap()
+        );
+        assert_ne!(
+            vault.trust_tag(b"x").unwrap(),
+            vault.trust_tag(b"y").unwrap()
+        );
+        let other = Vault::create(&dir.path().join("other.db"), b"password", FAST).unwrap();
+        assert_ne!(
+            vault.trust_tag(b"x").unwrap(),
+            other.trust_tag(b"x").unwrap()
+        );
+        assert!(Vault::audit_public_key(&dir.path().join("missing.db")).is_err());
+    }
+
+    #[test]
     fn add_get_list_remove() {
         let (_dir, _path, mut vault) = new_vault();
         vault.add("github/token", b"ghp_123", false).unwrap();
@@ -1707,12 +1814,12 @@ mod tests {
 
     fn visa() -> Item {
         let mut card = Item::card(&crate::item::CardDetails {
-            cardholder: Some("J Lopez"),
+            cardholder: Some("Samus Aran"),
             number: "4242 4242 4242 4242",
             expiry: Some("08/27"),
             cvv: Some("123"),
             pin: Some("9876"),
-            billing_zip: Some("78666"),
+            billing_zip: Some("12345"),
         })
         .unwrap();
         card.notes = "the blue one".into();
@@ -1761,7 +1868,7 @@ mod tests {
         assert_eq!(card.subtitle.as_deref(), Some("Visa •••• 4242 · 08/27"));
         let redacted = session.item_redacted("cards/visa").unwrap();
         assert!(redacted.is_redacted());
-        assert_eq!(redacted.labeled("cardholder").unwrap().value, "J Lopez");
+        assert_eq!(redacted.labeled("cardholder").unwrap().value, "Samus Aran");
         for label in ["number", "cvv", "pin"] {
             assert_eq!(redacted.labeled(label).unwrap().value, "", "{label}");
         }
@@ -1823,7 +1930,7 @@ mod tests {
         assert!(secret.is_some());
         let raw = fs::read(&path).unwrap();
         let contains = |needle: &[u8]| raw.windows(needle.len()).any(|w| w == needle);
-        for plain in [&b"4242424242424242"[..], b"J Lopez", b"the blue one"] {
+        for plain in [&b"4242424242424242"[..], b"Samus Aran", b"the blue one"] {
             assert!(!contains(plain));
         }
         assert!(!blob.is_empty());

@@ -20,7 +20,7 @@ use stash_core::reference::{self, ReferenceBuf};
 use zeroize::Zeroizing;
 
 use crate::mask::Masker;
-use crate::{PASSWORD_ENV, envfile, ui};
+use crate::{PASSWORD_ENV, Unlocked, envfile, trust, ui};
 
 pub struct Options {
     pub env_files: Vec<PathBuf>,
@@ -38,9 +38,11 @@ enum Value {
 
 /// Variables the child gets on top of the inherited environment. References
 /// in the inherited environment are included; `--env-file` variables override
-/// inherited ones, and later files override earlier ones.
-fn collect_env(env_files: &[PathBuf]) -> Result<BTreeMap<String, Value>> {
+/// inherited ones, and later files override earlier ones. Also: what each
+/// file asks for, to approve.
+fn collect_env(env_files: &[PathBuf]) -> Result<(BTreeMap<String, Value>, Vec<trust::Request>)> {
     let mut vars = BTreeMap::new();
+    let mut requests = Vec::new();
     for (key, value) in std::env::vars_os() {
         let (Some(key), Some(value)) = (key.to_str(), value.to_str()) else {
             continue;
@@ -59,6 +61,10 @@ fn collect_env(env_files: &[PathBuf]) -> Result<BTreeMap<String, Value>> {
         let contents = std::fs::read_to_string(path)
             .with_context(|| format!("could not read {}", path.display()))?;
         let parsed = envfile::parse(&contents).with_context(|| path.display().to_string())?;
+        requests.extend(
+            trust::Request::new(trust::Kind::Env, path, &contents)
+                .with_context(|| path.display().to_string())?,
+        );
         for (key, value) in parsed {
             let entry = match reference::parse(&value)
                 .with_context(|| format!("{}: {key}", path.display()))?
@@ -75,12 +81,16 @@ fn collect_env(env_files: &[PathBuf]) -> Result<BTreeMap<String, Value>> {
     }) {
         bail!("{key}: {why}");
     }
-    Ok(vars)
+    Ok((vars, requests))
 }
 
-pub fn run(opts: Options, unlock: impl FnOnce(&str) -> Result<Vault>) -> Result<ExitCode> {
+pub fn run(
+    opts: Options,
+    unlock: impl FnOnce(&str) -> Result<Unlocked>,
+    approve: impl FnOnce(&mut Vault, &str) -> Result<()>,
+) -> Result<ExitCode> {
     let (program, args) = opts.command.split_first().context("no command given")?;
-    let vars = collect_env(&opts.env_files)?;
+    let (vars, requests) = collect_env(&opts.env_files)?;
 
     let mut resolved: Vec<(&str, Zeroizing<Vec<u8>>)> = Vec::new();
     let references: Vec<_> = vars
@@ -93,12 +103,22 @@ pub fn run(opts: Options, unlock: impl FnOnce(&str) -> Result<Vault>) -> Result<
     if !references.is_empty() {
         let described: Vec<String> = references.iter().map(|(_, r)| r.describe()).collect();
         let names: Vec<&str> = described.iter().map(String::as_str).collect();
-        let purpose = format!(
+        let mut purpose = format!(
             "run {} with {}",
             program.to_string_lossy(),
             summarize(&names)
         );
-        let mut vault = unlock(&purpose)?;
+        if !requests.is_empty() {
+            let files: Vec<String> = requests
+                .iter()
+                .map(|r| r.path.display().to_string())
+                .collect();
+            purpose.push_str(&format!(" from {}", files.join(", ")));
+        }
+        let mut unlocked = unlock(&purpose)?;
+        let action = format!("give secrets to {}", program.to_string_lossy());
+        trust::ensure(&mut unlocked, &requests, &action, approve)?;
+        let mut vault = unlocked.vault;
         if crate::needs_sensitive(&vault, references.iter().map(|(_, r)| r.name.as_str()))? {
             crate::ensure_sensitive(&mut vault, &purpose)?;
         }

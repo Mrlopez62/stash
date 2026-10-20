@@ -66,7 +66,7 @@ impl Fixture {
                 "cards/visa",
                 "--card",
                 "--cardholder",
-                "J Lopez",
+                "Samus Aran",
                 "--expiry",
                 "08/27",
             ])
@@ -74,6 +74,25 @@ impl Fixture {
             .assert()
             .success();
         f
+    }
+
+    /// The audit log, decrypted by `stash audit --json`. (The file itself
+    /// is sealed: it never shows names, commands, or sites.)
+    fn audit_log(&self) -> String {
+        let raw = std::fs::read_to_string(self.dir.path().join("audit.log")).unwrap_or_default();
+        assert!(
+            !raw.contains("outcome"),
+            "the audit log isn't sealed: {raw}"
+        );
+        let out = self
+            .cli()
+            .args(["audit", "--json", "-n", "100000"])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+        String::from_utf8(out).unwrap()
     }
 
     fn cli(&self) -> Command {
@@ -198,7 +217,7 @@ fn every_card_fill_asks_touch_id_naming_the_site() {
     );
     assert_eq!(r[0]["ok"], false);
     assert!(r[0].get("number").is_none());
-    let log = std::fs::read_to_string(f.dir.path().join("audit.log")).unwrap();
+    let log = f.audit_log();
     assert!(log.contains(r#""tool":"autofill""#) && log.contains(r#""outcome":"denied""#));
     assert!(!log.contains("4242424242424242") && !log.contains("hunter2"));
 }
@@ -285,7 +304,7 @@ fn saves_a_new_login_from_a_sign_in_after_one_unlock() {
 fn saves_a_card_from_a_checkout_with_one_touch_id() {
     let f = Fixture::new();
     let url = "https://shop.example/checkout";
-    let card = json!({ "url": url, "number": "5555555555554444", "exp_month": "03", "exp_year": "2028", "cvv": "321", "cardholder": "J Lopez" });
+    let card = json!({ "url": url, "number": "5555555555554444", "exp_month": "03", "exp_year": "2028", "cvv": "321", "cardholder": "Samus Aran" });
     let with = |id: i64, kind: &str| {
         let mut r = card.clone();
         r["id"] = id.into();

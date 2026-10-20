@@ -291,7 +291,7 @@ impl Gate for TouchIdGate {
 
 pub struct Host<G: Gate> {
     vault_path: PathBuf,
-    audit_log: PathBuf,
+    audit_log: audit::Log,
     browser: String,
     gate: G,
     unlocked: Option<(Vault, Instant)>,
@@ -360,6 +360,7 @@ impl<G: Gate> Host<G> {
     /// until the request that asked is done (see `forget_sensitive`).
     fn unlock(&mut self, reason: &str) -> Result<(), String> {
         let vault = self.gate.unlock(&self.vault_path, reason)?;
+        self.audit_log.pin(&vault);
         self.unlocked = Some((vault, Instant::now()));
         Ok(())
     }
@@ -1057,6 +1058,8 @@ mod tests {
             p_cost: 1,
         };
         let mut vault = Vault::create(&path, b"pw", fast).unwrap();
+        // For `audit_text`: reopening by key skips the full-strength KDF.
+        std::fs::write(dir.path().join("test-key"), vault.key()).unwrap();
         let mut github = Item::login(Some("octocat"), "hunter2!", Some("https://github.com"));
         github.set("one-time password", FieldKind::Otp, "JBSWY3DPEHPK3PXP");
         vault.put("github", &github, false).unwrap();
@@ -1069,11 +1072,11 @@ mod tests {
             .unwrap();
         vault.put("token", &Item::secret("ghp_x"), false).unwrap();
         let card = Item::card(&CardDetails {
-            cardholder: Some("J Lopez"),
+            cardholder: Some("Samus Aran"),
             number: "4242 4242 4242 4242",
             expiry: Some("08/27"),
             cvv: Some("123"),
-            billing_zip: Some("78666"),
+            billing_zip: Some("12345"),
             ..Default::default()
         })
         .unwrap();
@@ -1088,6 +1091,26 @@ mod tests {
         host.respond(&json!({ "id": 0, "type": "unlock", "url": "https://github.com/" }));
         prompts.borrow_mut().seen.clear();
         (dir, host, prompts)
+    }
+
+    /// The audit log, decrypted, as JSON lines. (The file itself is
+    /// sealed: it never shows names or sites.)
+    fn audit_text(dir: &TempDir) -> String {
+        let key: [u8; 32] = std::fs::read(dir.path().join("test-key"))
+            .unwrap()
+            .try_into()
+            .unwrap();
+        let vault = Vault::open_with_key(&dir.path().join("vault.db"), &key).unwrap();
+        let log = audit::path_for(vault.path());
+        let raw = std::fs::read_to_string(log.file()).unwrap();
+        assert!(!raw.contains("outcome"), "the log isn't sealed: {raw}");
+        audit::read(&log, &vault.audit_secret().unwrap(), 1000)
+            .unwrap()
+            .events
+            .iter()
+            .map(|e| serde_json::to_string(e).unwrap())
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 
     #[test]
@@ -1199,7 +1222,7 @@ mod tests {
             &json!({ "id": 1, "type": "fill", "url": "https://github.com/", "name": "token" }),
         );
         assert_eq!(r["ok"], false, "secrets aren't filled: {r}");
-        let log = std::fs::read_to_string(dir.path().join("audit.log")).unwrap();
+        let log = audit_text(&dir);
         assert!(log.contains(r#""outcome":"blocked""#) && !log.contains("hunter2"));
     }
 
@@ -1226,7 +1249,7 @@ mod tests {
         let r = host.respond(&fill);
         assert_eq!(r["ok"], false);
         assert!(r.get("number").is_none());
-        let log = std::fs::read_to_string(dir.path().join("audit.log")).unwrap();
+        let log = audit_text(&dir);
         assert!(log.contains(r#""outcome":"denied""#) && !log.contains("4242424242424242"));
         // Never on plain http.
         let r = host.respond(&json!({ "id": 1, "type": "fill", "url": "http://shop.example/", "name": "cards/visa" }));
@@ -1314,7 +1337,7 @@ mod tests {
         // It fills there now.
         let r = host.respond(&json!({ "id": 4, "type": "fill", "url": "https://shop.example/", "name": "shop.example", "kind": "login" }));
         assert_eq!(r["password"], "s3cret");
-        let log = std::fs::read_to_string(dir.path().join("audit.log")).unwrap();
+        let log = audit_text(&dir);
         assert!(log.contains(r#""tool":"autofill-save""#) && !log.contains("s3cret"));
     }
 
@@ -1410,7 +1433,7 @@ mod tests {
     fn saving_a_card_takes_touch_id_naming_it_and_the_site() {
         let (dir, mut host, prompts) = unlocked();
         let save = json!({ "id": 1, "type": "save_card", "url": "https://shop.example/pay", "number": "5555 5555 5555 4444",
-                           "exp_month": "03", "exp_year": "27", "cvv": "321", "cardholder": "J Lopez", "postal_code": "78666" });
+                           "exp_month": "03", "exp_year": "27", "cvv": "321", "cardholder": "Samus Aran", "postal_code": "12345" });
         let r = host.respond(&save);
         assert_eq!(
             (r["name"].as_str(), r["action"].as_str()),
@@ -1432,7 +1455,7 @@ mod tests {
         prompts.borrow_mut().deny = true;
         let r = host.respond(&json!({ "id": 3, "type": "save_card", "url": "https://shop.example/", "number": "378282246310005", "exp_month": "1", "exp_year": "2030" }));
         assert_eq!(r["ok"], false);
-        let log = std::fs::read_to_string(dir.path().join("audit.log")).unwrap();
+        let log = audit_text(&dir);
         assert!(
             log.contains("card from shop.example")
                 && !log.contains("5555555555554444")
