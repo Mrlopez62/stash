@@ -339,11 +339,11 @@ final class MockBackend: VaultBackend {
             fields = []
         case .card:
             fields = [
-                .init(label: "cardholder", kind: .text, value: "Joshua Lopez"),
+                .init(label: "cardholder", kind: .text, value: "Samus Aran"),
                 .init(label: "number", kind: .concealed, value: nil),
                 .init(label: "expiry", kind: .text, value: "08/27"),
                 .init(label: "cvv", kind: .concealed, value: nil),
-                .init(label: "billing zip", kind: .text, value: "78666"),
+                .init(label: "billing zip", kind: .text, value: "12345"),
             ]
         case .ssh:
             fields = [
@@ -355,7 +355,7 @@ final class MockBackend: VaultBackend {
         case .bank:
             fields = [
                 .init(label: "bank", kind: .text, value: "Chase"),
-                .init(label: "account holder", kind: .text, value: "Joshua Lopez"),
+                .init(label: "account holder", kind: .text, value: "Samus Aran"),
                 .init(label: "account type", kind: .text, value: "checking"),
                 .init(label: "routing number", kind: .text, value: "021000021"),
                 .init(label: "account number", kind: .concealed, value: nil),
