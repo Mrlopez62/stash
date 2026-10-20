@@ -8,10 +8,8 @@
 //! vault is locked, but reading it takes an unlocked vault: the names of
 //! your secrets and the sites you fill aren't left in plain text.
 
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::io::{BufRead, BufReader, Write};
-use std::os::fd::AsRawFd;
-use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -20,6 +18,8 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use serde::{Deserialize, Serialize};
 use stash_core::{Vault, crypto};
+
+use crate::filelock;
 
 /// Binds sealed lines to this use.
 const SEAL_LABEL: &[u8] = b"stash/v3/audit-line";
@@ -60,9 +60,21 @@ enum Line {
 pub struct Log {
     file: PathBuf,
     vault: PathBuf,
+    /// The public key derived at this process's last unlock (see
+    /// [`Log::pin`]).
+    pinned: Option<[u8; 32]>,
 }
 
 impl Log {
+    /// Seal from now on to the key this vault derives, rather than the one
+    /// published in the vault file, which a program running as you could
+    /// swap. Long-lived processes call this after each unlock.
+    pub fn pin(&mut self, vault: &Vault) {
+        if let Ok(secret) = vault.audit_secret() {
+            self.pinned = Some(crypto::x25519_public(&secret));
+        }
+    }
+
     #[cfg(test)]
     pub fn file(&self) -> &Path {
         &self.file
@@ -73,6 +85,7 @@ pub fn path_for(vault: &Path) -> Log {
     Log {
         file: vault.with_file_name("audit.log"),
         vault: vault.to_owned(),
+        pinned: None,
     }
 }
 
@@ -80,7 +93,10 @@ pub fn path_for(vault: &Path) -> Log {
 /// have one yet (it hasn't been unlocked since v0.14), the line keeps only
 /// who asked, the tool, and the outcome: no names, commands, or sites.
 pub fn record(log: &Log, event: &Event) -> Result<()> {
-    let line = match Vault::audit_public_key(&log.vault).ok().flatten() {
+    let public = log
+        .pinned
+        .or_else(|| Vault::audit_public_key(&log.vault).ok().flatten());
+    let line = match public {
         Some(public) => seal(&public, event)?,
         None => serde_json::to_vec(&Line::Plain(Event {
             secrets: Vec::new(),
@@ -89,7 +105,7 @@ pub fn record(log: &Log, event: &Event) -> Result<()> {
             ..event.clone()
         }))?,
     };
-    let mut file = locked(&log.file)?;
+    let mut file = filelock::open_locked(&log.file)?;
     let mut line = line;
     line.push(b'\n');
     file.write_all(&line)?;
@@ -102,33 +118,6 @@ fn seal(public: &[u8; 32], event: &Event) -> Result<Vec<u8>> {
     Ok(serde_json::to_vec(&Line::Sealed {
         sealed: BASE64.encode(sealed),
     })?)
-}
-
-/// The log, opened for appending and locked against [`rewrite`]. If a
-/// rewrite replaced the file while we waited, open the new one.
-fn locked(path: &Path) -> Result<File> {
-    loop {
-        let file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .mode(0o600)
-            .open(path)
-            .with_context(|| format!("could not open the audit log {}", path.display()))?;
-        flock(&file)?;
-        let current = std::fs::metadata(path).ok().map(|m| (m.dev(), m.ino()));
-        let opened = file.metadata()?;
-        if current == Some((opened.dev(), opened.ino())) {
-            return Ok(file);
-        }
-    }
-}
-
-fn flock(file: &File) -> Result<()> {
-    // SAFETY: a valid descriptor; the lock is released when it's closed.
-    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } != 0 {
-        return Err(std::io::Error::last_os_error()).context("could not lock the audit log");
-    }
-    Ok(())
 }
 
 /// What [`read`] found.
@@ -190,7 +179,7 @@ fn open(secret: &[u8; 32], sealed: &str) -> Option<Event> {
 /// `stash passwd` and `stash rekey` don't lose the history. Lines that
 /// can't be opened are kept as they are.
 pub fn rewrite(log: &Log, old: Option<&[u8; 32]>, public: &[u8; 32]) -> Result<()> {
-    let guard = locked(&log.file)?;
+    let guard = filelock::open_locked(&log.file)?;
     let mut out = Vec::new();
     let mut changed = false;
     for line in lines(&log.file)? {
@@ -211,17 +200,7 @@ pub fn rewrite(log: &Log, old: Option<&[u8; 32]>, public: &[u8; 32]) -> Result<(
     if !changed {
         return Ok(());
     }
-    let tmp = log.file.with_file_name("audit.log.tmp");
-    let _ = std::fs::remove_file(&tmp);
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(&tmp)
-        .with_context(|| format!("could not write {}", tmp.display()))?;
-    file.write_all(&out)?;
-    file.sync_all()?;
-    std::fs::rename(&tmp, &log.file)?;
+    filelock::replace(&log.file, &out)?;
     drop(guard);
     Ok(())
 }
@@ -381,6 +360,32 @@ mod tests {
         assert_eq!(read(&log, &new, 10).unwrap().unreadable, 2);
         rewrite(&log, Some(&secret), &crypto::x25519_public(&new)).unwrap();
         assert_eq!(read(&log, &new, 10).unwrap().events, before.events);
+    }
+
+    #[test]
+    fn a_pinned_key_ignores_a_swapped_public_key() {
+        let dir = TempDir::new().unwrap();
+        let vault = vault(&dir);
+        let mut log = path_for(vault.path());
+        log.pin(&vault);
+        // Another program puts its own key in the vault file.
+        let attacker = crypto::random_key().unwrap();
+        rusqlite::Connection::open(vault.path())
+            .unwrap()
+            .execute(
+                "UPDATE meta SET value = ?1 WHERE key = 'audit_public_key'",
+                [crypto::x25519_public(&attacker).as_slice()],
+            )
+            .unwrap();
+        record(&log, &event(1, "github/token")).unwrap();
+        assert_eq!(
+            read(&log, &vault.audit_secret().unwrap(), 10)
+                .unwrap()
+                .events
+                .len(),
+            1
+        );
+        assert!(read(&log, &attacker, 10).unwrap().events.is_empty());
     }
 
     #[test]

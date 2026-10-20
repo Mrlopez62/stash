@@ -175,6 +175,7 @@ impl<G: Gate> Agent<G> {
     /// Unlock with a prompt saying `reason`.
     fn unlock(&mut self, reason: &str) -> Result<(), String> {
         let vault = self.gate.unlock(&self.vault_path, reason)?;
+        self.audit_log.pin(&vault);
         self.unlocked = Some((vault, Instant::now()));
         Ok(())
     }

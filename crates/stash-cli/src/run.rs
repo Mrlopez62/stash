@@ -20,7 +20,7 @@ use stash_core::reference::{self, ReferenceBuf};
 use zeroize::Zeroizing;
 
 use crate::mask::Masker;
-use crate::{PASSWORD_ENV, envfile, trust, ui};
+use crate::{PASSWORD_ENV, Unlocked, envfile, trust, ui};
 
 pub struct Options {
     pub env_files: Vec<PathBuf>,
@@ -86,7 +86,7 @@ fn collect_env(env_files: &[PathBuf]) -> Result<(BTreeMap<String, Value>, Vec<tr
 
 pub fn run(
     opts: Options,
-    unlock: impl FnOnce(&str) -> Result<Vault>,
+    unlock: impl FnOnce(&str) -> Result<Unlocked>,
     approve: impl FnOnce(&mut Vault, &str) -> Result<()>,
 ) -> Result<ExitCode> {
     let (program, args) = opts.command.split_first().context("no command given")?;
@@ -115,9 +115,10 @@ pub fn run(
                 .collect();
             purpose.push_str(&format!(" from {}", files.join(", ")));
         }
-        let mut vault = unlock(&purpose)?;
+        let mut unlocked = unlock(&purpose)?;
         let action = format!("give secrets to {}", program.to_string_lossy());
-        trust::ensure(&mut vault, &requests, &action, approve)?;
+        trust::ensure(&mut unlocked, &requests, &action, approve)?;
+        let mut vault = unlocked.vault;
         if crate::needs_sensitive(&vault, references.iter().map(|(_, r)| r.name.as_str()))? {
             crate::ensure_sensitive(&mut vault, &purpose)?;
         }

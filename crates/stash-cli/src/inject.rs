@@ -11,7 +11,7 @@ use anyhow::{Context, Result, bail};
 use stash_core::{Vault, reference};
 use zeroize::Zeroizing;
 
-use crate::{trust, ui};
+use crate::{Unlocked, trust, ui};
 
 pub struct Options {
     pub input: Option<PathBuf>,
@@ -21,7 +21,7 @@ pub struct Options {
 
 pub fn inject(
     opts: Options,
-    unlock: impl FnOnce(&str) -> Result<Vault>,
+    unlock: impl FnOnce(&str) -> Result<Unlocked>,
     approve: impl FnOnce(&mut Vault, &str) -> Result<()>,
 ) -> Result<()> {
     let template = match &opts.input {
@@ -68,14 +68,11 @@ pub fn inject(
         if let Some(request) = &request {
             purpose.push_str(&format!(" from {}", request.path.display()));
         }
-        let mut vault = unlock(&purpose)?;
+        let mut unlocked = unlock(&purpose)?;
         let requests: Vec<_> = request.into_iter().collect();
-        trust::ensure(
-            &mut vault,
-            &requests,
-            &format!("write secrets into {target}"),
-            approve,
-        )?;
+        let action = format!("write secrets into {target}");
+        trust::ensure(&mut unlocked, &requests, &action, approve)?;
+        let mut vault = unlocked.vault;
         if crate::needs_sensitive(&vault, placeholders.iter().map(|p| p.reference.name))? {
             crate::ensure_sensitive(&mut vault, &purpose)?;
         }

@@ -360,6 +360,7 @@ impl<G: Gate> Host<G> {
     /// until the request that asked is done (see `forget_sensitive`).
     fn unlock(&mut self, reason: &str) -> Result<(), String> {
         let vault = self.gate.unlock(&self.vault_path, reason)?;
+        self.audit_log.pin(&vault);
         self.unlocked = Some((vault, Instant::now()));
         Ok(())
     }
@@ -1057,6 +1058,8 @@ mod tests {
             p_cost: 1,
         };
         let mut vault = Vault::create(&path, b"pw", fast).unwrap();
+        // For `audit_text`: reopening by key skips the full-strength KDF.
+        std::fs::write(dir.path().join("test-key"), vault.key()).unwrap();
         let mut github = Item::login(Some("octocat"), "hunter2!", Some("https://github.com"));
         github.set("one-time password", FieldKind::Otp, "JBSWY3DPEHPK3PXP");
         vault.put("github", &github, false).unwrap();
@@ -1093,7 +1096,11 @@ mod tests {
     /// The audit log, decrypted, as JSON lines. (The file itself is
     /// sealed: it never shows names or sites.)
     fn audit_text(dir: &TempDir) -> String {
-        let vault = Vault::open(&dir.path().join("vault.db"), b"pw").unwrap();
+        let key: [u8; 32] = std::fs::read(dir.path().join("test-key"))
+            .unwrap()
+            .try_into()
+            .unwrap();
+        let vault = Vault::open_with_key(&dir.path().join("vault.db"), &key).unwrap();
         let log = audit::path_for(vault.path());
         let raw = std::fs::read_to_string(log.file()).unwrap();
         assert!(!raw.contains("outcome"), "the log isn't sealed: {raw}");

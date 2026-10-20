@@ -346,6 +346,7 @@ impl Server {
                 keys.sensitive,
             )
         };
+        self.audit_log.pin(&vault);
         let unlocked = self.unlocked.insert(Unlocked {
             vault,
             last_used: Instant::now(),

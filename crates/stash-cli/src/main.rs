@@ -4,6 +4,7 @@ mod audit;
 mod browser_cmd;
 mod clipboard;
 mod envfile;
+mod filelock;
 mod harden;
 mod inject;
 mod items;
@@ -23,7 +24,6 @@ use std::ffi::OsString;
 use std::io::{self, IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
@@ -531,7 +531,11 @@ fn run(cli: Cli) -> Result<ExitCode> {
                 no_masking,
                 command,
             };
-            return run::run(opts, |purpose| unlock(&path, purpose), confirm_fresh);
+            return run::run(
+                opts,
+                |purpose| unlock_checked(&path, purpose),
+                confirm_fresh,
+            );
         }
         Command::Inject {
             input,
@@ -543,7 +547,11 @@ fn run(cli: Cli) -> Result<ExitCode> {
                 output,
                 force,
             };
-            inject::inject(opts, |purpose| unlock(&path, purpose), confirm_fresh)?;
+            inject::inject(
+                opts,
+                |purpose| unlock_checked(&path, purpose),
+                confirm_fresh,
+            )?;
         }
         Command::Mcp {
             allow,
@@ -584,12 +592,29 @@ fn run(cli: Cli) -> Result<ExitCode> {
             }
             let mut requests = Vec::new();
             for file in &files {
-                let found: Vec<_> = [trust::Kind::Env, trust::Kind::Template]
-                    .into_iter()
-                    .filter_map(|kind| trust::Request::read(kind, file).ok().flatten())
-                    .collect();
+                let contents = std::fs::read_to_string(file)
+                    .with_context(|| format!("could not read {}", file.display()))?;
+                let mut found = Vec::new();
+                let mut problems = Vec::new();
+                for (kind, what) in [
+                    (trust::Kind::Env, "as a .env file"),
+                    (trust::Kind::Template, "as a template"),
+                ] {
+                    match trust::Request::new(kind, file, &contents) {
+                        Ok(Some(request)) => found.push(request),
+                        Ok(None) => {}
+                        Err(e) => problems.push(format!("{what}: {e:#}")),
+                    }
+                }
                 if found.is_empty() {
-                    bail!("{} asks for no secrets", file.display());
+                    if problems.is_empty() {
+                        bail!("{} asks for no secrets", file.display());
+                    }
+                    bail!(
+                        "{} asks for no secrets stash can read ({})",
+                        file.display(),
+                        problems.join("; ")
+                    );
                 }
                 requests.extend(found);
             }
@@ -601,9 +626,15 @@ fn run(cli: Cli) -> Result<ExitCode> {
                     }
                 }
             } else {
-                let mut vault = unlock(&path, "approve files")?;
+                // The unlock prompt names every file and its secrets, so a
+                // fresh unlock is itself the approval.
+                let described: Vec<String> = requests.iter().map(|r| r.describe()).collect();
+                let mut unlocked = unlock_checked(
+                    &path,
+                    &format!("allow {} to give secrets to commands", described.join("; ")),
+                )?;
                 trust::ensure(
-                    &mut vault,
+                    &mut unlocked,
                     &requests,
                     "give secrets to commands",
                     confirm_fresh,
@@ -858,8 +889,22 @@ fn default_vault_path() -> Result<PathBuf> {
 /// `STASH_PASSWORD` skips sessions and Touch ID entirely, so scripts never
 /// start background processes or show prompts.
 fn unlock(path: &Path, purpose: &str) -> Result<Vault> {
+    Ok(unlock_checked(path, purpose)?.vault)
+}
+
+/// An unlocked vault, and whether unlocking it took a fresh Touch ID or the
+/// master password (not a session). A fresh unlock whose prompt named what
+/// it's for counts as approving that.
+pub(crate) struct Unlocked {
+    pub vault: Vault,
+    pub fresh: bool,
+}
+
+/// [`unlock`], saying whether it was fresh.
+fn unlock_checked(path: &Path, purpose: &str) -> Result<Unlocked> {
     if std::env::var_os(PASSWORD_ENV).is_some() {
-        return unlock_with_password(path, purpose);
+        let vault = unlock_with_password(path, purpose)?;
+        return Ok(Unlocked { vault, fresh: true });
     }
     if !path.exists() {
         return Err(stash_core::Error::VaultMissing(path.to_owned()).into());
@@ -872,32 +917,29 @@ fn unlock(path: &Path, purpose: &str) -> Result<Vault> {
         && let Some(key) = agent::get(&socket, &canonical)
         && let Ok(vault) = Vault::open_with_key(path, &key)
     {
-        return Ok(vault);
+        return Ok(Unlocked {
+            vault,
+            fresh: false,
+        });
     }
 
     let vault = match unlock_with_touch_id(path, purpose)? {
         Some(vault) => vault,
         None => unlock_with_password(path, purpose)?,
     };
-    FRESH_UNLOCK.store(true, Ordering::Relaxed);
     if let Some(idle) = session
         && let Err(e) = agent::put(&socket, &canonical, vault.key(), idle)
     {
         eprintln!("stash: warning: could not start a session ({e:#}); you'll be asked again");
     }
-    Ok(vault)
+    Ok(Unlocked { vault, fresh: true })
 }
 
-/// Set when this process unlocked with Touch ID or the master password
-/// (not a session), so that prompt already counts as a fresh approval.
-static FRESH_UNLOCK: AtomicBool = AtomicBool::new(false);
-
 /// A fresh approval: Touch ID or the master password, never a session.
-/// `reason` is shown on the prompt. The unlock this command just did counts
-/// if it was itself fresh, and `STASH_PASSWORD` (scripts and CI) counts as
-/// holding the password.
+/// `reason` is shown on the prompt. `STASH_PASSWORD` (scripts and CI)
+/// counts as holding the password.
 fn confirm_fresh(vault: &mut Vault, reason: &str) -> Result<()> {
-    if FRESH_UNLOCK.load(Ordering::Relaxed) || std::env::var_os(PASSWORD_ENV).is_some() {
+    if std::env::var_os(PASSWORD_ENV).is_some() {
         return Ok(());
     }
     let path = vault.path().to_owned();

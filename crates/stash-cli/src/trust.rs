@@ -6,23 +6,21 @@
 //! the secrets, even if this shell has an unlocked session. Like direnv's
 //! `allow`.
 //!
-//! Approvals are kept in `trusted-files` next to the vault, as one tag per
+//! Approvals are kept in `vault.db.trusted` next to the vault, as one tag per
 //! line: an HMAC, under a key only the unlocked vault has, of the file's
 //! path and the references in it. So the list reveals no paths or names,
 //! and a program running as you can't add an approval (only delete them,
 //! which just means being asked again).
 
 use std::collections::BTreeSet;
-use std::fs::OpenOptions;
 use std::io::Write;
 use std::os::unix::ffi::OsStrExt;
-use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use stash_core::{Vault, reference};
 
-use crate::envfile;
+use crate::{Unlocked, envfile, filelock};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
@@ -82,6 +80,7 @@ impl Request {
     }
 
     /// Read `path` and see what it asks for.
+    #[cfg(test)]
     pub fn read(kind: Kind, path: &Path) -> Result<Option<Self>> {
         let contents = std::fs::read_to_string(path)
             .with_context(|| format!("could not read {}", path.display()))?;
@@ -114,14 +113,16 @@ impl Request {
 }
 
 /// Make sure every file is approved. Files that are new or changed need a
-/// fresh approval (`approve`, given the prompt's wording), which is then
-/// remembered.
+/// fresh approval, which is then remembered: the unlock itself, if it was
+/// fresh (its prompt must have named the files), or else `approve`, given
+/// the prompt's wording.
 pub fn ensure(
-    vault: &mut Vault,
+    unlocked: &mut Unlocked,
     requests: &[Request],
     action: &str,
     approve: impl FnOnce(&mut Vault, &str) -> Result<()>,
 ) -> Result<()> {
+    let vault = &mut unlocked.vault;
     let mut new = Vec::new();
     for request in requests {
         if !is_trusted(vault, request)? {
@@ -131,21 +132,26 @@ pub fn ensure(
     if new.is_empty() {
         return Ok(());
     }
-    let files: Vec<String> = new.iter().map(|r| r.describe()).collect();
-    approve(vault, &format!("allow {} to {action}", files.join("; ")))
-        .context("not allowed (approve it once with Touch ID or your master password, or run `stash trust <file>`)")?;
+    if !unlocked.fresh {
+        let files: Vec<String> = new.iter().map(|r| r.describe()).collect();
+        approve(vault, &format!("allow {} to {action}", files.join("; ")))
+            .context("not allowed (approve it once with Touch ID or your master password, or run `stash trust <file>`)")?;
+    }
     for request in new {
         remember(vault, request)?;
     }
     Ok(())
 }
 
+/// The approvals for one vault: `vault.db.trusted` next to `vault.db`.
 pub fn file_for(vault: &Path) -> PathBuf {
-    vault.with_file_name("trusted-files")
+    let mut name = vault.file_name().unwrap_or_default().to_owned();
+    name.push(".trusted");
+    vault.with_file_name(name)
 }
 
-fn tags(vault: &Vault) -> Vec<String> {
-    std::fs::read_to_string(file_for(vault.path()))
+fn tags(path: &Path) -> Vec<String> {
+    std::fs::read_to_string(path)
         .unwrap_or_default()
         .lines()
         .map(str::to_owned)
@@ -154,47 +160,33 @@ fn tags(vault: &Vault) -> Vec<String> {
 
 pub fn is_trusted(vault: &Vault, request: &Request) -> Result<bool> {
     let tag = request.tag(vault)?;
-    Ok(tags(vault).contains(&tag))
+    Ok(tags(&file_for(vault.path())).contains(&tag))
 }
 
 /// Remember an approval. Call only after a fresh one.
 pub fn remember(vault: &Vault, request: &Request) -> Result<()> {
     let tag = request.tag(vault)?;
-    if tags(vault).contains(&tag) {
-        return Ok(());
-    }
     let path = file_for(vault.path());
-    let mut file = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .mode(0o600)
-        .open(&path)
-        .with_context(|| format!("could not write {}", path.display()))?;
-    file.write_all(format!("{tag}\n").as_bytes())?;
+    let mut file = filelock::open_locked(&path)?;
+    if !tags(&path).contains(&tag) {
+        file.write_all(format!("{tag}\n").as_bytes())?;
+    }
     Ok(())
 }
 
 /// Forget the approval for the file as it is now. Whether there was one.
 pub fn forget(vault: &Vault, request: &Request) -> Result<bool> {
     let tag = request.tag(vault)?;
-    let mut tags = tags(vault);
+    let path = file_for(vault.path());
+    let _guard = filelock::open_locked(&path)?;
+    let mut tags = tags(&path);
     let before = tags.len();
     tags.retain(|t| *t != tag);
     if tags.len() == before {
         return Ok(false);
     }
-    let path = file_for(vault.path());
-    let tmp = path.with_file_name("trusted-files.tmp");
-    let _ = std::fs::remove_file(&tmp);
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(&tmp)?;
-    for t in &tags {
-        writeln!(file, "{t}")?;
-    }
-    std::fs::rename(&tmp, &path)?;
+    let contents: String = tags.iter().map(|t| format!("{t}\n")).collect();
+    filelock::replace(&path, contents.as_bytes())?;
     Ok(true)
 }
 
@@ -257,8 +249,13 @@ mod tests {
             .unwrap();
         assert!(!is_trusted(&vault, &elsewhere).unwrap());
 
-        // Nor in another vault, and the list reveals nothing.
-        assert!(!is_trusted(&new_vault(&dir, "other.db"), &request).unwrap());
+        // Nor in another vault (which keeps its own list), and the list
+        // reveals nothing.
+        let other = new_vault(&dir, "other.db");
+        assert!(!is_trusted(&other, &request).unwrap());
+        remember(&other, &request).unwrap();
+        forget_all(other.path());
+        assert!(is_trusted(&vault, &request).unwrap());
         let list = std::fs::read_to_string(file_for(vault.path())).unwrap();
         assert!(!list.contains("github") && !list.contains(".env"));
         use std::os::unix::fs::PermissionsExt;

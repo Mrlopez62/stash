@@ -582,6 +582,40 @@ fn new_or_changed_env_files_and_templates_need_a_fresh_approval_even_in_a_sessio
 }
 
 #[test]
+fn stash_trust_names_the_files_on_its_prompt_and_reports_unreadable_ones() {
+    let (dir, helper) = init_with_touch_id();
+    let env = dir.path().join(".env");
+    std::fs::write(&env, "T=stash://k\n").unwrap();
+    // No session: the unlock prompt is the approval, so it names the file.
+    stash_interactive(&dir, &helper)
+        .env("STASH_SESSION_TIMEOUT", "0")
+        .arg("trust")
+        .arg(&env)
+        .assert()
+        .success();
+    assert_eq!(prompts(&dir), 1);
+    let reason = prompt_reasons(&dir).pop().unwrap();
+    assert!(
+        reason.contains(".env (k) to give secrets to commands"),
+        "{reason}"
+    );
+
+    std::fs::write(&env, "not a valid line\n").unwrap();
+    stash(&dir)
+        .arg("trust")
+        .arg(&env)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("as a .env file: line 1"));
+    stash(&dir)
+        .arg("trust")
+        .arg(dir.path().join("missing.env"))
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("could not read"));
+}
+
+#[test]
 fn unlock_prompts_describe_the_request() {
     let (dir, helper) = init_with_touch_id();
     stash_interactive(&dir, &helper)
