@@ -1072,11 +1072,11 @@ mod tests {
             .unwrap();
         vault.put("token", &Item::secret("ghp_x"), false).unwrap();
         let card = Item::card(&CardDetails {
-            cardholder: Some("J Lopez"),
+            cardholder: Some("Samus Aran"),
             number: "4242 4242 4242 4242",
             expiry: Some("08/27"),
             cvv: Some("123"),
-            billing_zip: Some("78666"),
+            billing_zip: Some("12345"),
             ..Default::default()
         })
         .unwrap();
@@ -1433,7 +1433,7 @@ mod tests {
     fn saving_a_card_takes_touch_id_naming_it_and_the_site() {
         let (dir, mut host, prompts) = unlocked();
         let save = json!({ "id": 1, "type": "save_card", "url": "https://shop.example/pay", "number": "5555 5555 5555 4444",
-                           "exp_month": "03", "exp_year": "27", "cvv": "321", "cardholder": "J Lopez", "postal_code": "78666" });
+                           "exp_month": "03", "exp_year": "27", "cvv": "321", "cardholder": "Samus Aran", "postal_code": "12345" });
         let r = host.respond(&save);
         assert_eq!(
             (r["name"].as_str(), r["action"].as_str()),

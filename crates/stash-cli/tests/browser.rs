@@ -66,7 +66,7 @@ impl Fixture {
                 "cards/visa",
                 "--card",
                 "--cardholder",
-                "J Lopez",
+                "Samus Aran",
                 "--expiry",
                 "08/27",
             ])
@@ -304,7 +304,7 @@ fn saves_a_new_login_from_a_sign_in_after_one_unlock() {
 fn saves_a_card_from_a_checkout_with_one_touch_id() {
     let f = Fixture::new();
     let url = "https://shop.example/checkout";
-    let card = json!({ "url": url, "number": "5555555555554444", "exp_month": "03", "exp_year": "2028", "cvv": "321", "cardholder": "J Lopez" });
+    let card = json!({ "url": url, "number": "5555555555554444", "exp_month": "03", "exp_year": "2028", "cvv": "321", "cardholder": "Samus Aran" });
     let with = |id: i64, kind: &str| {
         let mut r = card.clone();
         r["id"] = id.into();

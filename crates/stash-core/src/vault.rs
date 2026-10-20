@@ -1814,12 +1814,12 @@ mod tests {
 
     fn visa() -> Item {
         let mut card = Item::card(&crate::item::CardDetails {
-            cardholder: Some("J Lopez"),
+            cardholder: Some("Samus Aran"),
             number: "4242 4242 4242 4242",
             expiry: Some("08/27"),
             cvv: Some("123"),
             pin: Some("9876"),
-            billing_zip: Some("78666"),
+            billing_zip: Some("12345"),
         })
         .unwrap();
         card.notes = "the blue one".into();
@@ -1868,7 +1868,7 @@ mod tests {
         assert_eq!(card.subtitle.as_deref(), Some("Visa •••• 4242 · 08/27"));
         let redacted = session.item_redacted("cards/visa").unwrap();
         assert!(redacted.is_redacted());
-        assert_eq!(redacted.labeled("cardholder").unwrap().value, "J Lopez");
+        assert_eq!(redacted.labeled("cardholder").unwrap().value, "Samus Aran");
         for label in ["number", "cvv", "pin"] {
             assert_eq!(redacted.labeled(label).unwrap().value, "", "{label}");
         }
@@ -1930,7 +1930,7 @@ mod tests {
         assert!(secret.is_some());
         let raw = fs::read(&path).unwrap();
         let contains = |needle: &[u8]| raw.windows(needle.len()).any(|w| w == needle);
-        for plain in [&b"4242424242424242"[..], b"J Lopez", b"the blue one"] {
+        for plain in [&b"4242424242424242"[..], b"Samus Aran", b"the blue one"] {
             assert!(!contains(plain));
         }
         assert!(!blob.is_empty());

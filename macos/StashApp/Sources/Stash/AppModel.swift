@@ -284,11 +284,11 @@ final class MockBackend: VaultBackend {
             .init(name: "openai/api-key", kind: .secret, username: nil, url: nil, hasOtp: false, updated: now - 86_400),
             .init(name: "stripe/secret-key", kind: .secret, username: nil, url: nil, hasOtp: false, updated: now - 3 * 86_400),
             .init(name: "stripe/dashboard", kind: .login, username: "billing@acme.dev", url: "https://dashboard.stripe.com", hasOtp: true, updated: now - 5 * 86_400),
-            .init(name: "work/aws-console", kind: .login, username: "j.lopez@acme.dev", url: "https://console.aws.amazon.com", hasOtp: true, updated: now - 9 * 86_400),
-            .init(name: "work/vercel", kind: .login, username: "joshua", url: "https://vercel.com", hasOtp: false, updated: now - 12 * 86_400),
+            .init(name: "work/aws-console", kind: .login, username: "s.aran@acme.dev", url: "https://console.aws.amazon.com", hasOtp: true, updated: now - 9 * 86_400),
+            .init(name: "work/vercel", kind: .login, username: "samus", url: "https://vercel.com", hasOtp: false, updated: now - 12 * 86_400),
             .init(name: "work/database-url", kind: .secret, username: nil, url: nil, hasOtp: false, updated: now - 20 * 86_400),
             .init(name: "cloudflare/api-token", kind: .secret, username: nil, url: nil, hasOtp: false, updated: now - 26 * 86_400),
-            .init(name: "linear", kind: .login, username: "joshua@acme.dev", url: "https://linear.app", hasOtp: false, updated: now - 40 * 86_400),
+            .init(name: "linear", kind: .login, username: "samus@acme.dev", url: "https://linear.app", hasOtp: false, updated: now - 40 * 86_400),
             .init(name: "notes/home-wifi", kind: .note, username: nil, url: nil, hasOtp: false, updated: now - 60 * 86_400),
             .init(name: "cards/visa", kind: .card, username: nil, url: nil, hasOtp: false, updated: now - 4 * 86_400,
                   subtitle: "Visa •••• 4242 · 08/27"),
@@ -349,7 +349,7 @@ final class MockBackend: VaultBackend {
             fields = [
                 .init(label: "private key", kind: .concealed, value: nil),
                 .init(label: "public key", kind: .text,
-                      value: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIO60iQ4pgY5/xWYrWhdrOrpEvKYcKJnSet59LRMQ1vFq joshua@mac"),
+                      value: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIO60iQ4pgY5/xWYrWhdrOrpEvKYcKJnSet59LRMQ1vFq samus@mac"),
                 .init(label: "fingerprint", kind: .text, value: "SHA256:2OdYwq/ygWHlId1JmNr04FYAgHKLr7ntZGcoJfk2lDY"),
             ]
         case .bank:

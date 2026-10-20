@@ -53,7 +53,7 @@ impl Fixture {
                 "cards/visa",
                 "--card",
                 "--cardholder",
-                "J Lopez",
+                "Samus Aran",
                 "--expiry",
                 "08/27",
             ])
@@ -142,7 +142,7 @@ fn a_session_never_reads_a_card_without_a_fresh_touch_id() {
     // Showing a card without --reveal needs nothing.
     let shown = f.stdout(f.interactive().args(["show", "cards/visa"]));
     assert!(
-        shown.contains("J Lopez") && !shown.contains("4242424242424242"),
+        shown.contains("Samus Aran") && !shown.contains("4242424242424242"),
         "{shown}"
     );
     assert_eq!(f.prompts().len(), 3);

@@ -449,7 +449,7 @@ fn visa(dir: &TempDir) {
             "cards/visa",
             "--card",
             "--cardholder",
-            "J Lopez",
+            "Samus Aran",
             "--expiry",
             "8/2027",
         ])
@@ -466,7 +466,7 @@ fn cards_store_and_reference_their_fields() {
     assert_eq!(out(&dir, &["get", "cards/visa"]), "4242424242424242");
     assert_eq!(out(&dir, &["get", "cards/visa#cvv"]), "123");
     assert_eq!(out(&dir, &["get", "cards/visa#expiry"]), "08/27");
-    assert_eq!(out(&dir, &["get", "cards/visa#name"]), "J Lopez");
+    assert_eq!(out(&dir, &["get", "cards/visa#name"]), "Samus Aran");
 
     // Show and list reveal only the last four digits.
     let shown = out(&dir, &["show", "cards/visa"]);

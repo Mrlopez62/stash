@@ -51,7 +51,7 @@ enum Command {
     /// Store a secret, login, or note (secret values are read from stdin or
     /// a prompt without echo, never from flags)
     #[command(
-        after_help = "Examples:\n  stash add openai/api-key                     # a single secret\n  stash add github --login --username octocat --url https://github.com --generate\n  stash add github --login --otp               # asks for the password and 2FA secret\n  stash add notes/wifi --note\n  stash add cards/visa --card --cardholder 'J Lopez' --expiry 08/27\n  stash add banks/chase --bank --bank-name Chase --routing 021000021 --account-type checking"
+        after_help = "Examples:\n  stash add openai/api-key                     # a single secret\n  stash add github --login --username octocat --url https://github.com --generate\n  stash add github --login --otp               # asks for the password and 2FA secret\n  stash add notes/wifi --note\n  stash add cards/visa --card --cardholder 'Samus Aran' --expiry 08/27\n  stash add banks/chase --bank --bank-name Chase --routing 021000021 --account-type checking"
     )]
     Add {
         /// Item name, e.g. `github/token`

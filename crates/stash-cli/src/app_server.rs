@@ -1008,7 +1008,7 @@ mod tests {
         f.ok(
             "save",
             json!({ "name": "visa", "kind": "card", "password": "correct horse", "fields": [
-                { "label": "cardholder", "kind": "text", "value": "J Lopez" },
+                { "label": "cardholder", "kind": "text", "value": "Samus Aran" },
                 { "label": "number", "kind": "concealed", "value": "4242 4242 4242 4242" },
                 { "label": "expiry", "kind": "text", "value": "8/27" },
                 { "label": "cvv", "kind": "concealed", "value": "123" },
