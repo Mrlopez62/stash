@@ -14,7 +14,7 @@
 
 A free, open-source password and secrets manager for macOS, built for developers. Unlock with Touch ID, fill passwords and cards in your browser, sign git commits with keys that never touch disk, pass API tokens into commands safely, and let AI agents use your secrets without ever seeing them.
 
-> **Status: early development (v0.16).** Everything below works today:
+> **Status: early development (v0.17).** Everything below works today:
 > - **The stash Mac app:** menu bar, Quick Access (⇧⌘Space), vault browser and editor
 > - **Items:** logins with 2FA codes, secrets, notes, **payment cards and bank accounts**, **SSH keys**
 > - **Browser autofill** in Chrome, Brave, Edge, Arc, and Firefox, with saving new logins and cards
@@ -326,7 +326,9 @@ Rust handles everything that is security-critical: the vault, keys, and every de
 | v0.14 ✅ | Hardening: new or changed `.env` files and templates need a fresh approval (`stash trust`), an encrypted audit log |
 | v0.15 ✅ | Hardening: sessions pause while AI agents run (`stash agents`), concealed CLI clipboard copies, MCP commands can't leave processes running with your secrets |
 | v0.16 ✅ | Touch ID prompts show the stash icon and name, wherever the request comes from |
-| v0.17 | Safari (needs a signed release) |
+| v0.16.1 ✅ | New Item asks what you're saving first; locking stays locked |
+| v0.17 ✅ | A new item always shows up: if the list you're on wouldn't show it, the app switches to its category |
+| v0.18 | Safari (needs a signed release) |
 | v0.x | A configurable Quick Access shortcut, launch at login, a signed and notarized download |
 | Later | Encrypted sync (iCloud Drive or Git), Linux support |
 

@@ -242,6 +242,7 @@ final class AppModel: ObservableObject {
             try await backend?.save(request)
             ok = true
             await reload()
+            if request.originalName == nil { showCreated(request.name) }
             await select(request.name)
         }
         return ok
@@ -271,9 +272,28 @@ final class AppModel: ObservableObject {
             }
             ok = true
             await reload()
+            showCreated(name)
             await select(name)
         }
         return (ok, needsPassphrase)
+    }
+
+    /// After creating an item, make sure the list shows it. If the view
+    /// you're on wouldn't (another category, a folder it isn't in, or a
+    /// search it doesn't match), go to the item's category and clear the
+    /// search, and say where it went. Edits never move you: an item keeps
+    /// its kind.
+    func showCreated(_ name: String) {
+        guard let item = items.first(where: { $0.name == name }) else { return }
+        var movedTo: String?
+        if !matches(item, filter) {
+            filter = .kind(item.kind)
+            movedTo = filter.title
+        }
+        if !search.isEmpty && !filtered.contains(where: { $0.name == name }) {
+            search = ""
+        }
+        if let movedTo { flash("Saved to \(movedTo)") }
     }
 
     func generate(length: Int, symbols: Bool) async -> String? {
@@ -385,12 +405,23 @@ final class MockBackend: VaultBackend {
     func otpLink(_ name: String) async throws -> OTPLink {
         .init(uri: "otpauth://totp/\(name):octocat?secret=JBSWY3DPEHPK3PXP&issuer=\(name)", issuer: name, account: "octocat")
     }
-    func save(_ request: SaveRequest) async throws {}
+    func save(_ request: SaveRequest) async throws {
+        // Enough for the app's flows to work on sample data.
+        let value = { (label: String) in request.fields.first { $0.label == label }?.value ?? nil }
+        let summary = ItemSummary(name: request.name, kind: request.kind, username: value("username"),
+                                  url: value("website"), hasOtp: false, updated: Int(Date().timeIntervalSince1970))
+        items.removeAll { $0.name == (request.originalName ?? request.name) }
+        items.append(summary)
+    }
     func delete(_ name: String) async throws {}
     func generate(length: Int, symbols: Bool) async throws -> String { "q7#Vd!xP2m@Kz9&Lw4$Rt8" }
     func enableTouchID(password: String) async throws {}
     func sshGenerate(name: String, comment: String?) async throws -> SSHKeyInfo {
-        .init(publicKey: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIO60iQ4pgY5/xWYrWhdrOrpEvKYcKJnSet59LRMQ1vFq \(comment ?? name)",
+        if !items.contains(where: { $0.name == name }) {
+            items.append(.init(name: name, kind: .ssh, username: nil, url: nil, hasOtp: false,
+                               updated: Int(Date().timeIntervalSince1970)))
+        }
+        return .init(publicKey: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIO60iQ4pgY5/xWYrWhdrOrpEvKYcKJnSet59LRMQ1vFq \(comment ?? name)",
               fingerprint: "SHA256:2OdYwq/ygWHlId1JmNr04FYAgHKLr7ntZGcoJfk2lDY")
     }
     func sshImport(name: String, key: String, passphrase: String?) async throws -> SSHKeyInfo {

@@ -184,6 +184,74 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if options.selftest {
             Task { await selftest() }
         }
+        if options.modeltest {
+            Task { await modeltest() }
+        }
+    }
+
+    /// `--modeltest`: check the app model's behavior on sample data (no
+    /// vault, no backend process). Prints each check and exits 1 on failure.
+    private func modeltest() async {
+        var failed = 0
+        func check(_ ok: Bool, _ what: String) {
+            print("\(ok ? "ok  " : "FAIL") \(what)")
+            if !ok { failed += 1 }
+        }
+        func fresh(_ filter: AppModel.Filter, search: String = "") async -> AppModel {
+            let m = AppModel(backend: MockBackend(locked: false))
+            await m.reload()
+            m.filter = filter
+            m.search = search
+            return m
+        }
+        func login(_ name: String, editing: String? = nil) -> SaveRequest {
+            SaveRequest(name: name, originalName: editing, kind: .login,
+                        fields: [.init(label: "password", kind: .concealed, value: "pw")], notes: nil)
+        }
+        func bank(_ name: String) -> SaveRequest {
+            SaveRequest(name: name, originalName: nil, kind: .bank, fields: [], notes: nil)
+        }
+
+        var m = await fresh(.kind(.ssh))
+        _ = await m.save(login("new/login"))
+        check(m.filter == .kind(.login), "a login made in SSH Keys goes to Logins")
+        check(m.selection == "new/login" && m.filtered.contains { $0.name == "new/login" }, "and is selected and listed")
+        check(m.toast == "Saved to Logins", "and says where it went")
+
+        m = await fresh(.all)
+        _ = await m.save(bank("banks/new"))
+        check(m.filter == .all && m.toast == nil, "All Items stays put")
+
+        m = await fresh(.kind(.bank))
+        _ = await m.save(bank("banks/other"))
+        check(m.filter == .kind(.bank) && m.toast == nil, "the matching category stays put")
+
+        m = await fresh(.folder("work"))
+        _ = await m.save(login("work/new"))
+        check(m.filter == .folder("work"), "an item in the folder you're viewing stays there")
+
+        m = await fresh(.folder("work"))
+        _ = await m.save(bank("personal/bank"))
+        check(m.filter == .kind(.bank), "an item outside the folder goes to its category")
+
+        m = await fresh(.all, search: "zzz")
+        _ = await m.save(login("fresh"))
+        check(m.search.isEmpty && m.filtered.contains { $0.name == "fresh" }, "a search that hides it is cleared")
+
+        m = await fresh(.all, search: "fre")
+        _ = await m.save(login("fresh"))
+        check(m.search == "fre", "a search that matches it is kept")
+
+        m = await fresh(.kind(.ssh))
+        _ = await m.save(login("github", editing: "github"))
+        check(m.filter == .kind(.ssh), "editing never moves you")
+
+        m = await fresh(.kind(.login))
+        _ = await m.addSSHKey(name: "ssh/new") { try await $0.sshGenerate(name: "ssh/new", comment: nil) }
+        check(m.filter == .kind(.ssh), "an SSH key made in Logins goes to SSH Keys")
+
+        print(failed == 0 ? "modeltest: ok" : "modeltest: \(failed) failed")
+        exit(failed == 0 ? 0 : 1)
     }
 
     /// `--selftest`: exercise every backend call against a throwaway vault
@@ -283,6 +351,7 @@ struct LaunchOptions {
     var select: String?
     var quickAccessSnapshot = false
     var selftest = false
+    var modeltest = false
     var appearance: String?
     /// `new`, or `edit` (with --select).
     var editor: String?
@@ -300,6 +369,7 @@ struct LaunchOptions {
             case "--select": o.select = args.next()
             case "--quick-access": o.quickAccessSnapshot = true
             case "--selftest": o.selftest = true
+            case "--modeltest": o.modeltest = true; o.mock = true
             case "--appearance": o.appearance = args.next()
             case "--editor": o.editor = args.next()
             case "--card-back": PremiumCard.startFlipped = true
