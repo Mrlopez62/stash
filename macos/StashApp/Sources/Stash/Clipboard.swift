@@ -9,7 +9,12 @@ import AppKit
 enum Clipboard {
     static let concealed = NSPasteboard.PasteboardType("org.nspasteboard.ConcealedType")
     static let transient = NSPasteboard.PasteboardType("org.nspasteboard.TransientType")
-    static var clearAfter: TimeInterval = 30
+    /// The Settings value (`clipboardSeconds`), 30 by default, kept within
+    /// 10 seconds to a minute.
+    static var clearAfter: TimeInterval {
+        let saved = UserDefaults.standard.double(forKey: "clipboardSeconds")
+        return saved == 0 ? 30 : min(max(saved, 10), 60)
+    }
 
     @MainActor
     static func copySecret(_ value: String) {

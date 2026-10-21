@@ -9,6 +9,8 @@ const OTP_SECRET: &str = "JBSWY3DPEHPK3PXP";
 
 fn stash(dir: &TempDir) -> Command {
     let mut cmd = Command::cargo_bin("stash").unwrap();
+    // A fixed agent list, so AI agents running on this machine don't pause sessions.
+    cmd.env("STASH_AI_AGENTS", "stash-test-agent");
     cmd.env("STASH_VAULT", dir.path().join("vault.db"))
         .env("STASH_AGENT_SOCK", dir.path().join("agent.sock"))
         .env("STASH_PASSWORD", PASSWORD);

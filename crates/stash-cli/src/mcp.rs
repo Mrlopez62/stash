@@ -33,7 +33,7 @@ use stash_core::{Kind, Vault};
 use zeroize::Zeroizing;
 
 use crate::mask::Masker;
-use crate::{PASSWORD_ENV, audit, touchid};
+use crate::{PASSWORD_ENV, audit, procinfo, touchid};
 
 /// Protocol revisions this server speaks, newest first.
 const PROTOCOL_VERSIONS: &[&str] = &["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
@@ -554,7 +554,7 @@ impl Server {
         if output.timed_out {
             event.detail = Some("timed out".into());
         }
-        let status = match (output.exit_code, output.timed_out) {
+        let mut status = match (output.exit_code, output.timed_out) {
             (_, true) => format!(
                 "timed out after {}s and was killed",
                 request.timeout.as_secs()
@@ -562,6 +562,16 @@ impl Server {
             (Some(code), _) => format!("exit code {code}"),
             (None, _) => "killed by a signal".into(),
         };
+        if output.stopped > 0 {
+            status.push_str(&format!(
+                "; stopped {} background process(es) it left running with the secrets",
+                output.stopped
+            ));
+            event.detail = Some(match event.detail.take() {
+                Some(d) => format!("{d}; stopped {} left running", output.stopped),
+                None => format!("stopped {} left running", output.stopped),
+            });
+        }
         let text = format!(
             "{status}\n--- stdout ---\n{}\n--- stderr ---\n{}",
             output.stdout, output.stderr
@@ -571,6 +581,7 @@ impl Server {
             "structuredContent": {
                 "exit_code": output.exit_code,
                 "timed_out": output.timed_out,
+                "stopped_background": output.stopped,
                 "stdout": output.stdout,
                 "stderr": output.stderr,
                 "truncated": output.truncated,
@@ -786,6 +797,9 @@ impl RunRequest {
 struct Output {
     exit_code: Option<i32>,
     timed_out: bool,
+    /// Processes the command left running (in the background, or detached
+    /// with `setsid`/`nohup`), which were then stopped.
+    stopped: usize,
     stdout: String,
     stderr: String,
     truncated: bool,
@@ -825,11 +839,20 @@ impl Write for SharedTail {
     }
 }
 
+/// Marks every process a command starts (it's inherited), so the ones it
+/// leaves behind can be found and stopped.
+const RUN_MARKER: &str = "STASH_MCP_RUN";
+
 fn execute(request: &RunRequest, resolved: &[(String, Zeroizing<Vec<u8>>)]) -> Result<Output> {
+    let marker: String = stash_core::crypto::random_bytes::<16>()?
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
     let mut cmd = Command::new(&request.argv[0]);
     cmd.args(&request.argv[1..])
         .env_remove(PASSWORD_ENV)
         .envs(&request.plain)
+        .env(RUN_MARKER, &marker)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -860,24 +883,33 @@ fn execute(request: &RunRequest, resolved: &[(String, Zeroizing<Vec<u8>>)]) -> R
     let stdout = pump(Box::new(child.stdout.take().expect("piped")));
     let stderr = pump(Box::new(child.stderr.take().expect("piped")));
 
+    // Anything it leaves behind starts after it did.
+    let started = procinfo::info(child.id() as i32).map_or(0, |p| p.start);
     let deadline = Instant::now() + request.timeout;
     let mut timed_out = false;
-    let status = loop {
-        if let Some(status) = child.try_wait()? {
-            break status;
+    // Only notice that it exited here. It's reaped after everything it left
+    // behind is stopped: until then its pid (and so its process group id)
+    // can't be reused, so the group kill can't hit an unrelated process.
+    loop {
+        if exited(child.id())? {
+            break;
         }
         if Instant::now() >= deadline {
             timed_out = true;
             kill_group(child.id(), libc::SIGTERM);
             let grace = Instant::now() + Duration::from_secs(3);
-            while Instant::now() < grace && child.try_wait()?.is_none() {
+            while Instant::now() < grace && !exited(child.id())? {
                 std::thread::sleep(Duration::from_millis(50));
             }
-            kill_group(child.id(), libc::SIGKILL);
-            break child.wait()?;
+            break;
         }
         std::thread::sleep(Duration::from_millis(20));
-    };
+    }
+    // Whatever it left running still holds the secrets: stop it, then
+    // anything left in its process group (even if it cleared the marker).
+    let stopped = stop_leftovers(&marker, started, child.id() as i32);
+    kill_group(child.id(), libc::SIGKILL);
+    let status = child.wait()?;
     for _ in 0..2 {
         if finished.recv_timeout(Duration::from_millis(500)).is_err() {
             break;
@@ -896,10 +928,52 @@ fn execute(request: &RunRequest, resolved: &[(String, Zeroizing<Vec<u8>>)]) -> R
     Ok(Output {
         exit_code: status.code(),
         timed_out,
+        stopped,
         stdout,
         stderr,
         truncated: out_cut || err_cut,
     })
+}
+
+/// Whether `pid` (our child) has exited, without reaping it.
+fn exited(pid: u32) -> io::Result<bool> {
+    // SAFETY: `info` is plain data that waitid fills in; WNOWAIT leaves the
+    // child to be reaped later by `Child::wait`.
+    let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+    let rc = unsafe {
+        libc::waitid(
+            libc::P_PID,
+            pid as libc::id_t,
+            &mut info,
+            libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+        )
+    };
+    if rc != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // With WNOHANG, si_pid stays 0 while it's still running.
+    Ok(unsafe { info.si_pid() } != 0)
+}
+
+/// Stop every process still carrying this run's marker (other than the
+/// command itself, `command`): politely, then not. How many there were.
+/// Only processes started since the command (`since`) are checked.
+fn stop_leftovers(marker: &str, since: u64, command: i32) -> usize {
+    let mut left = procinfo::with_env(RUN_MARKER, marker, since);
+    left.retain(|id| id.pid != command);
+    for &id in &left {
+        procinfo::signal(id, libc::SIGTERM);
+    }
+    let deadline = Instant::now() + Duration::from_secs(1);
+    let mut alive = left.clone();
+    while !alive.is_empty() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
+        alive.retain(|&id| procinfo::signal(id, 0));
+    }
+    for id in alive {
+        procinfo::signal(id, libc::SIGKILL);
+    }
+    left.len()
 }
 
 fn kill_group(pid: u32, signal: libc::c_int) {

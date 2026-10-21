@@ -2,6 +2,20 @@
 
 All notable changes to stash. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/) (pre-1.0: minor versions may change behavior).
 
+## [0.15.0] - 2026-10-20
+
+### Added
+- **Sessions pause while an AI agent runs.** An AI coding agent allowed to script your terminal (macOS Automation) could type `stash` commands into a shell with an unlocked session. While a known agent is running (Claude Code, Codex, Gemini CLI, Cursor's agent, Aider, Goose, OpenCode, Amp, Copilot CLI, and others, also when run by `node` or `python`), every command asks for Touch ID again, on a prompt that says why.
+- **`stash agents`** lists the AI agents running now, with each one's process ID and path (some names, like `goose`, are shared with unrelated tools), and whether sessions pause for them. `--allow-sessions` keeps sessions open anyway (after a Touch ID or master password check, stored so other programs can't set it), and `--pause-sessions` restores the default.
+- **MCP commands can't leave processes running with your secrets.** When a `run_with_secrets` command ends, stash stops anything it left behind, including processes detached with `nohup`, `setsid`, or a double fork, and reports how many in the result (`stopped_background`) and the audit log.
+
+### Changed
+- **`stash get --copy` and `stash otp --copy` on macOS** mark copies concealed and transient (clipboard-history apps skip them) and keep them off your other devices, like the app, through the `stash-touchid` helper. Without the helper, they fall back to `pbcopy` with a warning.
+- The Mac app's clipboard timer goes up to a minute (was two).
+
+### Fixed
+- The Mac app applied your clipboard timer setting only after you opened Settings; until then it always used 30 seconds.
+
 ## [0.14.0] - 2026-10-19
 
 ### Added

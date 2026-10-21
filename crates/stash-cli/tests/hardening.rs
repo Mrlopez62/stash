@@ -25,6 +25,8 @@ fn fake_touch_id(dir: &Path) -> PathBuf {
 
 fn stash(dir: &Path, helper: &Path) -> Command {
     let mut cmd = Command::cargo_bin("stash").unwrap();
+    // A fixed agent list, so AI agents running on this machine don't pause sessions.
+    cmd.env("STASH_AI_AGENTS", "stash-test-agent");
     cmd.env("STASH_VAULT", dir.join("vault.db"))
         .env("STASH_AGENT_SOCK", dir.join("agent.sock"))
         .env("STASH_TOUCHID_HELPER", helper)

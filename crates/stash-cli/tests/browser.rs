@@ -97,6 +97,8 @@ impl Fixture {
 
     fn cli(&self) -> Command {
         let mut cmd = Command::cargo_bin("stash").unwrap();
+        // A fixed agent list, so AI agents running on this machine don't pause sessions.
+        cmd.env("STASH_AI_AGENTS", "stash-test-agent");
         cmd.env("STASH_VAULT", self.dir.path().join("vault.db"))
             .env("STASH_AGENT_SOCK", self.dir.path().join("agent.sock"))
             .env("STASH_TOUCHID_HELPER", &self.helper)
@@ -110,6 +112,7 @@ impl Fixture {
     /// the replies.
     fn host(&self, args: &[&str], requests: &[Value]) -> (Vec<Value>, String) {
         let mut child = Process::new(assert_cmd::cargo::cargo_bin("stash"))
+            .env("STASH_AI_AGENTS", "stash-test-agent")
             .arg("native-host")
             .args(args)
             .env("STASH_VAULT", self.dir.path().join("vault.db"))

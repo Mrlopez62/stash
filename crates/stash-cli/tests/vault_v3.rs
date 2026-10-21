@@ -71,6 +71,8 @@ impl Fixture {
     /// Like a user's shell: sessions and Touch ID, no password in the env.
     fn interactive(&self) -> Command {
         let mut cmd = Command::cargo_bin("stash").unwrap();
+        // A fixed agent list, so AI agents running on this machine don't pause sessions.
+        cmd.env("STASH_AI_AGENTS", "stash-test-agent");
         cmd.env("STASH_VAULT", self.dir.path().join("vault.db"))
             .env("STASH_AGENT_SOCK", self.dir.path().join("agent.sock"))
             .env("STASH_TOUCHID_HELPER", &self.helper)

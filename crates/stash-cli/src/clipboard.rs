@@ -1,5 +1,10 @@
 //! Copy to the system clipboard, and clear it again after a while.
 //!
+//! On macOS, copies go through the stash helper, which marks them concealed
+//! and transient (so clipboard-history apps skip them) and keeps them on
+//! this Mac (no Universal Clipboard), like the stash app. `pbcopy` can't, so
+//! it's only the fallback.
+//!
 //! Clearing is done by a small detached `stash clipboard-clear` process. It
 //! gets only a SHA-256 hash of what was copied, never the value, and clears
 //! the clipboard only if it still holds that exact value, so it never wipes
@@ -34,29 +39,47 @@ pub fn timeout() -> Result<Option<Duration>> {
     }
 }
 
+#[derive(Clone, Copy)]
 enum Op {
     Copy,
     Paste,
+    Clear,
 }
 
+/// The stash helper, for copying and clearing on macOS.
+fn helper_command(op: Op) -> Option<Command> {
+    if !cfg!(target_os = "macos") || std::env::var_os(HELPER_ENV).is_some() {
+        return None;
+    }
+    let mut cmd = Command::new(crate::touchid::helper()?);
+    cmd.arg(match op {
+        Op::Copy => "copy",
+        Op::Clear => "clear",
+        Op::Paste => return None,
+    });
+    Some(cmd)
+}
+
+/// The system's clipboard tools (or the test helper). Clearing is copying
+/// nothing.
 fn command(op: Op) -> Result<Command> {
     if let Some(helper) = std::env::var_os(HELPER_ENV) {
         let mut cmd = Command::new(helper);
         cmd.arg(match op {
-            Op::Copy => "copy",
+            Op::Copy | Op::Clear => "copy",
             Op::Paste => "paste",
         });
         return Ok(cmd);
     }
     if cfg!(target_os = "macos") {
         return Ok(Command::new(match op {
-            Op::Copy => "pbcopy",
+            Op::Copy | Op::Clear => "pbcopy",
             Op::Paste => "pbpaste",
         }));
     }
     if std::env::var_os("WAYLAND_DISPLAY").is_some() {
         let mut cmd = Command::new(match op {
-            Op::Copy => "wl-copy",
+            Op::Copy | Op::Clear => "wl-copy",
             Op::Paste => "wl-paste",
         });
         if matches!(op, Op::Paste) {
@@ -74,7 +97,25 @@ fn command(op: Op) -> Result<Command> {
 
 /// Put `value` on the clipboard. The value goes through a pipe, never argv.
 pub fn copy(value: &[u8]) -> Result<()> {
-    let mut child = command(Op::Copy)?
+    write(Op::Copy, value)
+}
+
+fn write(op: Op, value: &[u8]) -> Result<()> {
+    if let Some(cmd) = helper_command(op) {
+        match feed(cmd, value) {
+            Ok(()) => return Ok(()),
+            Err(e) if matches!(op, Op::Copy) => eprintln!(
+                "stash: copying with pbcopy instead ({e:#}), so clipboard history apps may keep it; \
+                 reinstall stash to fix this"
+            ),
+            Err(_) => {}
+        }
+    }
+    feed(command(op)?, value)
+}
+
+fn feed(mut cmd: Command, value: &[u8]) -> Result<()> {
+    let mut child = cmd
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -141,7 +182,7 @@ pub fn clear_if_unchanged(after: Duration) -> Result<()> {
     std::io::stdin().read_to_string(&mut expected)?;
     std::thread::sleep(after);
     if digest(&paste()?) == expected.trim() {
-        copy(b"")?;
+        write(Op::Clear, b"")?;
     }
     Ok(())
 }

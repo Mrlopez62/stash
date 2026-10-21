@@ -190,6 +190,39 @@ pub fn forget(vault: &Vault, request: &Request) -> Result<bool> {
     Ok(true)
 }
 
+/// A yes/no setting that only a fresh approval can turn on, kept as a tag
+/// in the same list (so a program running as you can't turn it on, only
+/// off). Off by default.
+pub fn setting(vault: &Vault, name: &str) -> Result<bool> {
+    let tag = setting_tag(vault, name)?;
+    Ok(tags(&file_for(vault.path())).contains(&tag))
+}
+
+/// Turn a setting on (call only after a fresh approval) or off.
+pub fn set_setting(vault: &Vault, name: &str, on: bool) -> Result<()> {
+    let tag = setting_tag(vault, name)?;
+    let path = file_for(vault.path());
+    let mut file = filelock::open_locked(&path)?;
+    let mut tags = tags(&path);
+    if on {
+        if !tags.contains(&tag) {
+            file.write_all(format!("{tag}\n").as_bytes())?;
+        }
+    } else if tags.contains(&tag) {
+        tags.retain(|t| *t != tag);
+        let contents: String = tags.iter().map(|t| format!("{t}\n")).collect();
+        filelock::replace(&path, contents.as_bytes())?;
+    }
+    Ok(())
+}
+
+fn setting_tag(vault: &Vault, name: &str) -> Result<String> {
+    let mut data = b"stash/setting/v1\0".to_vec();
+    data.extend_from_slice(name.as_bytes());
+    let tag = vault.trust_tag(&data)?;
+    Ok(tag.iter().map(|b| format!("{b:02x}")).collect())
+}
+
 /// Forget every approval (after the vault's keys change, they can't match
 /// anyway).
 pub fn forget_all(vault: &Path) {

@@ -58,6 +58,8 @@ impl Fixture {
 
     fn base(&self) -> Command {
         let mut cmd = Command::cargo_bin("stash").unwrap();
+        // A fixed agent list, so AI agents running on this machine don't pause sessions.
+        cmd.env("STASH_AI_AGENTS", "stash-test-agent");
         cmd.env("STASH_VAULT", self.dir.path().join("vault.db"))
             .env("STASH_AGENT_SOCK", self.dir.path().join("agent.sock"))
             .env("STASH_TOUCHID_HELPER", &self.helper)
@@ -286,6 +288,61 @@ fn commands_without_secrets_need_no_unlock_and_timeouts_kill_them() {
     assert_eq!(results[1]["structuredContent"]["timed_out"], true);
     assert!(started.elapsed() < std::time::Duration::from_secs(10));
     assert!(f.prompts().is_empty());
+}
+
+#[test]
+fn processes_a_command_leaves_running_are_stopped() {
+    let f = Fixture::new();
+    let pids = f.dir.path().join("pids");
+    // A long-running program whose environment can be read: on macOS, not
+    // one of the system's own (it hides theirs), so `stash clipboard-clear`,
+    // which waits 30s; on Linux, not stash (it makes itself unreadable), so
+    // plain `sleep`.
+    let waiter = if cfg!(target_os = "macos") {
+        format!(
+            "{} clipboard-clear --after 30 </dev/null",
+            assert_cmd::cargo::cargo_bin("stash").display()
+        )
+    } else {
+        "sleep 30".to_owned()
+    };
+    // One left in the background, one detached into its own session (as
+    // `setsid` or a double fork would), both holding the secret.
+    let script = format!(
+        r#"{waiter} & echo $! >> {p}
+perl -e 'use POSIX; exit if fork; POSIX::setsid(); open my $f, ">>", shift; print $f "$$\n"; close $f; exec @ARGV' {p} sh -c 'exec {waiter}'
+sleep 0.5; echo started"#,
+        p = pids.display()
+    );
+    let results = f.mcp(
+        &[],
+        &[run_call(
+            &["sh", "-c", &script],
+            json!({"T": "stash://github/token"}),
+        )],
+    );
+    let result = &results[0];
+    assert_eq!(result["structuredContent"]["exit_code"], 0, "{result}");
+    assert_eq!(
+        result["structuredContent"]["stopped_background"], 2,
+        "{result}"
+    );
+    assert!(text(&results[0]).contains("stopped 2 background process(es)"));
+    let pids = std::fs::read_to_string(&pids).unwrap();
+    assert_eq!(pids.lines().count(), 2);
+    for pid in pids.lines() {
+        let pid: i32 = pid.trim().parse().unwrap();
+        // Give launchd/init a moment to reap it.
+        let gone = (0..50).any(|_| {
+            // SAFETY: signal 0 only checks whether the process exists.
+            let alive = unsafe { libc::kill(pid, 0) } == 0;
+            if alive {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            !alive
+        });
+        assert!(gone, "process {pid} is still running");
+    }
 }
 
 #[test]

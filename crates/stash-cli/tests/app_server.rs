@@ -11,6 +11,7 @@ use tempfile::TempDir;
 fn the_app_backend_speaks_json_rpc_over_stdio() {
     let dir = TempDir::new().unwrap();
     let mut child = Command::new(assert_cmd::cargo::cargo_bin("stash"))
+        .env("STASH_AI_AGENTS", "stash-test-agent")
         .arg("app-server")
         .env("STASH_VAULT", dir.path().join("vault.db"))
         .env("STASH_AGENT_SOCK", dir.path().join("agent.sock"))
