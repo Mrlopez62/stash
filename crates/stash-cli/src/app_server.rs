@@ -715,10 +715,10 @@ fn string_param(params: &Value, key: &str) -> std::result::Result<String, Failur
 /// to be the stash app.
 fn unlock_reason() -> String {
     if started_by_our_app() {
-        "unlock stash in the stash app".to_owned()
+        "unlock your vault for the stash app".to_owned()
     } else {
         format!(
-            "unlock stash for the app backend, requested by {}",
+            "unlock your vault for the app backend, requested by {}",
             crate::procinfo::requester_chain(2)
         )
     }

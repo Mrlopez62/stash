@@ -19,7 +19,7 @@ rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Helpers" "$app/Contents/Resources"
 cp macos/StashApp/.build/release/Stash "$app/Contents/MacOS/Stash"
 cp target/release/stash "$app/Contents/Helpers/stash"
-cp swift/stash-touchid/.build/release/stash-touchid "$app/Contents/Helpers/stash-touchid"
+./scripts/helper-bundle.sh "$app/Contents/Helpers"
 cp macos/StashApp/Resources/AppIcon.icns "$app/Contents/Resources/AppIcon.icns"
 # Brand fonts (SIL Open Font License; the licenses ship alongside).
 mkdir -p "$app/Contents/Resources/Fonts"
@@ -47,9 +47,9 @@ cat > "$app/Contents/Info.plist" <<PLIST
 PLIST
 
 # Ad-hoc signature: free, and enough for Touch ID's Secure Enclave keys.
-# Helpers first, then the app, so the bundle's seal covers them.
+# Helpers first (helper-bundle.sh signed stash-touchid.app), then the
+# app, so the bundle's seal covers them.
 codesign --force --sign - "$app/Contents/Helpers/stash"
-codesign --force --sign - "$app/Contents/Helpers/stash-touchid"
 codesign --force --sign - "$app"
 codesign --verify --strict "$app"
 echo "Built $app"

@@ -293,7 +293,7 @@ fn the_agent_asks_touch_id_for_every_signature() {
         "listing unlocked once: {:?}",
         f.prompts()
     );
-    assert!(f.prompts()[0].starts_with("unwrap: unlock stash to list SSH keys"));
+    assert!(f.prompts()[0].starts_with("unwrap: unlock your vault to list SSH keys"));
 
     let blob = keys[0].0.clone();
     assert!(agent.sign(&blob, &login_data("git")).is_some());

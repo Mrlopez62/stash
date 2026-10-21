@@ -2,6 +2,13 @@
 
 All notable changes to stash. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/) (pre-1.0: minor versions may change behavior).
 
+## [0.16.0] - 2026-10-21
+
+### Changed
+- **Touch ID prompts show the stash icon and name.** The Touch ID helper is now a small app bundle (`stash-touchid.app`, named "stash"), so every fingerprint prompt, from the app, the CLI, the SSH agent, the browser, or an AI agent's request, shows the stash logo and reads "stash is trying to…" instead of a terminal icon and "stash-touchid is trying to…".
+- Prompts say "unlock your vault" instead of "unlock stash", so they don't read "stash is trying to unlock stash".
+- `./scripts/install.sh` installs `stash-touchid.app` next to `stash` and removes the old bare `stash-touchid`. Touch ID keeps working without enabling it again, and a bare helper from an older install still works.
+
 ## [0.15.0] - 2026-10-20
 
 ### Added

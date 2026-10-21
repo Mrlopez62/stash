@@ -699,7 +699,7 @@ fn unlock_prompts_describe_the_request() {
         .success();
     let reason = prompt_reasons(&dir).pop().unwrap();
     assert!(
-        reason.starts_with("unlock stash for “run true with k”, requested by "),
+        reason.starts_with("unlock your vault for “run true with k”, requested by "),
         "{reason}"
     );
 }
