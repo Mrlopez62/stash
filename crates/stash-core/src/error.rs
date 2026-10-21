@@ -36,6 +36,8 @@ pub enum Error {
     NotText(String),
     #[error("{0}")]
     InvalidPayment(String),
+    #[error("can't import this file: {0}")]
+    Import(String),
     #[error("{0}")]
     InvalidSshKey(String),
     #[error("that SSH key file needs its passphrase (or the passphrase was wrong)")]

@@ -50,6 +50,7 @@ struct VaultView: View {
         }
         .background(Color.canvas)
         .animation(.easeOut(duration: 0.18), value: model.detail?.name)
+        .sheet(item: $model.importFile) { ImportView(file: $0) }
         .sheet(item: $model.editor) { target in
             if case .choose(let suggested) = target {
                 NewItemFlow(suggested: suggested)
@@ -337,7 +338,8 @@ struct ItemTable: View {
             .overlay(alignment: .bottom) { Rectangle().fill(Color.line).frame(height: 1) }
 
             if model.items.isEmpty {
-                EmptyVault(create: { model.editor = .choose(model.suggestedKind) })
+                EmptyVault(create: { model.editor = .choose(model.suggestedKind) },
+                           importFile: { model.chooseImportFile() })
                     .frame(maxWidth: .infinity, minHeight: 280)
             } else if model.filtered.isEmpty {
                 Text("No items match “\(model.search)”")
@@ -511,6 +513,7 @@ struct ItemIcon: View {
 
 struct EmptyVault: View {
     let create: () -> Void
+    let importFile: () -> Void
 
     var body: some View {
         VStack(spacing: 14) {
@@ -522,12 +525,25 @@ struct EmptyVault: View {
                 .font(.plex(13))
                 .foregroundStyle(Color.inkSecondary)
                 .multilineTextAlignment(.center)
-            Button {
-                create()
-            } label: {
-                Label("New Item", systemImage: "plus")
+            HStack(spacing: 8) {
+                Button {
+                    create()
+                } label: {
+                    Label("New Item", systemImage: "plus")
+                }
+                .buttonStyle(PrimaryButtonStyle())
+                Button {
+                    importFile()
+                } label: {
+                    Label("Import…", systemImage: "square.and.arrow.down")
+                }
+                .buttonStyle(SecondaryButtonStyle())
             }
-            .buttonStyle(PrimaryButtonStyle())
+            Text("Moving from Chrome, Safari, 1Password, or Bitwarden? Export your passwords there, then import the file.")
+                .font(.plex(12))
+                .foregroundStyle(Color.inkTertiary)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 360)
         }
         .padding(32)
     }

@@ -40,6 +40,8 @@ protocol VaultBackend: AnyObject {
     func enableTouchID(password: String) async throws
     func sshGenerate(name: String, comment: String?) async throws -> SSHKeyInfo
     func sshImport(name: String, key: String, passphrase: String?) async throws -> SSHKeyInfo
+    func importPreview(path: String) async throws -> ImportPreview
+    func importItems(path: String, indices: [Int]) async throws -> ImportResult
 }
 
 final class RPCBackend: VaultBackend, @unchecked Sendable {
@@ -185,6 +187,12 @@ final class RPCBackend: VaultBackend, @unchecked Sendable {
     func otp(_ name: String) async throws -> OTPCode { try await call("otp", ["name": name], as: OTPCode.self) }
     func otpLink(_ name: String) async throws -> OTPLink { try await call("otp_uri", ["name": name], as: OTPLink.self) }
     func save(_ request: SaveRequest) async throws { _ = try await call("save", request.params) }
+    func importPreview(path: String) async throws -> ImportPreview {
+        try await call("import_preview", ["path": path], as: ImportPreview.self)
+    }
+    func importItems(path: String, indices: [Int]) async throws -> ImportResult {
+        try await call("import", ["path": path, "indices": indices], as: ImportResult.self)
+    }
     func delete(_ name: String) async throws { _ = try await call("delete", ["name": name]) }
     func generate(length: Int, symbols: Bool) async throws -> String {
         struct Wrapper: Decodable { let password: String }

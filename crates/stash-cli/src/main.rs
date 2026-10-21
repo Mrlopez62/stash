@@ -6,6 +6,7 @@ mod clipboard;
 mod envfile;
 mod filelock;
 mod harden;
+mod import_cmd;
 mod inject;
 mod items;
 mod mask;
@@ -201,6 +202,27 @@ enum Command {
         /// Don't ask for Touch ID per request (headless use with STASH_PASSWORD only)
         #[arg(long)]
         no_approval: bool,
+    },
+    /// Import logins, notes, cards, and bank accounts from another password manager
+    ///
+    /// Reads an export file: Chrome, Brave, Edge, or Arc (CSV), Safari or
+    /// Apple Passwords (CSV), Firefox (CSV), Bitwarden (JSON or CSV),
+    /// 1Password (.1pux), and other CSVs with the usual columns (LastPass,
+    /// Proton Pass). Nothing in your vault is overwritten. Needs a fresh
+    /// Touch ID or your master password, then offers to delete the file,
+    /// since it holds every password in plain text.
+    #[command(
+        after_help = "Examples:\n  stash import ~/Downloads/passwords.csv\n  stash import export.1pux --dry-run"
+    )]
+    Import {
+        /// The export file
+        file: PathBuf,
+        /// Show what would be imported, and under which names, without importing
+        #[arg(long)]
+        dry_run: bool,
+        /// Delete the export file afterwards without asking
+        #[arg(long)]
+        delete_file: bool,
     },
     /// Approve a .env file or template to give its secrets to commands
     ///
@@ -594,6 +616,22 @@ fn run(cli: Cli) -> Result<ExitCode> {
                 idle_timeout: session_timeout()?.unwrap_or(Duration::ZERO),
             };
             mcp::serve(path, opts)?;
+        }
+        Command::Import {
+            file,
+            dry_run,
+            delete_file,
+        } => {
+            let opts = import_cmd::Options {
+                file,
+                dry_run,
+                delete_file,
+            };
+            import_cmd::import(
+                opts,
+                |purpose| unlock_checked(&path, purpose),
+                confirm_fresh,
+            )?;
         }
         Command::Trust {
             files,

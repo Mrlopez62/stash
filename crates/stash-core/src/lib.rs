@@ -5,6 +5,7 @@
 pub mod crypto;
 mod error;
 pub mod generate;
+pub mod import;
 pub mod item;
 mod name;
 pub mod otp;

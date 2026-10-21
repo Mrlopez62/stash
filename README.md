@@ -14,7 +14,7 @@
 
 A free, open-source password and secrets manager for macOS, built for developers. Unlock with Touch ID, fill passwords and cards in your browser, sign git commits with keys that never touch disk, pass API tokens into commands safely, and let AI agents use your secrets without ever seeing them.
 
-> **Status: early development (v0.17).** Everything below works today:
+> **Status: early development (v0.18).** Everything below works today:
 > - **The stash Mac app:** menu bar, Quick Access (⇧⌘Space), vault browser and editor
 > - **Items:** logins with 2FA codes, secrets, notes, **payment cards and bank accounts**, **SSH keys**
 > - **Browser autofill** in Chrome, Brave, Edge, Arc, and Firefox, with saving new logins and cards
@@ -102,6 +102,32 @@ How unlocking works:
 - Team or family sharing
 - Mobile apps
 - Cloud sync (planned for later as encrypted sync through iCloud Drive or Git; see the Roadmap)
+
+## Moving from another password manager
+
+Export your passwords from the app you're leaving, then import the file:
+
+| From | How to export | File |
+|---|---|---|
+| Chrome, Brave, Edge, Arc | Settings → Passwords (Password Manager) → Export passwords | `.csv` |
+| Safari / Apple Passwords | Passwords app → File → Export All Passwords | `.csv` |
+| Firefox | Settings → Passwords → ⋯ → Export Passwords | `.csv` |
+| 1Password | File → Export → choose the 1PUX format | `.1pux` |
+| Bitwarden | Tools → Export vault → `.json` (not "encrypted") | `.json` |
+| LastPass, Proton Pass, Dashlane, others | their CSV export | `.csv` |
+
+```sh
+stash import ~/Downloads/export.1pux --dry-run   # what would come in, and under which names
+stash import ~/Downloads/export.1pux             # import it
+```
+
+In the Mac app, use **File → Import Passwords…** (⇧⌘I): you see every item first, with a checkbox for each, and import only the ones you keep checked.
+
+- **Logins** come with their usernames, websites, notes, extra fields, and 2FA codes. **Cards** and **bank accounts** are checked like ones you add yourself; any that fail (a mistyped card number, say) are listed, never dropped silently. Notes, and kinds stash has no form for (like identities), come in as notes.
+- **Names** come from each item's title and folder (`work/github`), or its website.
+- **Nothing in your vault is replaced.** An identical item already there is left alone; a different one with the same name gets the new one named `github-2`.
+- **Delete the export when you're done.** It holds every password in plain text. stash reads it once, writes nothing else to disk, and offers to delete it (`--delete-file` skips the question). In the app, it's deleted outright, not moved to the Trash.
+- Importing writes many items at once, so the CLI asks for Touch ID (or your master password) even in an unlocked session.
 
 ## Use secrets in your projects
 
@@ -328,7 +354,8 @@ Rust handles everything that is security-critical: the vault, keys, and every de
 | v0.16 ✅ | Touch ID prompts show the stash icon and name, wherever the request comes from |
 | v0.16.1 ✅ | New Item asks what you're saving first; locking stays locked |
 | v0.17 ✅ | A new item always shows up: if the list you're on wouldn't show it, the app switches to its category |
-| v0.18 | Safari (needs a signed release) |
+| v0.18 ✅ | Import from Chrome, Safari, Firefox, 1Password, Bitwarden, and other password managers (`stash import`, File → Import in the app) |
+| v0.19 | Safari (needs a signed release) |
 | v0.x | A configurable Quick Access shortcut, launch at login, a signed and notarized download |
 | Later | Encrypted sync (iCloud Drive or Git), Linux support |
 

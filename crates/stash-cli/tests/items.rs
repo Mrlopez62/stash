@@ -566,3 +566,95 @@ fn bank_accounts_validate_routing_numbers_and_ibans() {
         .failure()
         .stderr(predicate::str::contains("routing number"));
 }
+
+const CHROME_CSV: &str = "name,url,username,password,note\n\
+GitHub,https://github.com/login,octocat,gh-pass-1,\n\
+,https://www.example.com/,me@example.com,ex-pass,remember me\n";
+
+#[test]
+fn imports_a_chrome_export_without_overwriting_anything() {
+    let dir = init();
+    let file = dir.path().join("Chrome Passwords.csv");
+    std::fs::write(&file, CHROME_CSV).unwrap();
+
+    // A dry run lists names and kinds, never values, and changes nothing.
+    stash(&dir)
+        .args(["import", "--dry-run"])
+        .arg(&file)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("github").and(predicate::str::contains("example.com")))
+        .stdout(predicate::str::contains("gh-pass-1").not())
+        .stderr(predicate::str::contains(
+            "Found 2 items in this Chrome, Brave, Edge, or Arc export",
+        ));
+    assert!(out(&dir, &["ls"]).trim().is_empty());
+
+    stash(&dir)
+        .arg("import")
+        .arg(&file)
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("Imported 2 items: 2 logins"));
+    assert_eq!(out(&dir, &["get", "github"]), "gh-pass-1");
+    assert_eq!(
+        out(&dir, &["get", "example.com#username"]),
+        "me@example.com"
+    );
+    // Not asked to delete (not a terminal), and not deleted.
+    assert!(file.exists());
+
+    // Importing again changes nothing; a different item with a taken name
+    // gets a new name instead of replacing the old one.
+    std::fs::write(
+        &file,
+        format!("{CHROME_CSV}GitHub,https://github.com/,someone-else,other-pass,\n"),
+    )
+    .unwrap();
+    stash(&dir)
+        .args(["import", "--delete-file"])
+        .arg(&file)
+        .assert()
+        .success()
+        .stderr(predicate::str::contains(
+            "2 already in your vault, unchanged",
+        ))
+        .stderr(predicate::str::contains(
+            "github was taken, so it's github-2",
+        ));
+    assert_eq!(out(&dir, &["get", "github"]), "gh-pass-1");
+    assert_eq!(out(&dir, &["get", "github-2"]), "other-pass");
+    assert!(!file.exists(), "--delete-file deletes the export");
+}
+
+#[test]
+fn imports_cards_and_lists_what_it_skips() {
+    let dir = init();
+    let file = dir.path().join("bitwarden.json");
+    std::fs::write(
+        &file,
+        r#"{"encrypted": false, "folders": [], "items": [
+          {"type": 3, "name": "Visa", "card": {"cardholderName": "Samus Aran",
+           "number": "4242424242424242", "expMonth": "8", "expYear": "2027", "code": "123"}},
+          {"type": 3, "name": "Typo", "card": {"number": "4242424242424241"}}]}"#,
+    )
+    .unwrap();
+    stash(&dir)
+        .arg("import")
+        .arg(&file)
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("skipping “Typo”"))
+        .stderr(predicate::str::contains("Imported 1 item: 1 card"));
+    assert_eq!(out(&dir, &["get", "cards/visa"]), "4242424242424242");
+
+    std::fs::write(dir.path().join("junk.csv"), "a,b\n1,2\n").unwrap();
+    stash(&dir)
+        .arg("import")
+        .arg(dir.path().join("junk.csv"))
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "doesn't look like a password export",
+        ));
+}

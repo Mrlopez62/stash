@@ -22,12 +22,13 @@ use anyhow::Result;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use stash_core::generate::{self, Rules};
+use stash_core::import;
 use stash_core::item::FieldValue;
 use stash_core::otp::Totp;
 use stash_core::{Error, Field, FieldKind, Item, KdfParams, Kind, Vault};
 use zeroize::Zeroizing;
 
-use crate::touchid;
+use crate::{text, touchid};
 
 /// JSON-RPC error codes, so the app can react (e.g. show the lock screen).
 mod code {
@@ -186,6 +187,8 @@ impl Server {
             "delete" => self.delete(&params),
             "ssh_generate" => self.ssh_generate(&params),
             "ssh_import" => self.ssh_import(&params),
+            "import_preview" => import_preview(&params),
+            "import" => self.import(&params),
             "generate" => generate_password(&params),
             "enable_touch_id" => self.enable_touch_id(&params),
             _ => Err(Failure::new(
@@ -646,6 +649,92 @@ impl Server {
         self.vault()?.remove(&name)?;
         Ok(json!({}))
     }
+
+    /// Import the chosen entries (`indices`, from `import_preview`) of an
+    /// export file. Never overwrites; cards and bank accounts need the
+    /// sensitive key.
+    fn import(&mut self, params: &Value) -> Reply {
+        let found = read_export(params)?;
+        let indices: Vec<usize> = params
+            .get("indices")
+            .and_then(Value::as_array)
+            .ok_or_else(|| Failure::params("missing `indices`"))?
+            .iter()
+            .filter_map(Value::as_u64)
+            .map(|i| i as usize)
+            .collect();
+        let chosen: Vec<&import::Entry> = indices
+            .iter()
+            .filter_map(|&i| found.entries.get(i))
+            .collect();
+        let add = |me: &mut Self| -> Reply {
+            let outcome = crate::import_cmd::add_all(me.vault()?, chosen.iter().copied())?;
+            Ok(json!({
+                "added": outcome.added.iter().map(|e| e.item.kind).collect::<Vec<_>>(),
+                "same": outcome.same,
+                "renamed": outcome.renamed.iter().map(|(from, to)| json!({ "from": from, "to": to })).collect::<Vec<_>>(),
+                "failed": outcome.failed.iter().map(|(title, why)| json!({ "title": title, "why": why })).collect::<Vec<_>>(),
+            }))
+        };
+        if chosen.iter().any(|e| e.item.kind.is_sensitive()) {
+            let reason = format!(
+                "import {} in the stash app",
+                import::summarize(chosen.iter().map(|e| &e.item))
+            );
+            return self.with_sensitive(params, &reason, add);
+        }
+        add(self)
+    }
+}
+
+/// Exports bigger than this aren't password exports.
+const MAX_EXPORT_SIZE: u64 = 64 * 1024 * 1024;
+
+fn read_export(params: &Value) -> std::result::Result<import::Import, Failure> {
+    let path = PathBuf::from(string_param(params, "path")?);
+    let size = std::fs::metadata(&path)
+        .map_err(|e| Failure::params(format!("could not read {}: {e}", path.display())))?
+        .len();
+    if size > MAX_EXPORT_SIZE {
+        return Err(Failure::params(format!(
+            "{} is too big to be a password export",
+            path.display()
+        )));
+    }
+    let bytes = Zeroizing::new(
+        std::fs::read(&path)
+            .map_err(|e| Failure::params(format!("could not read {}: {e}", path.display())))?,
+    );
+    Ok(import::read(&bytes)?)
+}
+
+/// What an export file holds, for the app to show before importing:
+/// names, kinds, usernames, and websites, never passwords.
+fn import_preview(params: &Value) -> Reply {
+    let found = read_export(params)?;
+    let entries: Vec<Value> = found
+        .entries
+        .iter()
+        .enumerate()
+        .map(|(index, e)| {
+            json!({
+                "index": index,
+                "title": text::clean(&e.title, 120),
+                "name": e.name,
+                "kind": e.item.kind,
+                "username": e.item.username(),
+                "website": e.item.url(),
+                "subtitle": e.item.subtitle(),
+                "warnings": e.warnings,
+            })
+        })
+        .collect();
+    let skipped: Vec<Value> = found
+        .skipped
+        .iter()
+        .map(|s| json!({ "title": text::clean(&s.title, 120), "why": s.why }))
+        .collect();
+    Ok(json!({ "format": found.format, "entries": entries, "skipped": skipped }))
 }
 
 #[derive(Deserialize)]

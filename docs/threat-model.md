@@ -144,6 +144,16 @@ After an unlock, `stash` starts `stash agent` in the background. The agent keeps
 | Clipboard history managers and Universal Clipboard (Handoff) | ✅ on macOS | The app, and the CLI through `stash-touchid copy`, mark copies `org.nspasteboard.ConcealedType` and `TransientType`, so well-behaved managers skip them, and keep them on this Mac only (no Universal Clipboard). If the helper is missing, the CLI falls back to `pbcopy` and says so. On Linux, `wl-copy` and `xclip` can't mark copies. |
 | Apps that read the clipboard while it holds the secret | ❌ | Any app can read the clipboard. Prefer `stash run` where you can. |
 
+## Importing from other password managers
+
+`stash import` and the app's File → Import read another password manager's export.
+
+- **The export is the risk.** It holds every password in plain text, in a file any program running as you can read. stash reads it once into memory that's wiped afterwards (JSON and CSV parsing make copies that can't all be), writes nothing else to disk, and offers to delete it. The app deletes it outright rather than moving it to the Trash, where it would stay readable.
+- **A fresh approval.** The CLI asks for Touch ID or the master password even in an unlocked session, since one import writes many items. In the app, the import is your own action in an unlocked app; cards and bank accounts still need Touch ID, as when you add them.
+- **Nothing is overwritten.** An existing item with the same name is never replaced, so a crafted export can't swap one of your passwords for an attacker's. A different item gets a `-2` name instead.
+- **The preview carries no secrets.** The app's backend sends the app only names, kinds, usernames, websites, and card summaries ("Visa •••• 4242").
+- **Not covered:** a malicious export can still add items you didn't expect (review the list in the app, or use `--dry-run`), and stash can't do anything about copies of the export made before you imported it (backups, sync folders).
+
 ## The audit log
 
 `audit.log` (mode `0600`, next to the vault) records requests from AI agents (`stash mcp`), the browser (`stash native-host`), and SSH clients (`stash ssh-agent`): who asked, the tool, secret names, sites, commands, and outcomes, never values.
