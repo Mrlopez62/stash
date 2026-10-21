@@ -52,6 +52,10 @@ jobs:
       - name: Build the Mac app
         if: runner.os == 'macOS'
         run: swift build -c release --package-path macos/StashApp
+      - name: Check the Mac app's model
+        if: runner.os == 'macOS'
+        # Sample data only; perl's alarm stops it if it ever hangs.
+        run: perl -e 'alarm 60; exec @ARGV' macos/StashApp/.build/release/Stash --modeltest
 
   msrv:
     name: Minimum Rust version

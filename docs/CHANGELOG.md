@@ -2,6 +2,14 @@
 
 All notable changes to stash. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/) (pre-1.0: minor versions may change behavior).
 
+## [0.17.0] - 2026-10-21
+
+### Changed
+- **A new item always shows up in the list.** In the Mac app, if the list you're on wouldn't show an item you just created (say, a login made while viewing SSH Keys, or one outside the folder you're in), the app switches to that item's category and selects it, with a "Saved to Logins" notice. A search that would hide it is cleared. Items made in All Items, in their own category, or in their own folder stay where you are, and editing never moves you.
+
+### Added
+- `Stash --modeltest` checks the app's behavior on sample data; CI runs it on macOS.
+
 ## [0.16.1] - 2026-10-21
 
 ### Changed
