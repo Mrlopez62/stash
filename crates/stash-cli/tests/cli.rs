@@ -689,6 +689,37 @@ fn sessions_pause_while_an_ai_agent_runs_unless_allowed() {
 }
 
 #[test]
+fn importing_needs_a_fresh_approval_even_in_a_session() {
+    let (dir, helper) = init_with_touch_id();
+    let session = |cmd: &mut Command| {
+        cmd.env_remove("STASH_PASSWORD")
+            .env("STASH_TOUCHID_HELPER", &helper)
+            .env("STASH_SESSION_TIMEOUT", "30");
+    };
+    let mut ls = stash(&dir);
+    session(&mut ls);
+    ls.arg("ls").assert().success();
+    assert_eq!(prompts(&dir), 1);
+
+    let file = dir.path().join("export.csv");
+    std::fs::write(
+        &file,
+        "name,url,username,password,note\nSite,https://s.example,me,pw,\n",
+    )
+    .unwrap();
+    let mut import = stash(&dir);
+    session(&mut import);
+    import.arg("import").arg(&file).assert().success();
+    assert_eq!(prompts(&dir), 2, "the session wasn't enough");
+    let reason = prompt_reasons(&dir).pop().unwrap();
+    assert!(reason.contains("import 1 login from"), "{reason}");
+
+    let mut lock = stash(&dir);
+    session(&mut lock);
+    lock.arg("lock").assert().success();
+}
+
+#[test]
 fn unlock_prompts_describe_the_request() {
     let (dir, helper) = init_with_touch_id();
     stash_interactive(&dir, &helper)

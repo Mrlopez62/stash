@@ -17,6 +17,8 @@ final class AppModel: ObservableObject {
     @Published var toast: String?
     /// The open editor sheet, if any.
     @Published var editor: EditorTarget?
+    /// The export file being imported, while its sheet is open.
+    @Published var importFile: ImportFile?
     /// The lock screen asks for Touch ID by itself only once, when the app
     /// opens. After you lock (or it locks when idle), it waits for "Unlock
     /// with Touch ID": asking again right away would make locking pointless.
@@ -296,6 +298,25 @@ final class AppModel: ObservableObject {
         if let movedTo { flash("Saved to \(movedTo)") }
     }
 
+    /// Import the chosen entries of an export file, then show the vault
+    /// with them. `nil` on failure (`error` says why) or a cancelled
+    /// Touch ID prompt.
+    func importItems(path: String, entries: [ImportPreview.Entry]) async -> ImportResult? {
+        var result: ImportResult?
+        await run {
+            result = try await backend?.importItems(
+                path: path, indices: entries.map(\.index), names: entries.map(\.name))
+            await reload()
+            // A category, folder, or search could hide what came in: show
+            // everything instead.
+            if let result, !result.added.isEmpty, filter != .all || !search.isEmpty {
+                filter = .all
+                search = ""
+            }
+        }
+        return result
+    }
+
     func generate(length: Int, symbols: Bool) async -> String? {
         var pw: String?
         await run { pw = try await backend?.generate(length: length, symbols: symbols) }
@@ -423,6 +444,30 @@ final class MockBackend: VaultBackend {
         }
         return .init(publicKey: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIO60iQ4pgY5/xWYrWhdrOrpEvKYcKJnSet59LRMQ1vFq \(comment ?? name)",
               fingerprint: "SHA256:2OdYwq/ygWHlId1JmNr04FYAgHKLr7ntZGcoJfk2lDY")
+    }
+    func importPreview(path: String) async throws -> ImportPreview {
+        .init(format: "Chrome, Brave, Edge, or Arc", entries: [
+            .init(index: 0, title: "GitHub", name: "github", kind: .login, username: "octocat",
+                  website: "https://github.com/login", subtitle: nil, warnings: []),
+            .init(index: 1, title: "Netflix", name: "netflix.com", kind: .login, username: "samus@acme.dev",
+                  website: "https://www.netflix.com", subtitle: nil, warnings: []),
+            .init(index: 2, title: "Chase Sapphire", name: "cards/chase-sapphire", kind: .card, username: nil,
+                  website: nil, subtitle: "Visa •••• 4242 · 08/27", warnings: []),
+            .init(index: 3, title: "Router", name: "router", kind: .login, username: "admin",
+                  website: "http://192.168.1.1", subtitle: nil,
+                  warnings: ["its 2FA secret was left out (not a valid 2FA (TOTP) secret)"]),
+            .init(index: 4, title: "Wi-Fi", name: "notes/wi-fi", kind: .note, username: nil,
+                  website: nil, subtitle: nil, warnings: []),
+        ], skipped: [.init(title: "Old card", why: "that card number doesn't pass its checksum (a typo?)")])
+    }
+    func importItems(path: String, indices: [Int], names: [String]) async throws -> ImportResult {
+        let preview = try await importPreview(path: path)
+        let chosen = preview.entries.filter { indices.contains($0.index) }
+        for e in chosen where !items.contains(where: { $0.name == e.name }) {
+            items.append(.init(name: e.name, kind: e.kind, username: e.username, url: e.website,
+                               hasOtp: false, updated: Int(Date().timeIntervalSince1970), subtitle: e.subtitle))
+        }
+        return .init(added: chosen.map(\.kind), same: 0, renamed: [], failed: [])
     }
     func sshImport(name: String, key: String, passphrase: String?) async throws -> SSHKeyInfo {
         try await sshGenerate(name: name, comment: nil)

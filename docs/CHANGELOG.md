@@ -2,6 +2,16 @@
 
 All notable changes to stash. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/) (pre-1.0: minor versions may change behavior).
 
+## [0.18.0] - 2026-10-21
+
+### Added
+- **Import from other password managers.** `stash import FILE` reads exports from Chrome, Brave, Edge, and Arc (CSV), Safari and Apple Passwords (CSV), Firefox (CSV), 1Password (`.1pux`), Bitwarden (JSON and CSV), and other CSVs with the usual columns (LastPass, Proton Pass, Dashlane). Logins bring their usernames, websites, notes, extra fields, and 2FA; cards and bank accounts are validated like ones you add; anything that can't come in is listed with the reason. `--dry-run` shows names and kinds without importing.
+- **File → Import Passwords… (⇧⌘I) in the Mac app**, and an Import button on an empty vault: review every item with a checkbox, import the ones you keep, then delete the export file from the same window.
+- Nothing in your vault is ever replaced: identical items are left alone (also under a `-2` name from an earlier import), and a different item with a taken name gets a `-2` name.
+- 1Password's Password and API Credential items come in as secrets. If you decline Touch ID for cards and bank accounts, the rest is still imported and they're listed as left out.
+- In the app, the import is refused if the file changed after you reviewed it, and imported items are shown even if the list was filtered to another category.
+- The export holds every password in plain text: stash reads it once, never copies it, and offers to delete it (`--delete-file`). The CLI asks for Touch ID or the master password even in an unlocked session, since an import writes many items at once.
+
 ## [0.17.0] - 2026-10-21
 
 ### Changed

@@ -24,6 +24,10 @@ struct StashApp: App {
                 Button("Quick Access") { delegate.quickAccess?.toggle() }
                     .keyboardShortcut(.space, modifiers: [.command, .shift])
             }
+            CommandGroup(replacing: .importExport) {
+                Button("Import Passwords…") { delegate.model.chooseImportFile() }
+                    .keyboardShortcut("i", modifiers: [.command, .shift])
+            }
         }
 
         MenuBarExtra {
@@ -250,6 +254,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         _ = await m.addSSHKey(name: "ssh/new") { try await $0.sshGenerate(name: "ssh/new", comment: nil) }
         check(m.filter == .kind(.ssh), "an SSH key made in Logins goes to SSH Keys")
 
+        m = await fresh(.kind(.ssh), search: "zzz")
+        let sample = try? await MockBackend(locked: false).importPreview(path: "/sample.csv")
+        let picked = (sample?.entries ?? []).filter { [0, 2].contains($0.index) }
+        let imported = await m.importItems(path: "/sample.csv", entries: picked)
+        check(imported?.added == [.login, .card], "importing adds only the chosen entries")
+        check(m.items.contains { $0.name == "cards/chase-sapphire" } && !m.items.contains { $0.name == "router" },
+              "and the list has them")
+        check(m.filter == .all && m.search.isEmpty, "and shows them, even from SSH Keys with a search")
+
         print(failed == 0 ? "modeltest: ok" : "modeltest: \(failed) failed")
         exit(failed == 0 ? 0 : 1)
     }
@@ -314,6 +327,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         try? await Task.sleep(for: .seconds(1.5))
         if let name = options.select { await model.select(name) }
         if options.quickAccessSnapshot { quickAccess?.show() }
+        if options.importPreview {
+            model.importFile = ImportFile(url: URL(fileURLWithPath: "/Users/you/Downloads/Chrome Passwords.csv"))
+        }
         if let name = options.editor {
             if name == "choose" {
                 model.editor = .choose(model.suggestedKind)
@@ -333,7 +349,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let main = NSApp.windows.first { $0.title == "stash" && $0.isVisible }
         let window = options.quickAccessSnapshot
             ? NSApp.windows.first { $0 is QuickAccessPanel }
-            : (options.editor != nil ? main?.attachedSheet : main)
+            : (options.editor != nil || options.importPreview ? main?.attachedSheet : main)
         if let view = window?.contentView?.superview ?? window?.contentView,
            let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
             view.cacheDisplay(in: view.bounds, to: rep)
@@ -352,6 +368,8 @@ struct LaunchOptions {
     var quickAccessSnapshot = false
     var selftest = false
     var modeltest = false
+    /// Snapshots: show the import sheet (sample data).
+    var importPreview = false
     var appearance: String?
     /// `new`, or `edit` (with --select).
     var editor: String?
@@ -370,6 +388,7 @@ struct LaunchOptions {
             case "--quick-access": o.quickAccessSnapshot = true
             case "--selftest": o.selftest = true
             case "--modeltest": o.modeltest = true; o.mock = true
+            case "--import-preview": o.importPreview = true
             case "--appearance": o.appearance = args.next()
             case "--editor": o.editor = args.next()
             case "--card-back": PremiumCard.startFlipped = true
