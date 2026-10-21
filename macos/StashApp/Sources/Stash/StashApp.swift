@@ -247,7 +247,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let name = options.select { await model.select(name) }
         if options.quickAccessSnapshot { quickAccess?.show() }
         if let name = options.editor {
-            if name == "new" {
+            if name == "choose" {
+                model.editor = .choose(model.suggestedKind)
+            } else if name == "new" {
                 model.editor = .new(.login)
             } else if name.hasPrefix("new-"), let kind = ItemKind(rawValue: String(name.dropFirst(4))) {
                 model.editor = .new(kind)

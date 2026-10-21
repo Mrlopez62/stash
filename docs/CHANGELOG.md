@@ -2,6 +2,14 @@
 
 All notable changes to stash. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/) (pre-1.0: minor versions may change behavior).
 
+## [0.16.1] - 2026-10-21
+
+### Changed
+- **New Item asks what you're saving first.** In the Mac app, New Item (⌘N) opens a picker with every kind (login, secret, secure note, payment card, bank account, SSH key), each with a line about what it's for. The category you're viewing is preselected (say, Bank Account in Bank Accounts), and picking one opens that kind's own form, with a Back button to the picker. Before, New Item always opened a login form, and the other kinds hid in a small menu.
+
+### Fixed
+- **Locking the app now stays locked.** The lock screen asked for Touch ID by itself every time it appeared, so "Lock stash" led straight back into a fingerprint prompt. It now asks by itself only when the app opens; after you lock (or it locks when idle), it waits for you to click "Unlock with Touch ID".
+
 ## [0.16.0] - 2026-10-21
 
 ### Changed

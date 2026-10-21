@@ -27,12 +27,12 @@ struct VaultView: View {
             ZStack(alignment: .trailing) {
                 HStack(spacing: 0) {
                     if showSidebar {
-                        Sidebar(newItem: { model.editor = .new($0) })
+                        Sidebar()
                             .frame(width: VaultLayout.sidebar)
                             .transition(.move(edge: .leading))
                         Rectangle().fill(Color.line).frame(width: 1)
                     }
-                    ItemsPane(newItem: { model.editor = .new($0) })
+                    ItemsPane()
                         .frame(minWidth: VaultLayout.itemsMin, maxWidth: .infinity)
                     if docked, let detail = model.detail {
                         Rectangle().fill(Color.line).frame(width: 1)
@@ -50,7 +50,13 @@ struct VaultView: View {
         }
         .background(Color.canvas)
         .animation(.easeOut(duration: 0.18), value: model.detail?.name)
-        .sheet(item: $model.editor) { ItemEditorView(target: $0) }
+        .sheet(item: $model.editor) { target in
+            if case .choose(let suggested) = target {
+                NewItemFlow(suggested: suggested)
+            } else {
+                ItemEditorView(target: target)
+            }
+        }
         .overlay(alignment: .bottom) {
             if let toast = model.toast {
                 Toast(text: toast)
@@ -75,7 +81,6 @@ extension VaultView {
 
 struct Sidebar: View {
     @EnvironmentObject var model: AppModel
-    let newItem: (ItemKind) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -210,7 +215,6 @@ struct SidebarRow: View {
 
 struct ItemsPane: View {
     @EnvironmentObject var model: AppModel
-    let newItem: (ItemKind) -> Void
     /// Measured on the pane itself (sized by the window), not the table,
     /// whose content would otherwise feed back into its own width.
     @ViewState private var width: CGFloat = 1000
@@ -222,16 +226,13 @@ struct ItemsPane: View {
                     .font(.plex(24, weight: .semibold))
                     .foregroundStyle(Color.ink)
                 Spacer()
-                Menu {
-                    ForEach(ItemKind.allCases) { kind in
-                        Button { newItem(kind) } label: { Label(kind.title, systemImage: kind.symbol) }
-                    }
+                // First pick the kind (the category you're viewing is
+                // preselected), then fill in that kind's form.
+                Button {
+                    model.editor = .choose(model.suggestedKind)
                 } label: {
                     Label("New Item", systemImage: "plus")
-                } primaryAction: {
-                    newItem(.login)
                 }
-                .menuStyle(.button)
                 .buttonStyle(PrimaryButtonStyle())
                 .fixedSize()
                 .keyboardShortcut("n", modifiers: .command)
@@ -273,7 +274,7 @@ struct ItemsPane: View {
                     .padding(.vertical, 12)
 
                     // 28pt page padding on each side, plus the card's border.
-                    ItemTable(newItem: newItem, columns: Columns(width: width - 58))
+                    ItemTable(columns: Columns(width: width - 58))
                 }
             }
             .padding(.horizontal, 28)
@@ -317,7 +318,6 @@ struct Columns: Equatable {
 
 struct ItemTable: View {
     @EnvironmentObject var model: AppModel
-    let newItem: (ItemKind) -> Void
     let columns: Columns
 
     var body: some View {
@@ -337,7 +337,8 @@ struct ItemTable: View {
             .overlay(alignment: .bottom) { Rectangle().fill(Color.line).frame(height: 1) }
 
             if model.items.isEmpty {
-                EmptyVault(create: newItem).frame(maxWidth: .infinity, minHeight: 280)
+                EmptyVault(create: { model.editor = .choose(model.suggestedKind) })
+                    .frame(maxWidth: .infinity, minHeight: 280)
             } else if model.filtered.isEmpty {
                 Text("No items match “\(model.search)”")
                     .font(.plex(13))
@@ -509,7 +510,7 @@ struct ItemIcon: View {
 }
 
 struct EmptyVault: View {
-    let create: (ItemKind) -> Void
+    let create: () -> Void
 
     var body: some View {
         VStack(spacing: 14) {
@@ -517,14 +518,16 @@ struct EmptyVault: View {
             Text("Your vault is empty")
                 .font(.plex(16, weight: .semibold))
                 .foregroundStyle(Color.ink)
-            Text("Add an API token, a login, or a secure note.")
+            Text("Add a login, an API token, a card, a bank account, an SSH key, or a note.")
                 .font(.plex(13))
                 .foregroundStyle(Color.inkSecondary)
-            HStack(spacing: 8) {
-                Button("New Login") { create(.login) }.buttonStyle(PrimaryButtonStyle())
-                Button("New Secret") { create(.secret) }.buttonStyle(SecondaryButtonStyle())
-                Button("New Note") { create(.note) }.buttonStyle(SecondaryButtonStyle())
+                .multilineTextAlignment(.center)
+            Button {
+                create()
+            } label: {
+                Label("New Item", systemImage: "plus")
             }
+            .buttonStyle(PrimaryButtonStyle())
         }
         .padding(32)
     }

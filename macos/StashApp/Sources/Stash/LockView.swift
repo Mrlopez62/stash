@@ -84,9 +84,11 @@ struct LockView: View {
         }
         .disabled(model.busy)
         .task {
-            if touchID {
+            if touchID && model.offerTouchIDOnShow {
+                model.offerTouchIDOnShow = false
                 await model.unlockWithTouchID()
             } else {
+                model.offerTouchIDOnShow = false
                 focused = true
             }
         }

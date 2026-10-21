@@ -17,6 +17,10 @@ final class AppModel: ObservableObject {
     @Published var toast: String?
     /// The open editor sheet, if any.
     @Published var editor: EditorTarget?
+    /// The lock screen asks for Touch ID by itself only once, when the app
+    /// opens. After you lock (or it locks when idle), it waits for "Unlock
+    /// with Touch ID": asking again right away would make locking pointless.
+    var offerTouchIDOnShow = true
 
     let backend: VaultBackend?
 
@@ -49,6 +53,11 @@ final class AppModel: ObservableObject {
         case .kind(let k): item.kind == k
         case .folder(let f): item.folder?.split(separator: "/").first.map(String.init) == f
         }
+    }
+
+    /// What "New Item" preselects: the kind of category you're viewing.
+    var suggestedKind: ItemKind {
+        if case .kind(let k) = filter { k } else { .login }
     }
 
     func count(_ filter: Filter) -> Int { items.filter { matches($0, filter) }.count }
