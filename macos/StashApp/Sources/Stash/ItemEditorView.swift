@@ -2,11 +2,14 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 enum EditorTarget: Identifiable {
+    /// Pick what kind of item to create first (this one preselected).
+    case choose(ItemKind)
     case new(ItemKind)
     case edit(ItemDetail)
 
     var id: String {
         switch self {
+        case .choose: "choose"
         case .new(let kind): "new-\(kind.rawValue)"
         case .edit(let detail): "edit-\(detail.name)"
         }
@@ -19,6 +22,8 @@ struct ItemEditorView: View {
     @EnvironmentObject var model: AppModel
     @Environment(\.dismiss) private var dismiss
     let target: EditorTarget
+    /// Back to the "New Item" picker, when this form was opened from it.
+    var onBack: (() -> Void)? = nil
 
     @ViewState private var kind: ItemKind = .login
     @ViewState private var name = ""
@@ -200,6 +205,15 @@ struct ItemEditorView: View {
                         Text(problem).font(.plex(12)).foregroundStyle(Color.inkTertiary)
                     }
                     Spacer()
+                    if let onBack {
+                        Button {
+                            model.error = nil
+                            onBack()
+                        } label: {
+                            Label("Back", systemImage: "chevron.left")
+                        }
+                        .buttonStyle(SecondaryButtonStyle())
+                    }
                     Button("Cancel") { dismiss() }
                         .buttonStyle(SecondaryButtonStyle())
                         .keyboardShortcut(.cancelAction)
@@ -506,7 +520,7 @@ struct ItemEditorView: View {
     private func load() {
         model.error = nil
         switch target {
-        case .new(let k):
+        case .choose(let k), .new(let k):
             kind = k
         case .edit(let d):
             kind = d.kind

@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "stash",
-  "version": "0.16.0",
+  "version": "0.16.1",
   "description": "Fill logins, cards, and bank accounts from your stash vault. Free and open source.",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA4RRmvCHjKiK9dgdek4NoFF1QXKoZJeypF3LwI6pqQeGDCuhFV98oqfR6yaTBpBi7kaBRCOo/vHOfzDk/jLOFlJvVcejtBUnXz+ry0OuaSOHAyi5Ge5QRlmlss81X84lqrz7C/P4ZDhpyHxaNg0MfL+dF4AE2ZjOpLVzelQJg/wH004ldyclNf9zy5AJgRe+6sZaH08hC9accpcs5IIz1av2g01El6RkYL7A8Oie6LkbhF24Ymv40nO4IzaDtkVQPvOb3vG1wykhw+bTaHcBnWcIIOmvSaDjXTZT6Oo9s6ZE9BrgOV4IE4Jgf/uq6MBd59BLFHtw3hgxhNdD0Oas7twIDAQAB",
   "minimum_chrome_version": "121",
