@@ -146,8 +146,8 @@ struct SettingsView: View {
         }
         .formStyle(.grouped)
         .frame(width: 480, height: 520)
-        // At most a minute, even if an older setting said more.
-        .onChange(of: clipboardSeconds, initial: true) { Clipboard.clearAfter = min(clipboardSeconds, 60) }
+        // Older versions allowed up to two minutes: show what applies now.
+        .onAppear { if clipboardSeconds > 60 { clipboardSeconds = 60 } }
     }
 }
 

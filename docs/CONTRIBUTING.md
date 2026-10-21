@@ -69,8 +69,10 @@ CI runs these same checks, so run them locally first:
 cargo fmt --all
 cargo clippy --all-targets -- -D warnings
 cargo test
+node --test browser/test/fill.test.mjs browser/test/background.test.mjs
 ```
 
+- **Run tests in debug builds** (plain `cargo test`, not `--release`). Release builds ignore the test-only overrides (`STASH_TOUCHID_HELPER`, `STASH_AI_AGENTS`), so with an AI agent such as Claude Code running on your machine, sessions would pause and the session tests would fail.
 - **Add tests.** Bug fixes need a test that fails without the fix. New behavior needs tests that cover it.
 - **Keep it focused.** One logical change per pull request.
 - **Update the changelog.** Add a line to `docs/CHANGELOG.md` for anything users would notice.

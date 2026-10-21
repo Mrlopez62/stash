@@ -684,11 +684,30 @@ fn run(cli: Cli) -> Result<ExitCode> {
                 if agents.is_empty() {
                     println!("No AI agents running.");
                 } else {
-                    println!("Running: {}", agents.join(", "));
+                    println!("Running: {}", procinfo::agent_names(&agents).join(", "));
+                    for agent in &agents {
+                        println!(
+                            "  {:<14} pid {:<7} {}",
+                            agent.name,
+                            agent.pid,
+                            agent.path.display()
+                        );
+                    }
                 }
+                // The setting needs the vault's key: read it only if this
+                // shell's session has it, without prompting.
+                let allowed = session_vault(&path)
+                    .map(|vault| trust::setting(&vault, SESSIONS_WITH_AGENTS).unwrap_or(false));
                 println!(
-                    "Unless you've run `stash agents --allow-sessions`, sessions pause while one runs, \
-                     so each stash command asks for Touch ID."
+                    "{}",
+                    match allowed {
+                        Some(true) =>
+                            "Sessions stay open while AI agents run (`stash agents --pause-sessions` changes this).",
+                        Some(false) =>
+                            "Sessions pause while AI agents run, so each stash command asks for Touch ID (`stash agents --allow-sessions` changes this).",
+                        None =>
+                            "Unless you've run `stash agents --allow-sessions`, sessions pause while AI agents run, so each stash command asks for Touch ID.",
+                    }
                 );
             }
         }
@@ -968,7 +987,7 @@ fn unlock_checked(path: &Path, purpose: &str) -> Result<Unlocked> {
     {
         // An AI agent that can script your terminal could type into this
         // shell, so its session pauses while one runs (unless allowed).
-        let agents = procinfo::running_ai_agents();
+        let agents = procinfo::agent_names(&procinfo::running_ai_agents());
         if agents.is_empty() || trust::setting(&vault, SESSIONS_WITH_AGENTS).unwrap_or(false) {
             return Ok(Unlocked {
                 vault,
@@ -991,6 +1010,17 @@ fn unlock_checked(path: &Path, purpose: &str) -> Result<Unlocked> {
         eprintln!("stash: warning: could not start a session ({e:#}); you'll be asked again");
     }
     Ok(Unlocked { vault, fresh: true })
+}
+
+/// This shell's session, if it has one, without any prompt. Only for
+/// reading settings.
+fn session_vault(path: &Path) -> Option<Vault> {
+    if std::env::var_os(PASSWORD_ENV).is_some() || session_timeout().ok()?.is_none() {
+        return None;
+    }
+    let canonical = path.canonicalize().ok()?;
+    let key = agent::get(&agent::default_socket().ok()?, &canonical)?;
+    Vault::open_with_key(path, &key).ok()
 }
 
 /// The setting (see `trust::setting`) that keeps sessions open while AI

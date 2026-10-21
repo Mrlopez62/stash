@@ -211,9 +211,26 @@ fn is_interpreter(name: &str) -> bool {
     ) || name.starts_with("python")
 }
 
-/// The AI agents (see [`AI_AGENTS`]) running as this user right now, by
-/// name, sorted and without repeats.
-pub fn running_ai_agents() -> Vec<String> {
+/// An AI agent found running.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Agent {
+    /// The name it matched (see [`AI_AGENTS`]).
+    pub name: String,
+    pub pid: i32,
+    /// What's actually running: the executable, or the script an
+    /// interpreter runs. Some names are shared with unrelated tools (`goose`
+    /// is also a database migration tool), so this tells them apart.
+    pub path: std::path::PathBuf,
+}
+
+/// The agents' names, sorted and without repeats, for prompts.
+pub fn agent_names(agents: &[Agent]) -> Vec<String> {
+    let names: std::collections::BTreeSet<&str> = agents.iter().map(|a| a.name.as_str()).collect();
+    names.into_iter().map(str::to_owned).collect()
+}
+
+/// The AI agents (see [`AI_AGENTS`]) running as this user right now.
+pub fn running_ai_agents() -> Vec<Agent> {
     // Debug builds only, for tests: replace the list (comma-separated).
     let custom = cfg!(debug_assertions)
         .then(|| std::env::var("STASH_AI_AGENTS").ok())
@@ -227,26 +244,35 @@ pub fn running_ai_agents() -> Vec<String> {
         None => AI_AGENTS.to_vec(),
     };
     let me = std::process::id() as i32;
-    let mut found = std::collections::BTreeSet::new();
+    let mut found = Vec::new();
     for pid in own_pids() {
         if pid == me {
             continue;
         }
-        let Some(exe) = exe_path(pid) else { continue };
-        let Some(mut name) = file_name(&exe) else {
+        let Some(mut path) = exe_path(pid) else {
+            continue;
+        };
+        let Some(mut name) = file_name(&path) else {
             continue;
         };
         if is_interpreter(&name)
-            && let Some(script) = argv1(pid).and_then(|a| file_name(std::path::Path::new(&a)))
+            && let Some(script) = argv1(pid)
+            && let Some(script_name) = file_name(std::path::Path::new(&script))
         {
-            name = script;
+            name = script_name;
+            path = script.into();
         }
         let name = name.trim_end_matches(".js").trim_end_matches(".py");
         if watched.contains(&name) {
-            found.insert(name.to_owned());
+            found.push(Agent {
+                name: name.to_owned(),
+                pid,
+                path,
+            });
         }
     }
-    found.into_iter().collect()
+    found.sort_by(|a, b| (&a.name, a.pid).cmp(&(&b.name, b.pid)));
+    found
 }
 
 /// Processes running as this user whose environment holds exactly
@@ -256,14 +282,19 @@ pub fn running_ai_agents() -> Vec<String> {
 /// double forks), unless they clear it. macOS hides the environment of its
 /// own system programs (`/bin/sh`, `/bin/sleep`, ...), so those aren't
 /// found there; everything else (node, python, your builds) is.
-pub fn with_env(name: &str, value: &str) -> Vec<Identity> {
+///
+/// Only processes started at or after `since` (a [`ProcInfo::start`]) are
+/// checked, which skips reading most environments.
+pub fn with_env(name: &str, value: &str, since: u64) -> Vec<Identity> {
     let wanted = format!("{name}={value}").into_bytes();
     let me = std::process::id() as i32;
     own_pids()
         .into_iter()
         .filter(|&pid| pid != me)
-        .filter(|&pid| environment(pid).is_some_and(|env| env.contains(&wanted)))
-        .filter_map(|pid| info(pid).map(|p| p.identity()))
+        .filter_map(info)
+        .filter(|p| p.start >= since)
+        .filter(|p| environment(p.pid).is_some_and(|env| env.contains(&wanted)))
+        .map(|p| p.identity())
         .collect()
 }
 
@@ -456,7 +487,7 @@ mod tests {
         unsafe { std::env::set_var("STASH_AI_AGENTS", "stash-unit-agent, other") };
         let mut found = Vec::new();
         for _ in 0..50 {
-            found = running_ai_agents();
+            found = agent_names(&running_ai_agents());
             if !found.is_empty() {
                 break;
             }
