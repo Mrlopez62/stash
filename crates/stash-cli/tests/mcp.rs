@@ -294,12 +294,18 @@ fn commands_without_secrets_need_no_unlock_and_timeouts_kill_them() {
 fn processes_a_command_leaves_running_are_stopped() {
     let f = Fixture::new();
     let pids = f.dir.path().join("pids");
-    // A long-running program that isn't one of macOS's own (whose
-    // environment macOS hides): `stash clipboard-clear` waits 30s.
-    let waiter = format!(
-        "{} clipboard-clear --after 30 </dev/null",
-        assert_cmd::cargo::cargo_bin("stash").display()
-    );
+    // A long-running program whose environment can be read: on macOS, not
+    // one of the system's own (it hides theirs), so `stash clipboard-clear`,
+    // which waits 30s; on Linux, not stash (it makes itself unreadable), so
+    // plain `sleep`.
+    let waiter = if cfg!(target_os = "macos") {
+        format!(
+            "{} clipboard-clear --after 30 </dev/null",
+            assert_cmd::cargo::cargo_bin("stash").display()
+        )
+    } else {
+        "sleep 30".to_owned()
+    };
     // One left in the background, one detached into its own session (as
     // `setsid` or a double fork would), both holding the secret.
     let script = format!(

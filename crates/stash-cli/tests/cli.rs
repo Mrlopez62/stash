@@ -646,11 +646,17 @@ fn sessions_pause_while_an_ai_agent_runs_unless_allowed() {
         .stdin(std::process::Stdio::piped())
         .spawn()
         .unwrap();
-    stash_s()
-        .arg("agents")
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("Running: stash-pause-test-agent"));
+    // Wait until it has really started (until then it's still a copy of
+    // this test, not the script).
+    let seen = (0..50).any(|_| {
+        let out = stash_s().arg("agents").output().unwrap();
+        let seen = String::from_utf8_lossy(&out.stdout).contains("Running: stash-pause-test-agent");
+        if !seen {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        seen
+    });
+    assert!(seen, "stash agents never saw the fake agent");
     stash_s().arg("ls").assert().success();
     assert_eq!(prompts(&dir), 2, "the session is paused");
     let reason = prompt_reasons(&dir).pop().unwrap();
