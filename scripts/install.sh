@@ -16,6 +16,13 @@ if [ "$(uname -s)" = "Darwin" ]; then
     # The helper used to be a bare executable here.
     rm -f "$bin_dir/stash-touchid"
     echo "Installed stash and stash-touchid.app to $bin_dir"
+    # The SSH agent (from `stash ssh install`) keeps running its old code
+    # after an update: restart it so it uses the new stash and helper.
+    agent="gui/$(id -u)/dev.stash.ssh-agent"
+    if launchctl print "$agent" >/dev/null 2>&1; then
+        launchctl kickstart -k "$agent"
+        echo "Restarted the stash SSH agent"
+    fi
 else
     echo "Installed stash to $bin_dir (Touch ID is macOS-only)"
 fi
