@@ -55,8 +55,20 @@ codesign --verify --strict "$app"
 echo "Built $app"
 
 if [ "${1:-}" = "--install" ]; then
+    # A running stash keeps its old code until it restarts: quit it first,
+    # and open the new one after.
+    was_running=false
+    if pgrep -f "/stash.app/Contents/MacOS/Stash" >/dev/null 2>&1; then
+        was_running=true
+        osascript -e 'tell application id "io.github.mrlopez62.stash" to quit' >/dev/null 2>&1 || true
+        sleep 1
+    fi
     mkdir -p "$HOME/Applications"
     rm -rf "$HOME/Applications/stash.app"
     cp -R "$app" "$HOME/Applications/stash.app"
-    echo "Installed to ~/Applications/stash.app"
+    echo "Installed stash $version to ~/Applications/stash.app"
+    if [ "$was_running" = true ]; then
+        open "$HOME/Applications/stash.app"
+        echo "Restarted stash"
+    fi
 fi
