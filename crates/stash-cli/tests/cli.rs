@@ -637,10 +637,15 @@ fn sessions_pause_while_an_ai_agent_runs_unless_allowed() {
     let agent = dir.path().join("stash-pause-test-agent");
     {
         use std::os::unix::fs::PermissionsExt;
-        std::fs::write(&agent, "#!/bin/sh\nwhile :; do sleep 1; done\n").unwrap();
+        // `read` waits without starting child processes, which would carry
+        // the same name while the shell forks them.
+        std::fs::write(&agent, "#!/bin/sh\nread x\n").unwrap();
         std::fs::set_permissions(&agent, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
-    let mut running = std::process::Command::new(&agent).spawn().unwrap();
+    let mut running = std::process::Command::new(&agent)
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
     stash_s()
         .arg("agents")
         .assert()

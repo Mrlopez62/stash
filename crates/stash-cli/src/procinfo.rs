@@ -437,7 +437,9 @@ mod tests {
     /// A stand-in AI agent: a shell script with the watched name.
     fn fake_agent(path: &std::path::Path) {
         use std::os::unix::fs::PermissionsExt;
-        std::fs::write(path, "#!/bin/sh\nwhile :; do sleep 1; done\n").unwrap();
+        // `read` waits on stdin without starting child processes (a loop
+        // of `sleep` would fork copies of the shell, with the same name).
+        std::fs::write(path, "#!/bin/sh\nread x\n").unwrap();
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
 
@@ -446,7 +448,10 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         let fake = dir.path().join("stash-unit-agent");
         fake_agent(&fake);
-        let mut child = std::process::Command::new(&fake).spawn().unwrap();
+        let mut child = std::process::Command::new(&fake)
+            .stdin(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
         // SAFETY (env): this test is the only one reading STASH_AI_AGENTS.
         unsafe { std::env::set_var("STASH_AI_AGENTS", "stash-unit-agent, other") };
         let mut found = Vec::new();
