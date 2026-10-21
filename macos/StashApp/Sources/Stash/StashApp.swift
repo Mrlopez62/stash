@@ -103,7 +103,7 @@ struct SettingsView: View {
         Form {
             Section("Clipboard") {
                 HStack {
-                    Slider(value: $clipboardSeconds, in: 10...120, step: 5)
+                    Slider(value: $clipboardSeconds, in: 10...60, step: 5)
                     Text("\(Int(clipboardSeconds))s").font(.mono(12)).frame(width: 40)
                 }
                 Text("Copied secrets are cleared after this long, marked concealed so clipboard managers skip them, and kept off your other devices.")
@@ -146,7 +146,8 @@ struct SettingsView: View {
         }
         .formStyle(.grouped)
         .frame(width: 480, height: 520)
-        .onChange(of: clipboardSeconds, initial: true) { Clipboard.clearAfter = clipboardSeconds }
+        // At most a minute, even if an older setting said more.
+        .onChange(of: clipboardSeconds, initial: true) { Clipboard.clearAfter = min(clipboardSeconds, 60) }
     }
 }
 

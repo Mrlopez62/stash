@@ -11,6 +11,9 @@
 //   stash-touchid wrap               stdin: vault key (hex)  -> stdout: blob
 //   stash-touchid unwrap <reason>    stdin: blob             -> stdout: vault key (hex)
 //   stash-touchid confirm <reason>   fingerprint check only; exit 0 if approved
+//   stash-touchid copy               stdin: a secret -> the clipboard, marked
+//                                    concealed and transient, this Mac only
+//   stash-touchid clear              empty the clipboard
 //
 // Exit codes: 0 ok, 1 error, 2 cancelled by the user, 3 Touch ID unavailable.
 //
@@ -19,6 +22,7 @@
 // show a stash-branded Touch ID prompt with a reason of its choosing and,
 // if you approved, receive the vault key.
 
+import AppKit
 import CryptoKit
 import Darwin
 import Foundation
@@ -151,6 +155,27 @@ func unwrap(reason: String) throws {
     print(hexEncode(vaultKey))
 }
 
+/// Copy a secret the way the stash app does: marked concealed and transient
+/// (nspasteboard.org conventions) so clipboard-history apps skip it, and
+/// kept on this Mac (no Universal Clipboard). `pbcopy` can do neither.
+func copySecret() throws {
+    let data = FileHandle.standardInput.readDataToEndOfFile()
+    guard let value = String(data: data, encoding: .utf8) else {
+        throw Failure("only text can be copied")
+    }
+    let pb = NSPasteboard.general
+    pb.prepareForNewContents(with: .currentHostOnly)
+    let concealed = NSPasteboard.PasteboardType("org.nspasteboard.ConcealedType")
+    let transient = NSPasteboard.PasteboardType("org.nspasteboard.TransientType")
+    pb.declareTypes([.string, concealed, transient], owner: nil)
+    guard pb.setString(value, forType: .string),
+          pb.setString("", forType: concealed),
+          pb.setString("", forType: transient)
+    else {
+        throw Failure("couldn't write to the clipboard")
+    }
+}
+
 /// The executable of process `pid`, with symlinks resolved.
 func executable(of pid: pid_t) -> URL? {
     var buffer = [CChar](repeating: 0, count: 4 * Int(MAXPATHLEN))
@@ -188,8 +213,12 @@ do {
     case "confirm":
         try checkAvailable()
         _ = try authenticate(reason: args.dropFirst().first ?? "approve a stash request")
+    case "copy":
+        try copySecret()
+    case "clear":
+        NSPasteboard.general.clearContents()
     default:
-        throw Failure("usage: stash-touchid available | wrap | unwrap <reason> | confirm <reason>")
+        throw Failure("usage: stash-touchid available | wrap | unwrap <reason> | confirm <reason> | copy | clear")
     }
 } catch let failure as Failure {
     FileHandle.standardError.write(Data("stash-touchid: \(failure.message)\n".utf8))

@@ -71,6 +71,8 @@ impl Fixture {
 
     fn cli(&self) -> Command {
         let mut cmd = Command::cargo_bin("stash").unwrap();
+        // A fixed agent list, so AI agents running on this machine don't pause sessions.
+        cmd.env("STASH_AI_AGENTS", "stash-test-agent");
         cmd.env("STASH_VAULT", self.dir.path().join("vault.db"))
             .env("STASH_AGENT_SOCK", self.dir.path().join("agent.sock"))
             .env("STASH_TOUCHID_HELPER", &self.helper)
@@ -98,6 +100,7 @@ impl Fixture {
     #[allow(clippy::zombie_processes)]
     fn agent(&self) -> Agent {
         let mut child = std::process::Command::new(assert_cmd::cargo::cargo_bin("stash"))
+            .env("STASH_AI_AGENTS", "stash-test-agent")
             .args(["ssh", "agent", "--socket"])
             .arg(self.socket())
             .env("STASH_VAULT", self.dir.path().join("vault.db"))

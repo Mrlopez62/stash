@@ -220,6 +220,21 @@ enum Command {
         #[arg(long)]
         reset: bool,
     },
+    /// Show the AI agents running now, and whether sessions pause for them
+    ///
+    /// An AI agent that can script your terminal (macOS Automation) could
+    /// type `stash` commands into a shell with an unlocked session. So while
+    /// an AI coding agent (claude, codex, gemini, cursor-agent, aider, ...)
+    /// is running, sessions pause: every command asks for Touch ID again.
+    Agents {
+        /// Keep using sessions while AI agents run (asks for Touch ID or
+        /// your master password)
+        #[arg(long, conflicts_with = "pause_sessions")]
+        allow_sessions: bool,
+        /// Pause sessions while AI agents run (the default)
+        #[arg(long)]
+        pause_sessions: bool,
+    },
     /// Show recent requests from AI agents, the browser, and SSH from the audit log
     Audit {
         /// How many entries to show
@@ -644,6 +659,39 @@ fn run(cli: Cli) -> Result<ExitCode> {
                 }
             }
         }
+        Command::Agents {
+            allow_sessions,
+            pause_sessions,
+        } => {
+            if allow_sessions {
+                let mut unlocked = unlock_checked(&path, "keep sessions open while AI agents run")?;
+                if !unlocked.fresh {
+                    confirm_fresh(
+                        &mut unlocked.vault,
+                        "keep sessions open while AI agents run",
+                    )?;
+                }
+                trust::set_setting(&unlocked.vault, SESSIONS_WITH_AGENTS, true)?;
+                eprintln!(
+                    "Sessions stay open while AI agents run. `stash agents --pause-sessions` undoes this."
+                );
+            } else if pause_sessions {
+                let vault = unlock(&path, "pause sessions while AI agents run")?;
+                trust::set_setting(&vault, SESSIONS_WITH_AGENTS, false)?;
+                eprintln!("Sessions pause while AI agents run.");
+            } else {
+                let agents = procinfo::running_ai_agents();
+                if agents.is_empty() {
+                    println!("No AI agents running.");
+                } else {
+                    println!("Running: {}", agents.join(", "));
+                }
+                println!(
+                    "Unless you've run `stash agents --allow-sessions`, sessions pause while one runs, \
+                     so each stash command asks for Touch ID."
+                );
+            }
+        }
         Command::Audit { limit, json } => {
             let vault = unlock(&path, "read the audit log")?;
             let secret = vault.audit_secret()?;
@@ -913,19 +961,29 @@ fn unlock_checked(path: &Path, purpose: &str) -> Result<Unlocked> {
     let session = session_timeout()?;
     let socket = agent::default_socket()?;
 
+    let mut purpose = purpose.to_owned();
     if session.is_some()
         && let Some(key) = agent::get(&socket, &canonical)
         && let Ok(vault) = Vault::open_with_key(path, &key)
     {
-        return Ok(Unlocked {
-            vault,
-            fresh: false,
-        });
+        // An AI agent that can script your terminal could type into this
+        // shell, so its session pauses while one runs (unless allowed).
+        let agents = procinfo::running_ai_agents();
+        if agents.is_empty() || trust::setting(&vault, SESSIONS_WITH_AGENTS).unwrap_or(false) {
+            return Ok(Unlocked {
+                vault,
+                fresh: false,
+            });
+        }
+        purpose.push_str(&format!(
+            " (sessions pause while {} runs)",
+            agents.join(", ")
+        ));
     }
 
-    let vault = match unlock_with_touch_id(path, purpose)? {
+    let vault = match unlock_with_touch_id(path, &purpose)? {
         Some(vault) => vault,
-        None => unlock_with_password(path, purpose)?,
+        None => unlock_with_password(path, &purpose)?,
     };
     if let Some(idle) = session
         && let Err(e) = agent::put(&socket, &canonical, vault.key(), idle)
@@ -934,6 +992,10 @@ fn unlock_checked(path: &Path, purpose: &str) -> Result<Unlocked> {
     }
     Ok(Unlocked { vault, fresh: true })
 }
+
+/// The setting (see `trust::setting`) that keeps sessions open while AI
+/// agents run.
+const SESSIONS_WITH_AGENTS: &str = "sessions-with-ai-agents";
 
 /// A fresh approval: Touch ID or the master password, never a session.
 /// `reason` is shown on the prompt. `STASH_PASSWORD` (scripts and CI)

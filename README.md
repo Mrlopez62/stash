@@ -14,7 +14,7 @@
 
 A free, open-source password and secrets manager for macOS, built for developers. Unlock with Touch ID, fill passwords and cards in your browser, sign git commits with keys that never touch disk, pass API tokens into commands safely, and let AI agents use your secrets without ever seeing them.
 
-> **Status: early development (v0.14).** Everything below works today:
+> **Status: early development (v0.15).** Everything below works today:
 > - **The stash Mac app:** menu bar, Quick Access (⇧⌘Space), vault browser and editor
 > - **Items:** logins with 2FA codes, secrets, notes, **payment cards and bank accounts**, **SSH keys**
 > - **Browser autofill** in Chrome, Brave, Edge, Arc, and Firefox, with saving new logins and cards
@@ -77,6 +77,7 @@ How unlocking works:
 - **The first command unlocks the vault.** With Touch ID turned on, that's a fingerprint prompt. Otherwise you type the master password. If Touch ID is cancelled or unavailable (for example, the lid is closed), stash asks for the master password instead.
 - **Then a session starts, for that terminal only.** stash commands you run from the same shell in the next **10 minutes** don't ask again, and each use restarts the 10-minute timer. A small background agent holds the session, like `ssh-agent`. Run `stash lock` to end it early.
 - **Everything else has to ask.** That includes commands started by `stash run`, scripts, other terminals, and AI agents. They all get their own Touch ID prompt, which says what they want and who is asking, for example: *stash-touchid is trying to unlock stash for “get stripe/secret”, requested by sh ← stash*.
+- **Sessions pause while an AI agent runs.** An AI coding agent that's allowed to script your terminal app could type `stash` commands into your unlocked shell. So while one is running (Claude Code, Codex, Gemini CLI, Cursor's agent, Aider, and others), every command asks for Touch ID again, and the prompt says why. `stash agents` shows what's running. If you'd rather keep sessions, `stash agents --allow-sessions` turns this off after a Touch ID check (`--pause-sessions` turns it back on).
 
 | Setting | What it does |
 |---|---|
@@ -236,6 +237,7 @@ Passwords, 2FA secrets, and notes are only ever read from a hidden prompt or std
 ### Clipboard and 2FA codes
 
 - **`stash get <name> --copy`** puts a secret on the clipboard instead of printing it.
+  - On macOS, it's marked concealed so clipboard-history apps skip it, and it stays on this Mac (no Universal Clipboard), just like copies from the app.
   - It's cleared after 30 seconds, but only if the clipboard still holds that secret, so something you've copied since is left alone.
   - `STASH_CLIPBOARD_TIMEOUT` changes the delay, and `0` keeps the value.
 - **`stash otp <name>`** prints the current 2FA code, from a 2FA secret or a login's 2FA field. Add `--copy` to copy it instead.
@@ -274,6 +276,7 @@ claude mcp add stash -- stash mcp --allow 'github/*' --allow 'openai/*'
 More safeguards:
 - **No shell session.** The MCP server never creates or reuses one, so the agent's own shell commands can't read your vault either. It keeps the key in its own memory and forgets it after 10 idle minutes.
 - **A clean environment for commands.** Commands get no stdin, and they're killed after a timeout (120 s by default, 900 s at most).
+- **Nothing keeps running with your secrets.** When a command ends, stash stops anything it left running, even processes it detached with `nohup` or `setsid`, and says so in the result.
 - **An encrypted audit log.** Every request (who, what, which secret names, approved/denied/blocked, exit code) goes to `~/.stash/audit.log`. It never holds values, and each entry is encrypted to the vault, so the names of your secrets and sites aren't readable without unlocking. View it with `stash audit` (`--json` for one JSON object per line).
 
 ## Security model
@@ -321,7 +324,8 @@ Rust handles everything that is security-critical: the vault, keys, and every de
 | v0.12 ✅ | **Security:** vault format 3 (a separate key for cards, bank accounts, and SSH keys; tamper detection for the whole vault), `stash passwd` and `stash rekey`, stronger Argon2id |
 | v0.13 ✅ | Saving new cards at checkout (opt-in, Touch ID to save) |
 | v0.14 ✅ | Hardening: new or changed `.env` files and templates need a fresh approval (`stash trust`), an encrypted audit log |
-| v0.15 | Safari (needs a signed release), clipboard and terminal hardening |
+| v0.15 ✅ | Hardening: sessions pause while AI agents run (`stash agents`), concealed CLI clipboard copies, MCP commands can't leave processes running with your secrets |
+| v0.16 | Safari (needs a signed release) |
 | v0.x | A configurable Quick Access shortcut, launch at login, a signed and notarized download |
 | Later | Encrypted sync (iCloud Drive or Git), Linux support |
 

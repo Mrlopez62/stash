@@ -7,6 +7,8 @@ const PASSWORD: &str = "test-master-password";
 
 fn stash(dir: &TempDir) -> Command {
     let mut cmd = Command::cargo_bin("stash").unwrap();
+    // A fixed agent list, so AI agents running on this machine don't pause sessions.
+    cmd.env("STASH_AI_AGENTS", "stash-test-agent");
     cmd.env("STASH_VAULT", dir.path().join("vault.db"))
         .env("STASH_AGENT_SOCK", dir.path().join("agent.sock"))
         .env("STASH_PASSWORD", PASSWORD);
@@ -616,6 +618,66 @@ fn stash_trust_names_the_files_on_its_prompt_and_reports_unreadable_ones() {
 }
 
 #[test]
+fn sessions_pause_while_an_ai_agent_runs_unless_allowed() {
+    let (dir, helper) = init_with_touch_id();
+    let stash_s = || {
+        let mut cmd = stash(&dir);
+        cmd.env_remove("STASH_PASSWORD")
+            .env("STASH_TOUCHID_HELPER", &helper)
+            .env("STASH_SESSION_TIMEOUT", "30")
+            // Its own name, so tests running alongside don't see this agent.
+            .env("STASH_AI_AGENTS", "stash-pause-test-agent");
+        cmd
+    };
+    stash_s().arg("ls").assert().success();
+    stash_s().arg("ls").assert().success();
+    assert_eq!(prompts(&dir), 1, "the session covers the second command");
+
+    // An "AI agent" starts (a script with the watched name).
+    let agent = dir.path().join("stash-pause-test-agent");
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::write(&agent, "#!/bin/sh\nwhile :; do sleep 1; done\n").unwrap();
+        std::fs::set_permissions(&agent, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let mut running = std::process::Command::new(&agent).spawn().unwrap();
+    stash_s()
+        .arg("agents")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Running: stash-pause-test-agent"));
+    stash_s().arg("ls").assert().success();
+    assert_eq!(prompts(&dir), 2, "the session is paused");
+    let reason = prompt_reasons(&dir).pop().unwrap();
+    assert!(
+        reason.contains("(sessions pause while stash-pause-test-agent runs)"),
+        "{reason}"
+    );
+
+    // Allowing it takes a fresh approval (here, the paused unlock itself).
+    stash_s()
+        .args(["agents", "--allow-sessions"])
+        .assert()
+        .success();
+    assert_eq!(prompts(&dir), 3);
+    stash_s().arg("ls").assert().success();
+    assert_eq!(prompts(&dir), 3, "allowed: the session works again");
+
+    stash_s()
+        .args(["agents", "--pause-sessions"])
+        .assert()
+        .success();
+    stash_s().arg("ls").assert().success();
+    assert_eq!(prompts(&dir), 4, "paused again");
+
+    running.kill().unwrap();
+    running.wait().unwrap();
+    stash_s().arg("ls").assert().success();
+    assert_eq!(prompts(&dir), 4, "no agent: the session works");
+    stash_s().arg("lock").assert().success();
+}
+
+#[test]
 fn unlock_prompts_describe_the_request() {
     let (dir, helper) = init_with_touch_id();
     stash_interactive(&dir, &helper)
@@ -642,6 +704,7 @@ fn run_forwards_sigint_and_sigterm_when_not_in_the_terminal_foreground() {
         );
         let mut child = std::process::Command::cargo_bin("stash")
             .unwrap()
+            .env("STASH_AI_AGENTS", "stash-test-agent")
             .env("STASH_VAULT", dir.path().join("vault.db"))
             .env("STASH_AGENT_SOCK", dir.path().join("agent.sock"))
             .env("STASH_PASSWORD", PASSWORD)

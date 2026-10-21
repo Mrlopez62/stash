@@ -58,8 +58,8 @@ What stays possible for a program running as you, and how to limit it:
 | Risk | Why | What to do |
 |---|---|---|
 | Reading the environment of a running `stash run` (or MCP `run_with_secrets`) command | macOS and Linux let any process of the same user read another's environment (`ps eww`). Secrets passed as environment variables are visible while that command runs. | MCP prompts say how long a command may run; approve short commands. Run AI agents in a sandbox that can't inspect other processes. |
-| Reading the clipboard | Any app can read the clipboard while a copied secret is on it (up to 90 seconds). | Prefer `stash run` and `stash inject` while an AI agent is active. |
-| Typing into your unlocked terminal | With macOS Automation permission for your terminal, a program can run commands inside it (`osascript … do script`), reusing that shell's session. | Don't grant Automation access to terminals to agents; `stash lock` (or `STASH_SESSION_TIMEOUT=0`) while agents run. |
+| Reading the clipboard | Any app can read the clipboard while a copied secret is on it (30 seconds by default, at most a minute in the app). | Prefer `stash run` and `stash inject` while an AI agent is active. |
+| Typing into your unlocked terminal | With macOS Automation permission for your terminal, a program can run commands inside it (`osascript … do script`), reusing that shell's session. **Mitigated:** sessions pause while a known AI coding agent is running (by process name: `claude`, `codex`, `gemini`, `cursor-agent`, `aider`, and others, including when run by `node` or `python`), so every command asks for Touch ID, and the prompt says why. Turning that off (`stash agents --allow-sessions`) needs a fresh Touch ID or the master password and is stored as a vault-keyed tag, so a program can't turn it off for itself. An agent stash doesn't recognize, or one renamed on purpose, isn't caught. | Don't grant Automation access to terminals to agents; `stash lock` (or `STASH_SESSION_TIMEOUT=0`) while unknown agents run. |
 | Replacing the `stash` binary or editing shell startup files | Files you can write, a program running as you can write. | Install `stash.app` in `/Applications` (admin-owned). Signed, notarized releases are planned. |
 | Editing the audit log | It's a file you own, and anyone can add entries (that's how locked processes write). Entries can be deleted, and fake ones added. | Treat the log as a record, not proof. Entries stash can't decrypt are counted, not shown. |
 
@@ -140,7 +140,7 @@ After an unlock, `stash` starts `stash agent` in the background. The agent keeps
 | Threat | Protected? | How |
 |---|---|---|
 | A secret left on the clipboard | ✅ | Cleared after 30 seconds (`STASH_CLIPBOARD_TIMEOUT`). |
-| Clipboard history managers and Universal Clipboard (Handoff) | ✅ in the Mac app, ❌ in the CLI | The app marks copies `org.nspasteboard.ConcealedType` and `TransientType`, so well-behaved managers skip them, and keeps them on this Mac only (no Universal Clipboard). The CLI's `pbcopy` can't set those types. |
+| Clipboard history managers and Universal Clipboard (Handoff) | ✅ on macOS | The app, and the CLI through `stash-touchid copy`, mark copies `org.nspasteboard.ConcealedType` and `TransientType`, so well-behaved managers skip them, and keep them on this Mac only (no Universal Clipboard). If the helper is missing, the CLI falls back to `pbcopy` and says so. On Linux, `wl-copy` and `xclip` can't mark copies. |
 | Apps that read the clipboard while it holds the secret | ❌ | Any app can read the clipboard. Prefer `stash run` where you can. |
 
 ## The audit log
@@ -185,6 +185,7 @@ AI agents talk to `stash mcp` over stdio. The design assumes the agent may be co
 - **Allowlists:** with `--allow`, secrets outside the patterns are refused before any prompt, and the refusal is logged as `blocked`.
 - **No shell sessions:** the server never creates or reuses agent sessions. It keeps the key in its own memory, which isn't reachable from the agent's shell commands, and forgets it after the idle timeout.
 - **Bounded commands:** commands get no stdin, no `STASH_PASSWORD`, and their own process group, which is killed after the timeout. Output is capped at 64 KB per stream.
+- **Nothing left running:** each command's environment carries a random marker (`STASH_MCP_RUN`), which every process it starts inherits. When the command ends (or times out), stash stops every process still carrying it, including ones that detached with `setsid`, `nohup`, or a double fork, then kills what's left in its process group. Limits: a process that clears its environment isn't found, and macOS hides the environment of its own system programs (`/bin/sh`, `/bin/sleep`, `/usr/bin/perl`), so one of those detached on purpose can outlive the command there. Third-party programs (node, python, your builds) are always found, as is everything on Linux.
 - **Audit log:** `audit.log` next to the vault, mode `0600`, one JSON line per request, with names and outcomes but never values.
 
 | Threat | Protected? | How |
