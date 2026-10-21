@@ -299,12 +299,20 @@ final class AppModel: ObservableObject {
     }
 
     /// Import the chosen entries of an export file, then show the vault
-    /// with them. `nil` on failure (`error` says why).
-    func importItems(path: String, indices: [Int]) async -> ImportResult? {
+    /// with them. `nil` on failure (`error` says why) or a cancelled
+    /// Touch ID prompt.
+    func importItems(path: String, entries: [ImportPreview.Entry]) async -> ImportResult? {
         var result: ImportResult?
         await run {
-            result = try await backend?.importItems(path: path, indices: indices)
+            result = try await backend?.importItems(
+                path: path, indices: entries.map(\.index), names: entries.map(\.name))
             await reload()
+            // A category, folder, or search could hide what came in: show
+            // everything instead.
+            if let result, !result.added.isEmpty, filter != .all || !search.isEmpty {
+                filter = .all
+                search = ""
+            }
         }
         return result
     }
@@ -452,7 +460,7 @@ final class MockBackend: VaultBackend {
                   website: nil, subtitle: nil, warnings: []),
         ], skipped: [.init(title: "Old card", why: "that card number doesn't pass its checksum (a typo?)")])
     }
-    func importItems(path: String, indices: [Int]) async throws -> ImportResult {
+    func importItems(path: String, indices: [Int], names: [String]) async throws -> ImportResult {
         let preview = try await importPreview(path: path)
         let chosen = preview.entries.filter { indices.contains($0.index) }
         for e in chosen where !items.contains(where: { $0.name == e.name }) {

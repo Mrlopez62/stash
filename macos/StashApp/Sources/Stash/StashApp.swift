@@ -254,11 +254,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         _ = await m.addSSHKey(name: "ssh/new") { try await $0.sshGenerate(name: "ssh/new", comment: nil) }
         check(m.filter == .kind(.ssh), "an SSH key made in Logins goes to SSH Keys")
 
-        m = await fresh(.all)
-        let imported = await m.importItems(path: "/sample.csv", indices: [0, 2])
+        m = await fresh(.kind(.ssh), search: "zzz")
+        let sample = try? await MockBackend(locked: false).importPreview(path: "/sample.csv")
+        let picked = (sample?.entries ?? []).filter { [0, 2].contains($0.index) }
+        let imported = await m.importItems(path: "/sample.csv", entries: picked)
         check(imported?.added == [.login, .card], "importing adds only the chosen entries")
         check(m.items.contains { $0.name == "cards/chase-sapphire" } && !m.items.contains { $0.name == "router" },
-              "and the list shows them")
+              "and the list has them")
+        check(m.filter == .all && m.search.isEmpty, "and shows them, even from SSH Keys with a search")
 
         print(failed == 0 ? "modeltest: ok" : "modeltest: \(failed) failed")
         exit(failed == 0 ? 0 : 1)

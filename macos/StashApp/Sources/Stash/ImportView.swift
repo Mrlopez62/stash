@@ -85,6 +85,8 @@ struct ImportView: View {
     @ViewState private var showSkipped = false
     @ViewState private var deleted = false
     @ViewState private var deleteError: String?
+    /// Why the last import attempt failed, shown on the review screen.
+    @ViewState private var importError: String?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -192,9 +194,16 @@ struct ImportView: View {
             .disabled(busy)
 
             footer {
-                Text("Nothing in your vault is replaced.")
-                    .font(.plex(12))
-                    .foregroundStyle(Color.inkTertiary)
+                if let importError {
+                    Label(importError, systemImage: "exclamationmark.circle")
+                        .font(.plex(12))
+                        .foregroundStyle(Color.danger)
+                        .lineLimit(2)
+                } else {
+                    Text("Nothing in your vault is replaced.")
+                        .font(.plex(12))
+                        .foregroundStyle(Color.inkTertiary)
+                }
                 Spacer()
                 Button("Cancel") { dismiss() }
                     .buttonStyle(SecondaryButtonStyle())
@@ -346,9 +355,13 @@ struct ImportView: View {
 
     private func runImport(_ preview: ImportPreview) async {
         stage = .importing(preview)
-        guard let result = await model.importItems(path: file.url.path, indices: selected.sorted()) else {
+        importError = nil
+        model.error = nil
+        let chosen = preview.entries.filter { selected.contains($0.index) }
+        guard let result = await model.importItems(path: file.url.path, entries: chosen) else {
+            // A cancelled Touch ID prompt leaves no error: just try again.
             stage = .review(preview)
-            if let error = model.error { deleteError = error }
+            importError = model.error
             return
         }
         stage = .done(result)

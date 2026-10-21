@@ -663,10 +663,27 @@ impl Server {
             .filter_map(Value::as_u64)
             .map(|i| i as usize)
             .collect();
+        // The file is read again: make sure it still holds what was
+        // reviewed (the app sends the names it showed for those indices).
+        let names: Vec<&str> = params
+            .get("names")
+            .and_then(Value::as_array)
+            .ok_or_else(|| Failure::params("missing `names`"))?
+            .iter()
+            .filter_map(Value::as_str)
+            .collect();
         let chosen: Vec<&import::Entry> = indices
             .iter()
             .filter_map(|&i| found.entries.get(i))
             .collect();
+        if chosen.len() != indices.len()
+            || names.len() != chosen.len()
+            || chosen.iter().zip(&names).any(|(e, n)| e.name != *n)
+        {
+            return Err(Failure::params(
+                "the file changed since you reviewed it; open it again to review it",
+            ));
+        }
         let add = |me: &mut Self| -> Reply {
             let outcome = crate::import_cmd::add_all(me.vault()?, chosen.iter().copied())?;
             Ok(json!({

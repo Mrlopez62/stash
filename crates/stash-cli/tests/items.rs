@@ -625,6 +625,23 @@ fn imports_a_chrome_export_without_overwriting_anything() {
     assert_eq!(out(&dir, &["get", "github"]), "gh-pass-1");
     assert_eq!(out(&dir, &["get", "github-2"]), "other-pass");
     assert!(!file.exists(), "--delete-file deletes the export");
+
+    // The same file again, clash included: nothing new (no github-3).
+    std::fs::write(
+        &file,
+        format!("{CHROME_CSV}GitHub,https://github.com/,someone-else,other-pass,\n"),
+    )
+    .unwrap();
+    stash(&dir)
+        .arg("import")
+        .arg(&file)
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("Imported 0 items"))
+        .stderr(predicate::str::contains(
+            "3 already in your vault, unchanged",
+        ));
+    assert!(!out(&dir, &["ls"]).contains("github-3"));
 }
 
 #[test]

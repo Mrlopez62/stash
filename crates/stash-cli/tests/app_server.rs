@@ -117,7 +117,10 @@ fn the_app_backend_previews_and_imports_exports() {
     );
 
     // Only the chosen entries are imported.
-    let first = call("import", json!({ "path": path, "indices": [0] }));
+    let first = call(
+        "import",
+        json!({ "path": path, "indices": [0], "names": ["github"] }),
+    );
     assert_eq!(first["result"]["added"], json!(["login"]), "{first}");
     let listed = call("list", json!({}));
     assert_eq!(listed["result"]["items"].as_array().unwrap().len(), 1);
@@ -125,10 +128,23 @@ fn the_app_backend_previews_and_imports_exports() {
     // A card needs the sensitive key: the master password here.
     let cards = call(
         "import",
-        json!({ "path": path, "indices": [0, 1], "password": "correct horse" }),
+        json!({ "path": path, "indices": [0, 1], "names": ["github", "cards/visa"], "password": "correct horse" }),
     );
     assert_eq!(cards["result"]["added"], json!(["card"]), "{cards}");
     assert_eq!(cards["result"]["same"], 1, "the login was already there");
+
+    // If the file changed after the review, nothing is imported.
+    let stale = call(
+        "import",
+        json!({ "path": path, "indices": [1], "names": ["something-else"] }),
+    );
+    assert!(
+        stale["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("file changed"),
+        "{stale}"
+    );
 
     drop(stdin);
     assert!(child.wait().unwrap().success());

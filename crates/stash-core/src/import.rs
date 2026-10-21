@@ -145,6 +145,8 @@ struct LoginParts {
     /// The file had no title: `title` is the site, for display, and the
     /// name comes from the site's domain instead.
     untitled: bool,
+    /// A single secret value (an API key), not a login.
+    as_secret: bool,
 }
 
 fn nonempty(s: Option<&str>) -> Option<String> {
@@ -160,6 +162,16 @@ impl LoginParts {
         let mut warnings = Vec::new();
         let mut item = if is_note {
             Item::note(self.notes.as_str())
+        } else if self.as_secret {
+            let mut item = Item::secret(self.password.as_str());
+            if let Some(user) = &self.username {
+                item.set("username", FieldKind::Text, user.as_str());
+            }
+            if let Some(url) = &self.url {
+                item.set("website", FieldKind::Url, url.as_str());
+            }
+            item.notes = self.notes.as_str().to_owned();
+            item
         } else {
             let mut item = Item::login(
                 self.username.as_deref(),
@@ -229,6 +241,8 @@ fn csv_rows(text: &str) -> Vec<Vec<Zeroizing<String>>> {
             '"' => quoted = !quoted,
             ',' if !quoted => row.push(std::mem::take(&mut field)),
             '\r' if !quoted => {}
+            // Windows line endings inside a quoted note: keep just the \n.
+            '\r' if chars.peek() == Some(&'\n') => {}
             '\n' if !quoted => {
                 row.push(std::mem::take(&mut field));
                 if !(row.len() == 1 && row[0].is_empty()) {
@@ -310,6 +324,7 @@ fn csv_export(text: &str) -> Result<Import, Error> {
         let kind_value = get(kind).unwrap_or("").trim().to_lowercase();
         let parts = LoginParts {
             untitled: nonempty(get(title)).is_none(),
+            as_secret: false,
             title: nonempty(get(title))
                 .or_else(|| url_value.as_deref().and_then(site::display_host))
                 .unwrap_or_else(|| format!("row {}", i + 2)),
@@ -410,6 +425,7 @@ fn bitwarden(text: &str) -> Result<Import, Error> {
                         extra,
                         note_only: false,
                         untitled: false,
+                        as_secret: false,
                     }
                     .into_entry(),
                 );
@@ -507,6 +523,9 @@ fn push_built(
 
 // ---- 1Password (.1pux) ----
 
+/// The most `export.data` may unpack to.
+const MAX_UNPACKED: u64 = 256 * 1024 * 1024;
+
 /// 1Password item categories (`categoryUuid`).
 mod category {
     pub const LOGIN: &str = "001";
@@ -596,8 +615,14 @@ fn one_password(bytes: &[u8]) -> Result<Import, Error> {
     let mut data = Zeroizing::new(String::new());
     zip.by_name("export.data")
         .map_err(|_| invalid("this zip isn't a 1Password export (no export.data)"))?
+        // A small zip can unpack to something huge: stop at a size no
+        // password export reaches.
+        .take(MAX_UNPACKED + 1)
         .read_to_string(&mut data)
         .map_err(|e| invalid(&format!("this .1pux can't be read: {e}")))?;
+    if data.len() as u64 > MAX_UNPACKED {
+        return Err(invalid("this .1pux unpacks to more than 256 MB"));
+    }
     let root: Value = serde_json::from_str(&data)
         .map_err(|e| invalid(&format!("this .1pux can't be read: {e}")))?;
 
@@ -651,7 +676,7 @@ fn one_password(bytes: &[u8]) -> Result<Import, Error> {
                     .and_then(|u| nonempty(str_at(u, "url")))
             });
             match str_at(item, "categoryUuid").unwrap_or("") {
-                category::LOGIN | category::PASSWORD | category::API_CREDENTIAL => {
+                kind @ (category::LOGIN | category::PASSWORD | category::API_CREDENTIAL) => {
                     let login_fields = details.get("loginFields").and_then(Value::as_array);
                     let designated = |which: &str| {
                         login_fields
@@ -691,6 +716,9 @@ fn one_password(bytes: &[u8]) -> Result<Import, Error> {
                             extra,
                             note_only: false,
                             untitled: false,
+                            // 1Password's Password and API Credential items
+                            // are single secrets, like stash's secret items.
+                            as_secret: kind != category::LOGIN,
                         }
                         .into_entry(),
                     );
@@ -806,6 +834,13 @@ mod tests {
         assert_eq!(gh.item.notes, "line one\nline two");
         // No title: named after the site.
         assert_eq!(import.entries[1].name, "example.co.uk");
+    }
+
+    #[test]
+    fn windows_line_endings_inside_notes_become_plain_newlines() {
+        let csv = "name,url,username,password,note\r\nX,https://x.com,me,pw,\"a\r\nb\"\r\n";
+        let import = read(csv.as_bytes()).unwrap();
+        assert_eq!(import.entries[0].item.notes, "a\nb");
     }
 
     #[test]
@@ -954,13 +989,15 @@ mod tests {
         assert_eq!(value(gh, "recovery email"), "r@x.com");
         assert_eq!(value(&import.entries[1], "expiry"), "08/27");
         assert_eq!(value(&import.entries[2], "account type"), "checking");
-        assert_eq!(value(&import.entries[3], "password"), "sk-abc");
+        // An API credential is a secret, as in stash.
+        assert_eq!(import.entries[3].item.kind, Kind::Secret);
+        assert_eq!(value(&import.entries[3], "value"), "sk-abc");
         assert!(import.entries[4].warnings[0].contains("imported as a note"));
         let skipped: Vec<&str> = import.skipped.iter().map(|s| s.title.as_str()).collect();
         assert_eq!(skipped, ["Deploy key", "Old"]);
         assert_eq!(
             summarize(import.entries.iter().map(|e| &e.item)),
-            "1 bank account, 1 card, 2 logins, 1 note"
+            "1 bank account, 1 card, 1 login, 1 note, 1 secret"
         );
     }
 

@@ -41,7 +41,9 @@ protocol VaultBackend: AnyObject {
     func sshGenerate(name: String, comment: String?) async throws -> SSHKeyInfo
     func sshImport(name: String, key: String, passphrase: String?) async throws -> SSHKeyInfo
     func importPreview(path: String) async throws -> ImportPreview
-    func importItems(path: String, indices: [Int]) async throws -> ImportResult
+    /// `names` are the names the preview showed for `indices`, so the
+    /// backend can refuse if the file changed since.
+    func importItems(path: String, indices: [Int], names: [String]) async throws -> ImportResult
 }
 
 final class RPCBackend: VaultBackend, @unchecked Sendable {
@@ -190,8 +192,8 @@ final class RPCBackend: VaultBackend, @unchecked Sendable {
     func importPreview(path: String) async throws -> ImportPreview {
         try await call("import_preview", ["path": path], as: ImportPreview.self)
     }
-    func importItems(path: String, indices: [Int]) async throws -> ImportResult {
-        try await call("import", ["path": path, "indices": indices], as: ImportResult.self)
+    func importItems(path: String, indices: [Int], names: [String]) async throws -> ImportResult {
+        try await call("import", ["path": path, "indices": indices, "names": names], as: ImportResult.self)
     }
     func delete(_ name: String) async throws { _ = try await call("delete", ["name": name]) }
     func generate(length: Int, symbols: Bool) async throws -> String {

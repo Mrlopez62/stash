@@ -98,11 +98,25 @@ pub fn import(
         approve(&mut unlocked.vault, &format!("allow stash to {purpose}"))?;
     }
     let mut vault = unlocked.vault;
-    if found.entries.iter().any(|e| e.item.kind.is_sensitive()) {
-        crate::ensure_sensitive(&mut vault, &purpose)?;
+    // Cards and bank accounts need the sensitive key. If that's declined,
+    // import the rest and say what was left out.
+    let mut held_back = 0;
+    if found.entries.iter().any(|e| e.item.kind.is_sensitive())
+        && let Err(e) = crate::ensure_sensitive(&mut vault, &purpose)
+    {
+        held_back = found
+            .entries
+            .iter()
+            .filter(|e| e.item.kind.is_sensitive())
+            .count();
+        eprintln!("stash: leaving out {held_back} card(s) and bank account(s): {e:#}");
     }
+    let entries = found
+        .entries
+        .iter()
+        .filter(|e| held_back == 0 || !e.item.kind.is_sensitive());
 
-    let outcome = add_all(&mut vault, found.entries.iter())?;
+    let outcome = add_all(&mut vault, entries)?;
     let Outcome {
         added,
         same,
@@ -125,6 +139,11 @@ pub fn import(
     }
     for (wanted, got) in renamed {
         eprintln!("  {wanted} was taken, so it's {got}");
+    }
+    if held_back > 0 {
+        eprintln!(
+            "  {held_back} card(s) and bank account(s) left out; run the import again to add them"
+        );
     }
     for (title, why) in failed {
         eprintln!("  couldn't add “{}”: {why}", crate::text::clean(title, 60));
@@ -205,7 +224,9 @@ fn place(vault: &Vault, entry: &Entry, taken: &HashSet<String>) -> Result<Place>
         if !vault.contains(&name)? {
             return Ok(Place::Name(name));
         }
-        if n == 1 && same_item(&vault.item(&name)?, &entry.item) {
+        // Checked at every taken name, so importing the same file again
+        // finds `github-2` from last time instead of adding `github-3`.
+        if same_item(&vault.item(&name)?, &entry.item) {
             return Ok(Place::Same);
         }
     }

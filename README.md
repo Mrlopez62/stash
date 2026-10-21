@@ -123,7 +123,7 @@ stash import ~/Downloads/export.1pux             # import it
 
 In the Mac app, use **File → Import Passwords…** (⇧⌘I): you see every item first, with a checkbox for each, and import only the ones you keep checked.
 
-- **Logins** come with their usernames, websites, notes, extra fields, and 2FA codes. **Cards** and **bank accounts** are checked like ones you add yourself; any that fail (a mistyped card number, say) are listed, never dropped silently. Notes, and kinds stash has no form for (like identities), come in as notes.
+- **Logins** come with their usernames, websites, notes, extra fields, and 2FA codes. **Cards** and **bank accounts** are checked like ones you add yourself; any that fail (a mistyped card number, say) are listed, never dropped silently. 1Password's Password and API Credential items come in as secrets. Notes, and kinds stash has no form for (like identities), come in as notes.
 - **Names** come from each item's title and folder (`work/github`), or its website.
 - **Nothing in your vault is replaced.** An identical item already there is left alone; a different one with the same name gets the new one named `github-2`.
 - **Delete the export when you're done.** It holds every password in plain text. stash reads it once, writes nothing else to disk, and offers to delete it (`--delete-file` skips the question). In the app, it's deleted outright, not moved to the Trash.
