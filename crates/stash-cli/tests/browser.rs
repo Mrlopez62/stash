@@ -188,7 +188,7 @@ fn unlocks_suggests_and_fills_a_login() {
         1,
         "one unlock covers login fills: {prompts:?}"
     );
-    assert!(prompts[0].starts_with("unwrap: unlock stash for autofill in "));
+    assert!(prompts[0].starts_with("unwrap: unlock your vault for autofill in "));
     assert!(
         prompts[0]
             .ends_with(": logins on any site for the next 10 minutes, starting with github.com"),
@@ -293,7 +293,8 @@ fn saves_a_new_login_from_a_sign_in_after_one_unlock() {
     let prompts = f.prompts();
     assert_eq!(prompts.len(), 1, "{prompts:?}");
     assert!(
-        prompts[0].starts_with("unwrap: unlock stash to save your login for www.shop.example in ")
+        prompts[0]
+            .starts_with("unwrap: unlock your vault to save your login for www.shop.example in ")
     );
     // It's a normal login now, with the site as its website.
     f.cli()

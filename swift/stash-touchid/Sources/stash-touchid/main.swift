@@ -18,7 +18,9 @@
 // Exit codes: 0 ok, 1 error, 2 cancelled by the user, 3 Touch ID unavailable.
 //
 // Only the `stash` binary installed next to this helper may use it (checked
-// from the kernel's view of who started us). Otherwise any program could
+// from the kernel's view of who started us). The helper is usually inside
+// stash-touchid.app (so macOS shows the stash icon and name on Touch ID
+// prompts); then "next to" means next to the bundle. Otherwise any program could
 // show a stash-branded Touch ID prompt with a reason of its choosing and,
 // if you approved, receive the vault key.
 
@@ -183,10 +185,18 @@ func executable(of pid: pid_t) -> URL? {
     return URL(fileURLWithPath: String(cString: buffer)).resolvingSymlinksInPath()
 }
 
-/// Is the process that started us the `stash` next to this helper?
+/// Is the process that started us the `stash` next to this helper (or next
+/// to the app bundle it's in)?
 func calledByStash() -> Bool {
     guard let me = executable(of: getpid()), let parent = executable(of: getppid()) else { return false }
-    let sibling = me.deletingLastPathComponent().appendingPathComponent("stash").resolvingSymlinksInPath()
+    var dir = me.deletingLastPathComponent()
+    // …/stash-touchid.app/Contents/MacOS/stash-touchid
+    if dir.lastPathComponent == "MacOS",
+       dir.deletingLastPathComponent().lastPathComponent == "Contents",
+       dir.deletingLastPathComponent().deletingLastPathComponent().pathExtension == "app" {
+        dir = dir.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+    }
+    let sibling = dir.appendingPathComponent("stash").resolvingSymlinksInPath()
     return parent == sibling
 }
 

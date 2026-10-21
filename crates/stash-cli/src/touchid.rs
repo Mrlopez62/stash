@@ -24,7 +24,9 @@ pub fn blob_path(vault: &Path) -> PathBuf {
     PathBuf::from(path)
 }
 
-/// Find the helper: the `stash-touchid` installed next to this binary.
+/// Find the helper: `stash-touchid.app` installed next to this binary (an app
+/// bundle, so Touch ID prompts show the stash icon and name), or a bare
+/// `stash-touchid` from before v0.16.
 ///
 /// Never from `$PATH` or the environment in release builds: whoever picks
 /// the helper sees the vault key it returns, so a line in a shell profile
@@ -38,8 +40,13 @@ pub fn helper() -> Option<PathBuf> {
         return Some(PathBuf::from(path));
     }
     let exe = std::env::current_exe().ok()?.canonicalize().ok()?;
-    let beside = exe.parent()?.join(HELPER_NAME);
-    beside.is_file().then_some(beside)
+    let dir = exe.parent()?;
+    let bundled = dir
+        .join(format!("{HELPER_NAME}.app"))
+        .join("Contents/MacOS")
+        .join(HELPER_NAME);
+    let bare = dir.join(HELPER_NAME);
+    [bundled, bare].into_iter().find(|p| p.is_file())
 }
 
 pub enum UnlockError {

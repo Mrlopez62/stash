@@ -47,7 +47,8 @@ The vault is a single SQLite file, `~/.stash/vault.db` by default.
 The most likely attacker on a developer's Mac isn't a stranger: it's a program running *as you*. That includes an AI coding agent with a shell, possibly steered by prompt injection, or a malicious package script. stash can't stop such a program from running commands, but it makes sure the vault key never reaches it without a prompt that tells the truth about who's asking.
 
 - **No key for impostors.** Before handing the vault key to the session agent, `stash` asks the kernel which program is listening on the socket and refuses unless it's the same `stash` executable. A look-alike listener on `~/.stash/agent.sock` gets nothing (`an_impostor_agent_never_gets_the_vault_key`).
-- **The Touch ID helper can't be swapped.** Release builds use only the `stash-touchid` installed next to `stash`, never `$PATH` or `$STASH_TOUCHID_HELPER` (honored only in debug builds, for tests). The helper itself serves only the `stash` next to it, so no other program can show a stash Touch ID prompt or receive a key from it.
+- **The Touch ID helper can't be swapped.** Release builds use only the `stash-touchid.app` bundle installed next to `stash` (or a bare `stash-touchid` from before v0.16), never `$PATH` or `$STASH_TOUCHID_HELPER` (honored only in debug builds, for tests). The helper itself serves only the `stash` next to it (next to its bundle), so no other program can show a stash Touch ID prompt or receive a key from it.
+- **Prompts are recognizably stash's.** macOS shows the icon and name of the program asking for a fingerprint. The helper is a small app bundle named "stash" with the stash icon, so every prompt (from the CLI, the app, the SSH agent, the browser, or an AI agent's request) shows the stash logo and reads "stash is trying to…", followed by what's being asked and who's asking.
 - **Backends serve only their owners.** `stash app-server`, which can read the whole vault once unlocked, refuses to run unless it was started by the stash app it ships inside. The Mac app runs only the backend sealed in its own bundle.
 - **Prompts name the real requester.** Requester names come from the kernel, not from what a program says about itself. `stash mcp` prompts show both the client's self-chosen name and the process chain that started the server, plus risky options in effect (`--allow-reveal on`). Invisible Unicode formatting characters (bidirectional overrides, zero-width characters) are stripped from everything shown in a prompt, so a command can't be disguised.
 - **`stash mcp --no-approval` needs `STASH_PASSWORD`.** Otherwise an agent that edits its own MCP configuration could turn off approvals.
@@ -163,7 +164,7 @@ After an unlock, `stash` starts `stash agent` in the background. The agent keeps
   - Listing items and opening one never sends passwords, 2FA secrets, or notes to the app.
   - A value crosses over only when you click to reveal or copy it, one at a time.
   - Editing doesn't need values: untouched secret fields are saved as "keep".
-- **Touch ID** works the same as in the CLI, through `stash-touchid` inside the bundle (`Contents/Helpers`).
+- **Touch ID** works the same as in the CLI, through `stash-touchid.app` inside the bundle (`Contents/Helpers`).
 
 | Threat | Protected? | How |
 |---|---|---|

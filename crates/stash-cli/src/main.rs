@@ -1071,7 +1071,7 @@ fn unlock_with_touch_id(path: &Path, purpose: &str) -> Result<Option<Vault>> {
         return Ok(None);
     };
     let reason = format!(
-        "unlock stash for “{purpose}”, requested by {}",
+        "unlock your vault for “{purpose}”, requested by {}",
         procinfo::requester_chain(2)
     );
     let why = match touchid::unlock(&helper, path, &reason) {

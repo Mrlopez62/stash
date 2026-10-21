@@ -459,7 +459,7 @@ impl<G: Gate> Host<G> {
             // One unlock covers login fills on every site until stash
             // locks, so the prompt says so.
             self.unlock(&format!(
-                "unlock stash for autofill in {}: logins on any site for the next {} minutes, starting with {host}",
+                "unlock your vault for autofill in {}: logins on any site for the next {} minutes, starting with {host}",
                 self.browser,
                 IDLE_LOCK.as_secs() / 60
             ))?;
@@ -610,7 +610,7 @@ impl<G: Gate> Host<G> {
         );
         if self.vault().is_none() {
             self.unlock(&format!(
-                "unlock stash to save your login for {host} in {}",
+                "unlock your vault to save your login for {host} in {}",
                 self.browser
             ))?;
         }
@@ -1399,7 +1399,7 @@ mod tests {
         assert_eq!(
             prompts.borrow().seen,
             vec![
-                "unlock: unlock stash to save your login for shop.example in Test Browser"
+                "unlock: unlock your vault to save your login for shop.example in Test Browser"
                     .to_owned()
             ]
         );

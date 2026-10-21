@@ -194,7 +194,7 @@ impl<G: Gate> Agent<G> {
     fn identities(&mut self, client: &str) -> Vec<Listed> {
         self.expire();
         if self.unlocked.is_none() && self.listed.is_none() {
-            let reason = format!("unlock stash to list SSH keys for {client}");
+            let reason = format!("unlock your vault to list SSH keys for {client}");
             if let Err(why) = self.unlock(&reason) {
                 eprintln!("stash ssh agent: not listing keys: {why}");
             }
@@ -728,7 +728,7 @@ mod tests {
         let r = reasons(gate);
         assert_eq!(r.len(), 2, "{r:?}");
         assert!(
-            r[0].starts_with("unlock: unlock stash to list SSH keys"),
+            r[0].starts_with("unlock: unlock your vault to list SSH keys"),
             "{r:?}"
         );
         assert_eq!(

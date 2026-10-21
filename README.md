@@ -14,7 +14,7 @@
 
 A free, open-source password and secrets manager for macOS, built for developers. Unlock with Touch ID, fill passwords and cards in your browser, sign git commits with keys that never touch disk, pass API tokens into commands safely, and let AI agents use your secrets without ever seeing them.
 
-> **Status: early development (v0.15).** Everything below works today:
+> **Status: early development (v0.16).** Everything below works today:
 > - **The stash Mac app:** menu bar, Quick Access (⇧⌘Space), vault browser and editor
 > - **Items:** logins with 2FA codes, secrets, notes, **payment cards and bank accounts**, **SSH keys**
 > - **Browser autofill** in Chrome, Brave, Edge, Arc, and Firefox, with saving new logins and cards
@@ -58,7 +58,7 @@ Requires [Rust](https://rustup.rs) 1.88 or newer. On macOS, the Touch ID helper 
 ```sh
 git clone https://github.com/Mrlopez62/stash.git
 cd stash
-./scripts/install.sh                  # installs `stash` (and `stash-touchid` on macOS)
+./scripts/install.sh                  # installs `stash` (and the Touch ID helper on macOS)
 
 stash init                            # create a vault (asks for a new master password)
 stash touchid enable                  # macOS: unlock with your fingerprint from now on
@@ -76,7 +76,7 @@ stash lock                            # end the unlocked session now
 How unlocking works:
 - **The first command unlocks the vault.** With Touch ID turned on, that's a fingerprint prompt. Otherwise you type the master password. If Touch ID is cancelled or unavailable (for example, the lid is closed), stash asks for the master password instead.
 - **Then a session starts, for that terminal only.** stash commands you run from the same shell in the next **10 minutes** don't ask again, and each use restarts the 10-minute timer. A small background agent holds the session, like `ssh-agent`. Run `stash lock` to end it early.
-- **Everything else has to ask.** That includes commands started by `stash run`, scripts, other terminals, and AI agents. They all get their own Touch ID prompt, which says what they want and who is asking, for example: *stash-touchid is trying to unlock stash for “get stripe/secret”, requested by sh ← stash*.
+- **Everything else has to ask.** That includes commands started by `stash run`, scripts, other terminals, and AI agents. They all get their own Touch ID prompt, which says what they want and who is asking, for example: *stash is trying to unlock your vault for “get stripe/secret”, requested by sh ← stash*, next to the stash icon.
 - **Sessions pause while an AI agent runs.** An AI coding agent that's allowed to script your terminal app could type `stash` commands into your unlocked shell. So while one is running (Claude Code, Codex, Gemini CLI, Cursor's agent, Aider, and others), every command asks for Touch ID again, and the prompt says why. `stash agents` shows what's running. If you'd rather keep sessions, `stash agents --allow-sessions` turns this off after a Touch ID check (`--pause-sessions` turns it back on).
 
 | Setting | What it does |
@@ -264,7 +264,7 @@ claude mcp add stash -- stash mcp --allow 'github/*' --allow 'openai/*'
 | `run_with_secrets` | Runs a command with `stash://` env vars filled in, and gets back the exit code and output, with secret values replaced by `<concealed by stash>` |
 | `request_secret` | A raw value. Only offered with `--allow-reveal` |
 
-**You approve every use with your fingerprint.** Each `run_with_secrets` call (and each reveal) shows a Touch ID prompt naming the exact command and secrets, for example: *stash-touchid is trying to let claude-code run \`npm test\` with github/token*. The agent can't answer or fake that dialog. Cancel it, and the command never runs.
+**You approve every use with your fingerprint.** Each `run_with_secrets` call (and each reveal) shows a Touch ID prompt naming the exact command and secrets, for example: *stash is trying to let claude-code run \`npm test\` with github/token*. The agent can't answer or fake that dialog. Cancel it, and the command never runs.
 
 | Option | What it does |
 |---|---|
@@ -325,7 +325,8 @@ Rust handles everything that is security-critical: the vault, keys, and every de
 | v0.13 ✅ | Saving new cards at checkout (opt-in, Touch ID to save) |
 | v0.14 ✅ | Hardening: new or changed `.env` files and templates need a fresh approval (`stash trust`), an encrypted audit log |
 | v0.15 ✅ | Hardening: sessions pause while AI agents run (`stash agents`), concealed CLI clipboard copies, MCP commands can't leave processes running with your secrets |
-| v0.16 | Safari (needs a signed release) |
+| v0.16 ✅ | Touch ID prompts show the stash icon and name, wherever the request comes from |
+| v0.17 | Safari (needs a signed release) |
 | v0.x | A configurable Quick Access shortcut, launch at login, a signed and notarized download |
 | Later | Encrypted sync (iCloud Drive or Git), Linux support |
 
