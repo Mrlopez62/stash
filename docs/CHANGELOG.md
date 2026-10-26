@@ -2,6 +2,13 @@
 
 All notable changes to stash. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/) (pre-1.0: minor versions may change behavior).
 
+## [0.19.0] - 2026-10-25
+
+### Added
+- **The stash iPhone app.** Your cards and bank accounts on your iPhone: Face ID to unlock, the Mac app's card face, tap to reveal a number or security code, and copies that stay on the phone and clear after a minute. It locks when you leave it and hides from the app switcher. Read-only for now.
+- **`stash export --phone FILE.stashvault`** writes a separate encrypted vault with only your cards and bank accounts, under a password you choose for the phone (Touch ID or the master password first). Open it on the iPhone through AirDrop, the Files app, or Finder.
+- **`crates/stash-ffi`**, a small C interface to the vault, so the iPhone app uses the same Rust code and vault format as the Mac. `scripts/ios-build.sh` builds the app for the simulator, `scripts/ios-install.sh` installs it on your iPhone with your own Apple ID, and CI builds it.
+
 ## [0.18.0] - 2026-10-21
 
 ### Added

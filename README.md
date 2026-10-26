@@ -14,7 +14,7 @@
 
 A free, open-source password and secrets manager for macOS, built for developers. Unlock with Touch ID, fill passwords and cards in your browser, sign git commits with keys that never touch disk, pass API tokens into commands safely, and let AI agents use your secrets without ever seeing them.
 
-> **Status: early development (v0.18).** Everything below works today:
+> **Status: early development (v0.19).** Everything below works today:
 > - **The stash Mac app:** menu bar, Quick Access (⇧⌘Space), vault browser and editor
 > - **Items:** logins with 2FA codes, secrets, notes, **payment cards and bank accounts**, **SSH keys**
 > - **Browser autofill** in Chrome, Brave, Edge, Arc, and Firefox, with saving new logins and cards
@@ -50,6 +50,22 @@ open ~/Applications/stash.app
 - **The same vault as the CLI.** Everything you add in the app works with `stash run`, `stash inject`, and the MCP server, and the other way round.
 
 Building needs Rust and the free Xcode Command Line Tools (`xcode-select --install`), not Xcode. The app is ad-hoc signed. If you build it yourself, macOS opens it normally.
+
+## The iPhone app
+
+Keep your cards and bank accounts on your iPhone, unlocked with Face ID. Only those go to the phone: never your logins, notes, or SSH keys.
+
+```sh
+stash export --phone ~/Desktop/phone.stashvault   # asks for Touch ID, then a password for the phone
+./scripts/ios-install.sh                          # build and install the app on your plugged-in iPhone
+```
+
+Then AirDrop `phone.stashvault` to your iPhone and open it in stash (or, in Finder, drop it on your iPhone under Files → stash), unlock it with the password you chose, and delete the file from your Desktop. From then on, Face ID opens it.
+
+- **What it does:** shows your cards (with the same card face as the Mac app) and bank accounts, reveals a number or security code when you tap the eye, and copies values to the clipboard, where they stay on the phone (no Universal Clipboard) and clear after a minute. It locks as soon as you leave the app and hides itself in the app switcher.
+- **Read-only, for now:** to change something, change it on your Mac and export again; opening the new file replaces the old one. Syncing is planned.
+- **Installing:** needs Xcode (free) and an Apple ID: sign in under Xcode → Settings → Accounts, plug in your iPhone, and turn on Developer Mode (Settings → Privacy & Security). With a free Apple ID, Apple lets the app open for 7 days at a time: run `./scripts/ios-install.sh` again to renew it; your cards stay on the phone. A paid developer account ($99/yr) makes it last a year.
+- **Build for the simulator** with `./scripts/ios-build.sh` (needs `brew install xcodegen`).
 
 ## Getting started
 
@@ -355,7 +371,8 @@ Rust handles everything that is security-critical: the vault, keys, and every de
 | v0.16.1 ✅ | New Item asks what you're saving first; locking stays locked |
 | v0.17 ✅ | A new item always shows up: if the list you're on wouldn't show it, the app switches to its category |
 | v0.18 ✅ | Import from Chrome, Safari, Firefox, 1Password, Bitwarden, and other password managers (`stash import`, File → Import in the app) |
-| v0.19 | Safari (needs a signed release) |
+| v0.19 ✅ | **The stash iPhone app:** your cards and bank accounts on your iPhone, with Face ID (`stash export --phone`) |
+| v0.20 | Safari (needs a signed release); syncing the phone with the Mac |
 | v0.x | A configurable Quick Access shortcut, launch at login, a signed and notarized download |
 | Later | Encrypted sync (iCloud Drive or Git), Linux support |
 

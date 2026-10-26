@@ -52,6 +52,11 @@ jobs:
       - name: Build the Mac app
         if: runner.os == 'macOS'
         run: swift build -c release --package-path macos/StashApp
+      - name: Build the iPhone app (simulator)
+        if: runner.os == 'macOS'
+        run: |
+          brew install xcodegen
+          ./scripts/ios-build.sh
       - name: Check the Mac app's model
         if: runner.os == 'macOS'
         # Sample data only; perl's alarm stops it if it ever hangs.

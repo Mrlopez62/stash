@@ -675,3 +675,73 @@ fn imports_cards_and_lists_what_it_skips() {
             "doesn't look like a password export",
         ));
 }
+
+#[test]
+fn exports_a_payments_only_vault_for_the_phone() {
+    let dir = init();
+    let phone = dir.path().join("phone.stashvault");
+    // No cards yet: nothing to export.
+    stash(&dir)
+        .args(["export", "--phone"])
+        .arg(&phone)
+        .env("STASH_NEW_PASSWORD", "phone-password")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("no cards or bank accounts"));
+
+    github(&dir);
+    stash(&dir)
+        .args(["add", "cards/visa", "--card", "--expiry", "8/2027"])
+        .write_stdin("4242 4242 4242 4242\n123\n")
+        .assert()
+        .success();
+    stash(&dir)
+        .args(["export", "--phone"])
+        .arg(dir.path().join("phone.zip"))
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(".stashvault"));
+    stash(&dir)
+        .args(["export", "--phone"])
+        .arg(&phone)
+        .env("STASH_NEW_PASSWORD", "phone-password")
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("1 card and 0 bank accounts"));
+
+    // The phone vault opens with its own password and holds only the card.
+    let open_phone = || {
+        let mut cmd = stash(&dir);
+        cmd.env("STASH_VAULT", &phone)
+            .env("STASH_PASSWORD", "phone-password");
+        cmd
+    };
+    let listed = String::from_utf8(
+        open_phone()
+            .arg("ls")
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone(),
+    )
+    .unwrap();
+    assert_eq!(listed.trim(), "cards/visa");
+    let number = open_phone().args(["get", "cards/visa"]).assert().success();
+    assert_eq!(number.get_output().stdout, b"4242424242424242");
+    let mut wrong = stash(&dir);
+    wrong
+        .env("STASH_VAULT", &phone)
+        .arg("ls")
+        .assert()
+        .failure();
+
+    // It isn't replaced without --force.
+    stash(&dir)
+        .args(["export", "--phone"])
+        .arg(&phone)
+        .env("STASH_NEW_PASSWORD", "phone-password")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("--force"));
+}

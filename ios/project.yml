@@ -1,0 +1,65 @@
+# The stash iPhone app. Generate the Xcode project with:
+#   xcodegen --spec ios/project.yml
+# (scripts/ios-build.sh does this, and builds the Rust core first).
+name: Stash
+options:
+  bundleIdPrefix: io.github.mrlopez62
+  deploymentTarget:
+    iOS: "17.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    TARGETED_DEVICE_FAMILY: "1"
+    MARKETING_VERSION: "0.19.0"
+    CURRENT_PROJECT_VERSION: "1"
+    # Your Apple ID's team, for installing on your iPhone (scripts/ios-install.sh).
+    DEVELOPMENT_TEAM: ${STASH_TEAM_ID}
+    CODE_SIGN_STYLE: Automatic
+    # The Rust core is built for Apple silicon simulators only.
+    "EXCLUDED_ARCHS[sdk=iphonesimulator*]": x86_64
+targets:
+  Stash:
+    type: application
+    platform: iOS
+    sources:
+      - path: Stash
+      # Shared with the Mac app: the card face, the data types, and @ViewState.
+      - path: ../macos/StashApp/Sources/Stash/CardVisuals.swift
+      - path: ../macos/StashApp/Sources/Stash/Payments.swift
+      - path: ../macos/StashApp/Sources/Stash/Models.swift
+      - path: ../macos/StashApp/Sources/Stash/ViewState.swift
+      - path: ../macos/StashApp/Sources/Stash/Fonts
+        buildPhase: resources
+    dependencies:
+      - framework: StashCore.xcframework
+        embed: false
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: io.github.mrlopez62.stash.ios
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        INFOPLIST_FILE: Stash/Info.plist
+    info:
+      path: Stash/Info.plist
+      properties:
+        CFBundleDisplayName: stash
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        UILaunchScreen:
+          UIColorName: ""
+        UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
+        NSFaceIDUsageDescription: Face ID unlocks your cards and bank accounts in stash.
+        UIAppFonts: [IBMPlexSans.ttf, JetBrainsMono.ttf]
+        # Finder and the Files app can drop a .stashvault into stash.
+        UIFileSharingEnabled: true
+        LSSupportsOpeningDocumentsInPlace: true
+        CFBundleDocumentTypes:
+          - CFBundleTypeName: stash vault
+            LSHandlerRank: Owner
+            LSItemContentTypes: [io.github.mrlopez62.stash.vault]
+        UTExportedTypeDeclarations:
+          - UTTypeIdentifier: io.github.mrlopez62.stash.vault
+            UTTypeDescription: stash vault
+            UTTypeConformsTo: [public.data]
+            UTTypeTagSpecification:
+              public.filename-extension: [stashvault]
