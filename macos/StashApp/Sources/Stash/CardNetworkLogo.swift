@@ -34,8 +34,30 @@ struct CardNetworkLogo: View {
     }
 }
 
-/// The network's logo, then what's left to say about the number.
+/// A verdict on something typed: a green check, or a red warning.
+struct CheckLine: View {
+    let ok: Bool
+    let text: String
+
+    var body: some View {
+        Label(text, systemImage: ok ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
+            .labelStyle(CheckLabelStyle())
+            .foregroundStyle(ok ? Color.success : Color.danger)
+    }
+}
+
+private struct CheckLabelStyle: LabelStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        HStack(spacing: 4) {
+            configuration.icon
+            configuration.title
+        }
+    }
+}
+
+/// The network's logo, then the verdict on the number, once there is one.
 struct CardStatusLine: View {
+    let ok: Bool
     let brand: String?
     let text: String
     let note: String?
@@ -44,8 +66,10 @@ struct CardStatusLine: View {
         if let brand, CardNetworkLogo.has(brand) {
             HStack(spacing: 6) {
                 CardNetworkLogo(brand: brand, height: brand == "Visa" ? 10 : 15)
-                if let note { Text(note) }
+                if let note { CheckLine(ok: ok, text: note) }
             }
+        } else if note != nil {
+            CheckLine(ok: ok, text: text)
         } else {
             Text(text)
         }

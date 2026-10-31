@@ -4,6 +4,8 @@
 //! number fails its Luhn checksum; a mistyped routing number fails its ABA
 //! checksum; an IBAN fails mod-97). It never contacts anything.
 
+use std::time::{SystemTime, UNIX_EPOCH};
+
 use zeroize::Zeroizing;
 
 use crate::Error;
@@ -155,6 +157,29 @@ pub fn parse_expiry(expiry: &str) -> Result<(u32, u32), Error> {
     Ok((month, year))
 }
 
+/// The most years ahead a card can expire. Real cards last far less, so
+/// anything beyond this is a typo. An expired card is fine to keep.
+const MAX_YEARS_AHEAD: u32 = 20;
+
+/// A real date for a card: parses, and isn't implausibly far away.
+pub fn validate_expiry(expiry: &str) -> Result<(), Error> {
+    let seconds_per_year = 31_556_952;
+    let this_year = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| 1970 + (d.as_secs() / seconds_per_year) as u32);
+    validate_expiry_in(expiry, this_year)
+}
+
+fn validate_expiry_in(expiry: &str, this_year: u32) -> Result<(), Error> {
+    let (_, year) = parse_expiry(expiry)?;
+    if year > this_year + MAX_YEARS_AHEAD {
+        return Err(Error::InvalidPayment(format!(
+            "check the expiry year: {year} is more than {MAX_YEARS_AHEAD} years away"
+        )));
+    }
+    Ok(())
+}
+
 /// Normalize to "MM/YY".
 pub fn format_expiry(month: u32, year: u32) -> String {
     format!("{month:02}/{:02}", year % 100)
@@ -278,6 +303,18 @@ mod tests {
         for bad in ["13/27", "00/27", "0827", "08/2", "aa/bb"] {
             assert!(parse_expiry(bad).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn refuses_implausible_expiry_dates() {
+        assert!(validate_expiry_in("18/89", 2026).is_err(), "month 18");
+        assert!(validate_expiry_in("08/89", 2026).is_err(), "2089");
+        assert!(validate_expiry_in("08/46", 2026).is_ok(), "20 years out");
+        assert!(validate_expiry_in("08/47", 2026).is_err(), "21 years out");
+        assert!(
+            validate_expiry_in("08/20", 2026).is_ok(),
+            "expired is allowed"
+        );
     }
 
     #[test]

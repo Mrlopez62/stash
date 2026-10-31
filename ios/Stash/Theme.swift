@@ -43,6 +43,7 @@ extension Color {
     static let amberTint = Color(light: 0xFCEFD4, dark: 0x3A2F17)
     static let amberText = Color(light: 0x8A5A00, dark: 0xF5B544)
     static let danger = Color(light: 0xC2410C, dark: 0xFF8A65)
+    static let success = Color(light: 0x1F8A5B, dark: 0x7DD3A8)
 }
 
 extension Font {

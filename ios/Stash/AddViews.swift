@@ -159,10 +159,6 @@ struct AddPaymentView: View {
                     TextField(suggestedName, text: $nickname)
                 } header: {
                     Text("Nickname")
-                } footer: {
-                    if let error {
-                        Text(error).foregroundStyle(Color.danger)
-                    }
                 }
                 .listRowBackground(Color.surface)
             }
@@ -176,9 +172,16 @@ struct AddPaymentView: View {
             // Simulator checks only (never in release builds).
             .onAppear {
                 if let typed = ProcessInfo.processInfo.environment["STASH_SIM_NUMBER"] { number = typed }
+                if let typed = ProcessInfo.processInfo.environment["STASH_SIM_EXPIRY"] { expiry = typed }
             }
             #endif
             .onAppear(perform: fill)
+            // Not in the form: it could be scrolled out of sight.
+            .alert("Couldn't Save", isPresented: Binding(get: { error != nil }, set: { if !$0 { error = nil } })) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text(error ?? "")
+            }
             .navigationTitle(title)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -215,9 +218,17 @@ struct AddPaymentView: View {
                         if formatted != new { expiry = formatted }
                     }
             } footer: {
-                if let status = PaymentHints.cardStatus(number) {
-                    CardStatusLine(brand: status.brand, text: status.text, note: status.note)
-                        .foregroundStyle(status.ok ? Color.inkSecondary : Color.danger)
+                VStack(alignment: .leading, spacing: 6) {
+                    if let status = PaymentHints.cardStatus(number) {
+                        CardStatusLine(ok: status.ok, brand: status.brand, text: status.text, note: status.note)
+                            .foregroundStyle(Color.inkSecondary)
+                    }
+                    if let status = PaymentHints.expiryStatus(expiry) {
+                        HStack(spacing: 6) {
+                            Text("Expiry").foregroundStyle(Color.inkSecondary)
+                            CheckLine(ok: status.ok, text: status.text)
+                        }
+                    }
                 }
             }
             .listRowBackground(Color.surface)
@@ -312,7 +323,8 @@ struct AddPaymentView: View {
 
     private var canSave: Bool {
         switch kind {
-        case .card: !number.isEmpty
+        // A half-typed date or an impossible one can't be saved.
+        case .card: !number.isEmpty && (expiry.isEmpty || PaymentHints.expiryStatus(expiry)?.blocks == false)
         case .bank: !(routing.isEmpty && accountNumber.isEmpty && iban.isEmpty)
         }
     }
@@ -474,10 +486,6 @@ struct LoginFormView: View {
                     TextField(suggestedName, text: $nickname)
                 } header: {
                     Text("Nickname")
-                } footer: {
-                    if let error {
-                        Text(error).foregroundStyle(Color.danger)
-                    }
                 }
                 .listRowBackground(Color.surface)
             }
@@ -488,6 +496,12 @@ struct LoginFormView: View {
             .scrollContentBackground(.hidden)
             .background(Color.canvas)
             .onAppear(perform: fill)
+            // Not in the form: it could be scrolled out of sight.
+            .alert("Couldn't Save", isPresented: Binding(get: { error != nil }, set: { if !$0 { error = nil } })) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text(error ?? "")
+            }
             .navigationTitle(editing == nil ? "New Login" : "Edit Login")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
