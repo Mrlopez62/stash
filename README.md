@@ -12,7 +12,7 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-F5B544.svg?labelColor=0E1116" alt="License: MIT"></a>
 </p>
 
-A free, open-source password and secrets manager for macOS, built for developers. Unlock with Touch ID, fill passwords and cards in your browser, sign git commits with keys that never touch disk, pass API tokens into commands safely, and let AI agents use your secrets without ever seeing them.
+A free, open-source password and secrets manager for macOS, built for developers. Unlock with Touch ID, fill passwords and cards in your browser, sign git commits with keys kept inside the encrypted vault instead of `~/.ssh`, pass API tokens into commands safely, and let AI agents use your secrets with your approval each time, without the values going into their context.
 
 > **Status: early development (v0.19).** Everything below works today:
 > - **The stash Mac app:** menu bar, Quick Access (⇧⌘Space), vault browser and editor
@@ -20,8 +20,9 @@ A free, open-source password and secrets manager for macOS, built for developers
 > - **Browser autofill** in Chrome, Brave, Edge, Arc, and Firefox, with saving new logins and cards
 > - **Developer tools:** `stash://` references, `stash run`, `stash inject`, an SSH agent with git commit signing
 > - **AI agents:** an MCP server with Touch ID approval for every use, and an encrypted audit log
+> - **The stash iPhone app:** your cards and bank accounts, with Face ID (read-only)
 >
-> stash hasn't had an outside security review yet, so don't trust it with production secrets.
+> stash hasn't had an outside security review yet, so don't trust it with production secrets. There are no prebuilt downloads yet: you build it from source, which takes a few minutes.
 
 ## The Mac app
 
@@ -54,6 +55,11 @@ Building needs Rust and the free Xcode Command Line Tools (`xcode-select --insta
 ## The iPhone app
 
 Keep your cards and bank accounts on your iPhone, unlocked with Face ID. Only those go to the phone: never your logins, notes, or SSH keys.
+
+<p align="center">
+  <img src="docs/screenshots/iphone-list.png" alt="The stash iPhone app: a list of cards and bank accounts, showing only the last four digits" width="260">
+  <img src="docs/screenshots/iphone-card.png" alt="A card in the stash iPhone app, with its number and security code hidden" width="260">
+</p>
 
 ```sh
 stash export --phone ~/Desktop/phone.stashvault   # asks for Touch ID, then a password for the phone
@@ -108,7 +114,7 @@ How unlocking works:
 `stash` aims to give you that same developer workflow for free:
 
 - **Free and open source.** No subscription, no account.
-- **Your data stays on your machine.** One encrypted vault file. No cloud required.
+- **Your data stays on your devices.** One encrypted vault file, no account, no cloud. The iPhone gets only a separate file you copy over yourself.
 - **Built for the terminal.** Every feature works from the CLI first.
 - **A full password manager, too.** A native Mac app, browser autofill, cards and bank accounts, and an SSH agent, all from the same vault.
 - **Ready for AI agents.** A built-in MCP server lets tools like Claude Code use secrets without the secret values ending up in the model's context.
@@ -116,7 +122,7 @@ How unlocking works:
 ## Not planned yet
 
 - Team or family sharing
-- Mobile apps
+- Android, or a full vault on the iPhone (it holds only cards and bank accounts for now)
 - Cloud sync (planned for later as encrypted sync through iCloud Drive or Git; see the Roadmap)
 
 ## Moving from another password manager
@@ -288,7 +294,7 @@ Passwords, 2FA secrets, and notes are only ever read from a hidden prompt or std
 
 ## AI and MCP integration
 
-`stash mcp` is an MCP server that lets AI agents like Claude Code and Cursor *use* your secrets without ever *seeing* them.
+`stash mcp` is an MCP server that lets AI agents like Claude Code and Cursor *use* your secrets without the values going into their context. A command written to transform a secret (base64, say) can still leak it in that form, so read what you approve; the [threat model](docs/threat-model.md) covers this.
 
 ```sh
 # Claude Code
@@ -342,10 +348,12 @@ stash
 │                          SSH agent, browser bridge (native host), app backend
 ├── swift/stash-touchid    small Swift helper: Touch ID + Secure Enclave via CryptoKit
 ├── macos/StashApp         the Mac app (SwiftUI); UI only, it talks to `stash app-server`
-└── browser/extension      the browser extension (Chrome, Brave, Edge, Arc, Firefox)
+├── browser/extension      the browser extension (Chrome, Brave, Edge, Arc, Firefox)
+├── crates/stash-ffi       a small C interface to stash-core, for the iPhone app
+└── ios/                   the iPhone app (SwiftUI); shares the Mac app's card views
 ```
 
-Rust handles everything that is security-critical: the vault, keys, and every decision about who gets what. The Swift helper only does the macOS-specific Touch ID and Secure Enclave work, and the Mac app and browser extension never hold the vault key. They all talk to `stash` over pipes.
+Rust handles everything that is security-critical: the vault, keys, and every decision about who gets what. On the Mac, the Swift helper only does the Touch ID and Secure Enclave work, and the app and browser extension never hold the vault key; they talk to `stash` over pipes. The iPhone app links the same Rust code directly, and holds the keys only while it's unlocked.
 
 ## Roadmap
 
@@ -378,17 +386,22 @@ Rust handles everything that is security-critical: the vault, keys, and every de
 
 ## How it compares
 
-How stash compares today:
+| | stash | 1Password | Bitwarden | KeePassXC | pass / gopass |
+|---|---|---|---|---|---|
+| Price | Free | Paid | Free tier / paid | Free | Free |
+| Independent security audit | ❌ not yet | ✅ | ✅ | ✅ | — |
+| Platforms | macOS (CLI also builds on Linux) | All | All | Windows, macOS, Linux | macOS, Linux |
+| Phone | iPhone: cards and bank accounts, read-only | ✅ | ✅ | Third-party apps | Third-party apps |
+| Data stays local | ✅ | ❌ (cloud) | ❌ unless self-hosted | ✅ | ✅ |
+| Touch ID in the CLI | ✅ | ✅ | Partial | App only | ❌ |
+| Secret references + `run` | ✅ | ✅ | Partial (Secrets Manager) | ❌ | ❌ |
+| Secrets for AI agents | ✅ MCP server, Touch ID for every use | Not over MCP, by design | Official MCP server (no per-use approval that we know of) | ❌ | ❌ |
+| SSH agent + git signing | ✅ Touch ID per signature | ✅ | ✅ | ✅ SSH agent | ❌ |
+| Browser autofill | ✅ Touch ID per payment | ✅ | ✅ | ✅ | Via plugins |
 
-| | stash | 1Password | Bitwarden | pass / gopass |
-|---|---|---|---|---|
-| Price | Free | Paid | Free tier / paid | Free |
-| Touch ID in CLI | ✅ | ✅ | Partial | ❌ |
-| Secret references + `run` | ✅ | ✅ | Partial (Secrets Manager) | ❌ |
-| MCP / AI-agent support | ✅ built in, with per-use Touch ID approval | Limited | ❌ | ❌ |
-| Data stays local | ✅ | ❌ (cloud) | ❌ unless self-hosted | ✅ |
-| SSH agent + git signing | ✅ with Touch ID per signature | ✅ | ❌ | ❌ |
-| Browser autofill | ✅ with Touch ID per payment | ✅ | ✅ | Via plugins |
+This is our best reading of each project as of October 2026. If something here is wrong, please [open an issue](https://github.com/Mrlopez62/stash/issues).
+
+**Why not just use one of those?** If you need an audited manager today, or cross-platform support, they're the better choice, and KeePassXC and Bitwarden are excellent free options. stash is for developers on a Mac who want 1Password's `op run` workflow for free, with a fingerprint for every sensitive use (each SSH signature, payment fill, and AI-agent request), and a design built around one specific threat: a program or AI agent running as you.
 
 ## Brand
 

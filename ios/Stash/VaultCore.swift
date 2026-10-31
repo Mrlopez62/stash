@@ -43,6 +43,13 @@ final class VaultCore: @unchecked Sendable {
         if let handle { stash_close(handle) }
     }
 
+    /// Throws unless the file is a current stash vault. Needs no password.
+    static func check(path: URL) throws {
+        var error: UnsafeMutablePointer<CChar>?
+        let ok = path.path.withCString { stash_check_vault($0, &error) }
+        if !ok { throw take(error) }
+    }
+
     static func open(path: URL, password: String) throws -> VaultCore {
         var error: UnsafeMutablePointer<CChar>?
         var bytes = Array(password.utf8)

@@ -68,7 +68,7 @@ What stays possible for a program running as you, and how to limit it:
 
 - **Malware running as your user,** beyond what the section above covers. It can read your keystrokes or simply run `stash get` and hope you approve the prompt. Read every prompt; decline anything you didn't cause. No local password manager can fully defend against this.
 - **`STASH_PASSWORD`.** If you set this environment variable, any process that can read your environment can read your master password. It's meant only for scripts and CI.
-- **Secrets after you use them.** Once `stash get` prints a value, stash can't control what your shell, terminal scrollback, or the receiving program does with it. The planned `stash run` reduces this exposure.
+- **Secrets after you use them.** Once `stash get` prints a value, stash can't control what your shell, terminal scrollback, or the receiving program does with it. `stash run` and `stash inject` reduce this exposure.
 - **Losing your master password.** There's no recovery. Without the password, the vault can't be opened.
 
 ## Touch ID unlock (macOS)
@@ -150,12 +150,12 @@ The iPhone holds a separate vault with only your cards and bank accounts, writte
 
 - **Same vault format and code.** It's a normal vault (Argon2id, sealed items, the separate sensitive key, tamper detection), opened by the same Rust code through `crates/stash-ffi`. Its password is chosen for the phone and needn't be your master password.
 - **Less to lose.** A lost or seized phone holds no logins, notes, or SSH keys, only the cards and bank accounts you'd carry in a wallet.
-- **Face ID.** After the first unlock with the password, the vault's two keys are encrypted to a Secure Enclave key that works only after a Face ID match on that iPhone (`biometryCurrentSet`), the same scheme as Touch ID on the Mac. Adding or removing a face makes the saved keys unusable until the password is entered again. The encrypted keys and the vault live in the app's private storage with complete file protection (unreadable while the phone is locked).
+- **Face ID.** After the first unlock with the password, the vault's two keys are encrypted to a Secure Enclave key that works only after a Face ID match on that iPhone (`biometryCurrentSet`), the same scheme as Touch ID on the Mac. Adding or removing a face makes the saved keys unusable until the password is entered again. The encrypted keys and the vault live in the app's private storage with complete file protection (unreadable while the phone is locked), and are left out of iCloud and computer backups, where only the vault's password would protect them. A new phone gets a new export.
 - **Values on demand.** The list and card faces show only the brand and last four digits; each number, security code, or account number is decrypted when you tap to see or copy it, and hidden again after 30 seconds.
 - **Clipboard.** Copies are local-only (no Universal Clipboard) and expire after a minute. Any app in the foreground can read the clipboard while a value is on it; iOS shows a paste notice when one does.
 - **Locking.** The vault closes, and its keys are dropped, whenever the app goes to the background; the app switcher shows a cover instead of its screen.
-- **The export file.** `phone.stashvault` is encrypted, but delete it from your Mac after copying it over, so it doesn't linger in backups or sync folders. When the phone imports it, it removes the copy it was handed.
-- **Not covered:** a jailbroken phone, or malware with access to the app's memory while it's unlocked. With a free Apple ID the app is signed for 7 days at a time; it's built on your Mac from this source.
+- **The export file.** `phone.stashvault` is encrypted, but delete it from your Mac after copying it over, so it doesn't linger in backups or sync folders. The phone checks an incoming file is a stash vault before it can replace anything, asks before replacing, and removes the copy it was handed.
+- **Not covered:** a jailbroken phone, or malware with access to the app's memory while it's unlocked. Revealed values pass through Swift strings, which can't be reliably wiped from memory. With a free Apple ID the app is signed for 7 days at a time; it's built on your Mac from this source.
 
 ## Importing from other password managers
 

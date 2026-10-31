@@ -51,6 +51,29 @@ fn boxed(vault: Vault) -> *mut StashVault {
     Box::into_raw(Box::new(StashVault { vault }))
 }
 
+/// Whether the file at `path` is a current stash vault, without any
+/// password. False sets `*error`.
+///
+/// # Safety
+/// `path` is a NUL-terminated UTF-8 path.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn stash_check_vault(path: *const c_char, error: *mut *mut c_char) -> bool {
+    let Some(path) = (unsafe { from_c(path) }) else {
+        set_error(error, "invalid path");
+        return false;
+    };
+    match Vault::check_file(Path::new(path)) {
+        Ok(()) => true,
+        Err(_) => {
+            set_error(
+                error,
+                "That file isn't a stash vault from this version. On your Mac, run `stash export --phone` again.",
+            );
+            false
+        }
+    }
+}
+
 /// Open a vault with its password. This unlock can read cards and bank
 /// accounts. A vault in an older format is refused rather than upgraded.
 ///
@@ -358,6 +381,13 @@ mod tests {
         }
         let c_path = CString::new(path.to_str().unwrap()).unwrap();
         let mut error: *mut c_char = ptr::null_mut();
+
+        assert!(unsafe { stash_check_vault(c_path.as_ptr(), ptr::null_mut()) });
+        let junk = dir.path().join("junk.stashvault");
+        std::fs::write(&junk, "not a vault").unwrap();
+        let c_junk = CString::new(junk.to_str().unwrap()).unwrap();
+        assert!(!unsafe { stash_check_vault(c_junk.as_ptr(), &mut error) });
+        assert!(take(error).contains("isn't a stash vault"));
 
         let wrong =
             unsafe { stash_open_password(c_path.as_ptr(), b"nope".as_ptr(), 4, &mut error) };

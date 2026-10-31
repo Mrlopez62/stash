@@ -23,11 +23,9 @@ struct RootView: View {
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
         }
-        .alert("Replace the vault on this iPhone?", isPresented: Binding(
-            get: { model.pendingImport != nil }, set: { if !$0 { model.pendingImport = nil } })
-        ) {
-            Button("Replace", role: .destructive) { if let url = model.pendingImport { model.importVault(from: url) } }
-            Button("Cancel", role: .cancel) { model.pendingImport = nil }
+        .alert("Replace the vault on this iPhone?", isPresented: $model.pendingImport) {
+            Button("Replace", role: .destructive) { model.installStaged() }
+            Button("Cancel", role: .cancel) { model.cancelImport() }
         } message: {
             Text("The cards and bank accounts here are swapped for the ones in the new file. Face ID is set up again after you unlock it.")
         }
@@ -82,7 +80,7 @@ struct WelcomeView: View {
         }
         .background(Color.canvas.ignoresSafeArea())
         .fileImporter(isPresented: $choosing, allowedContentTypes: [.stashVault, .data]) { result in
-            if case .success(let url) = result { model.importVault(from: url) }
+            if case .success(let url) = result { model.received(url) }
         }
     }
 
@@ -168,7 +166,8 @@ struct LockView: View {
                 return
             }
             #endif
-            if model.faceIDEnrolled { await model.unlockWithFaceID() } else { focused = true }
+            await model.offerFaceIDIfDue()
+            if !model.faceIDEnrolled { focused = true }
         }
     }
 
@@ -231,7 +230,14 @@ struct VaultListView: View {
                 }
             }
             .fileImporter(isPresented: $choosing, allowedContentTypes: [.stashVault, .data]) { result in
-                if case .success(let url) = result { model.pendingImport = url }
+                if case .success(let url) = result { model.received(url) }
+            }
+            .alert("Something went wrong", isPresented: Binding(
+                get: { model.error != nil }, set: { if !$0 { model.error = nil } })
+            ) {
+                Button("OK", role: .cancel) { model.error = nil }
+            } message: {
+                Text(model.error ?? "")
             }
             .confirmationDialog("Remove your cards and bank accounts from this iPhone?",
                                 isPresented: $confirmRemove, titleVisibility: .visible) {

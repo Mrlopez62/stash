@@ -47,6 +47,7 @@ enum FaceIDKeys {
         blob += handle + ephemeralPub + sealed
         try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
         try blob.write(to: file, options: [.atomic, .completeFileProtection])
+        try PhoneModel.protect(file)
     }
 
     /// Ask for Face ID, then decrypt the saved keys. Throws `cancelled`

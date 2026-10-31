@@ -15,8 +15,10 @@ struct StashPhoneApp: App {
                 .overlay { if phase != .active { PrivacyCover() } }
                 .onChange(of: phase) { _, new in
                     switch new {
-                    case .background: model.lock()
-                    case .active: model.checkInbox()
+                    case .background: model.wentToBackground()
+                    case .active:
+                        model.checkInbox()
+                        Task { await model.offerFaceIDIfDue() }
                     default: break
                     }
                 }

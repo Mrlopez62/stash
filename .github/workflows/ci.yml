@@ -62,6 +62,16 @@ jobs:
         # Sample data only; perl's alarm stops it if it ever hangs.
         run: perl -e 'alarm 60; exec @ARGV' macos/StashApp/.build/release/Stash --modeltest
 
+  audit:
+    name: Dependency advisories
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+      - run: cargo audit
+
   msrv:
     name: Minimum Rust version
     runs-on: ubuntu-latest

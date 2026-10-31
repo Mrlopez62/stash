@@ -12,6 +12,7 @@
 
 typedef struct StashVault StashVault;
 
+bool stash_check_vault(const char *path, char **error);
 StashVault *stash_open_password(const char *path, const uint8_t *password, size_t len, char **error);
 StashVault *stash_open_keys(const char *path, const uint8_t *keys /* 64 bytes */, char **error);
 bool stash_copy_keys(const StashVault *vault, uint8_t *out /* 64 bytes */);

@@ -19,13 +19,18 @@ final class PhoneModel: ObservableObject {
     @Published var error: String?
     @Published var busy = false
     @Published var toast: String?
-    /// A vault file waiting to replace the current one (asks first).
-    @Published var pendingImport: URL?
+    /// A checked vault file is waiting to replace the current one (asks first).
+    @Published var pendingImport = false
     @Published var faceIDEnrolled = FaceIDKeys.enrolled
 
     private var core: VaultCore?
+    /// Ask for Face ID without a tap: only when the app opens or you come
+    /// back to it. After you lock it, it waits for "Unlock with Face ID".
+    private var offerFaceID = true
 
     nonisolated static var vaultURL: URL { URL.applicationSupportDirectory.appending(path: "vault.stashvault") }
+    /// An incoming file, while it's checked and waits to be confirmed.
+    nonisolated static var stagedURL: URL { URL.applicationSupportDirectory.appending(path: "incoming.stashvault") }
     /// Files dropped into stash from Finder or the Files app.
     nonisolated static var inbox: URL { URL.documentsDirectory }
 
@@ -38,13 +43,34 @@ final class PhoneModel: ObservableObject {
 
     // MARK: Getting the vault
 
-    /// A `.stashvault` file arrived (AirDrop, Files, Finder): import it,
-    /// asking first if it would replace the vault already here.
+    /// A file arrived (AirDrop, Files, Finder). It's copied aside and checked
+    /// first, so nothing that isn't a vault can ever replace the one here.
+    /// Replacing asks first; the first vault just goes in.
     func received(_ url: URL) {
-        if screen == .welcome {
-            importVault(from: url)
-        } else {
-            pendingImport = url
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+        let fm = FileManager.default
+        do {
+            try fm.createDirectory(at: Self.vaultURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try? fm.removeItem(at: Self.stagedURL)
+            try fm.copyItem(at: url, to: Self.stagedURL)
+            try Self.protect(Self.stagedURL)
+            try VaultCore.check(path: Self.stagedURL)
+            error = nil
+            if screen == .welcome {
+                installStaged()
+            } else {
+                pendingImport = true
+            }
+        } catch {
+            try? fm.removeItem(at: Self.stagedURL)
+            self.error = error.localizedDescription
+        }
+        // The app has its own copy now: don't leave another lying around, or
+        // ask about this file again next time.
+        let path = url.resolvingSymlinksInPath().path
+        if path.hasPrefix(Self.inbox.resolvingSymlinksInPath().path) || path.contains("/Inbox/") {
+            try? fm.removeItem(at: url)
         }
     }
 
@@ -56,36 +82,43 @@ final class PhoneModel: ObservableObject {
         }
     }
 
-    func importVault(from url: URL) {
-        pendingImport = nil
-        let scoped = url.startAccessingSecurityScopedResource()
-        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+    /// Keep the vault in the checked copy, replacing any there.
+    func installStaged() {
+        pendingImport = false
+        let fm = FileManager.default
         do {
             lock()
-            let fm = FileManager.default
-            try fm.createDirectory(at: Self.vaultURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-            let staging = Self.vaultURL.appendingPathExtension("new")
-            try? fm.removeItem(at: staging)
-            try fm.copyItem(at: url, to: staging)
-            try (staging as NSURL).setResourceValue(URLFileProtection.complete, forKey: .fileProtectionKey)
             if fm.fileExists(atPath: Self.vaultURL.path) {
-                _ = try fm.replaceItemAt(Self.vaultURL, withItemAt: staging)
+                _ = try fm.replaceItemAt(Self.vaultURL, withItemAt: Self.stagedURL)
             } else {
-                try fm.moveItem(at: staging, to: Self.vaultURL)
+                try fm.moveItem(at: Self.stagedURL, to: Self.vaultURL)
             }
+            try Self.protect(Self.vaultURL)
             // New keys: Face ID has to be set up again for this vault.
             FaceIDKeys.forget()
             faceIDEnrolled = false
-            // Don't leave a second copy lying around.
-            if url.path.hasPrefix(Self.inbox.path) || url.path.contains("/Inbox/") {
-                try? fm.removeItem(at: url)
-            }
             screen = .locked
             error = nil
             flash("Vault added. Unlock it with its password.")
         } catch {
             self.error = "Couldn't add that file: \(error.localizedDescription)"
         }
+    }
+
+    func cancelImport() {
+        pendingImport = false
+        try? FileManager.default.removeItem(at: Self.stagedURL)
+    }
+
+    /// Readable only while the phone is unlocked, and left out of iCloud and
+    /// computer backups, where only the vault's password would protect it.
+    /// A new phone gets a new export instead.
+    nonisolated static func protect(_ url: URL) throws {
+        var url = url
+        var values = URLResourceValues()
+        values.isExcludedFromBackup = true
+        try url.setResourceValues(values)
+        try (url as NSURL).setResourceValue(URLFileProtection.complete, forKey: .fileProtectionKey)
     }
 
     /// Remove the vault (and Face ID) from this iPhone.
@@ -140,10 +173,26 @@ final class PhoneModel: ObservableObject {
     }
 
     func lock() {
+        offerFaceID = false
         core?.close()
         core = nil
         items = []
         if screen == .unlocked { screen = .locked }
+    }
+
+    /// Leaving the app locks it, and coming back offers Face ID.
+    func wentToBackground() {
+        lock()
+        offerFaceID = true
+    }
+
+    /// Ask for Face ID now if it's due: at most once, so cancelling it (or
+    /// tapping Lock) never brings the prompt straight back.
+    func offerFaceIDIfDue() async {
+        guard offerFaceID, screen == .locked, faceIDEnrolled,
+              UIApplication.shared.applicationState == .active else { return }
+        offerFaceID = false
+        await unlockWithFaceID()
     }
 
     func setFaceID(_ on: Bool) {

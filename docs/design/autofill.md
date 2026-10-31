@@ -1,6 +1,6 @@
 # Feature: browser autofill for logins and payments
 
-**Status:** phases 1–3 built in v0.10 (Chrome-family browsers and Firefox; logins with 2FA codes, cards, and bank accounts, from the toolbar popup). Phase 2's inline field icons and phase 5's login capture built in v0.11, as an opt-in setting. Safari and card capture are still planned. Where the build settled an open question, it says so below.
+**Status:** phases 1–3 built in v0.10 (Chrome-family browsers and Firefox; logins with 2FA codes, cards, and bank accounts, from the toolbar popup). Phase 2's inline field icons and phase 5's login capture built in v0.11, as an opt-in setting. Card capture built in v0.13, also opt-in. Safari is still planned. Where the build settled an open question, it says so below.
 
 **Decisions made while building:**
 - **Payment iframes:** cards fill into a cross-origin frame only from a short built-in list of processors (`js.stripe.com`, `assets.braintreegateway.com`), only on https pages, and, where the browser reports frame ancestors (Chrome, Safari), only when the frame sits directly in the approved page. Every payment fill already needs Touch ID naming the top-level site.

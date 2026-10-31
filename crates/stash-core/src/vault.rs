@@ -368,6 +368,23 @@ impl Vault {
         self.backup.as_deref()
     }
 
+    /// Whether `path` is a vault in the current format, checked without any
+    /// password. For rejecting other files before they replace a vault.
+    pub fn check_file(path: &Path) -> Result<()> {
+        let not_a_vault = || Error::NotAVault(path.to_owned());
+        let conn = Connection::open_with_flags(
+            path,
+            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )
+        .map_err(|_| not_a_vault())?;
+        let version: i64 = meta(&conn, "format_version").map_err(|_| not_a_vault())?;
+        let _: Vec<u8> = meta(&conn, "wrapped_key").map_err(|_| not_a_vault())?;
+        if version != FORMAT_VERSION {
+            return Err(Error::UnsupportedVersion(version));
+        }
+        Ok(())
+    }
+
     /// The audit log's secret key: the log is sealed to its public key
     /// (see [`Vault::audit_public_key`]), so only an unlocked vault can
     /// read it.
@@ -1460,6 +1477,32 @@ mod tests {
             other.trust_tag(b"x").unwrap()
         );
         assert!(Vault::audit_public_key(&dir.path().join("missing.db")).is_err());
+    }
+
+    #[test]
+    fn only_real_vaults_pass_the_file_check() {
+        let (dir, path, vault) = new_vault();
+        drop(vault);
+        assert!(Vault::check_file(&path).is_ok());
+
+        let text = dir.path().join("notes.stashvault");
+        fs::write(&text, "not a database, just text").unwrap();
+        assert!(matches!(Vault::check_file(&text), Err(Error::NotAVault(_))));
+        assert!(matches!(
+            Vault::check_file(&dir.path().join("missing.stashvault")),
+            Err(Error::NotAVault(_))
+        ));
+
+        // A real SQLite file that isn't a vault.
+        let other = dir.path().join("other.stashvault");
+        Connection::open(&other)
+            .unwrap()
+            .execute_batch("CREATE TABLE t (x);")
+            .unwrap();
+        assert!(matches!(
+            Vault::check_file(&other),
+            Err(Error::NotAVault(_))
+        ));
     }
 
     #[test]
