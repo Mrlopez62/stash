@@ -9,6 +9,15 @@ All notable changes to stash. The format follows [Keep a Changelog](https://keep
 - **`stash export --phone FILE.stashvault`** writes a separate encrypted vault with only your cards and bank accounts, under a password you choose for the phone (Touch ID or the master password first). Open it on the iPhone through AirDrop, the Files app, or Finder.
 - **`crates/stash-ffi`**, a small C interface to the vault, so the iPhone app uses the same Rust code and vault format as the Mac. `scripts/ios-build.sh` builds the app for the simulator, `scripts/ios-install.sh` installs it on your iPhone with your own Apple ID, and CI builds it.
 
+### Changed
+- **The Mac list shows which account or card each row is.** A Details column (username, or `Visa •••• 4242`) replaces the Kind column, and stays visible with the detail panel open; the icon already shows the kind.
+- **Amber is reserved for what matters,** as the brand guide says: the primary action, the selection, the keyhole. API keys no longer get amber tiles, and the iPhone's icons are neutral.
+- **Muted text in light mode is darker,** and now passes 4.5:1 contrast on every background, in the Mac app, the iPhone app, and the browser extension.
+- The iPhone app uses the real wordmark.
+
+### Fixed
+- List rows in the Mac app no longer have notched corners on recent macOS.
+
 ## [0.18.0] - 2026-10-21
 
 ### Added

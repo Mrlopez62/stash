@@ -43,9 +43,7 @@ struct WelcomeView: View {
             VStack(alignment: .leading, spacing: 22) {
                 VStack(alignment: .leading, spacing: 10) {
                     StashMark(size: 64)
-                    Text("stash")
-                        .font(.plex(34, weight: .bold))
-                        .foregroundStyle(Color.ink)
+                    Wordmark(size: 34)
                     Text("Your cards and bank accounts, from your Mac, with Face ID.")
                         .font(.plex(17))
                         .foregroundStyle(Color.inkSecondary)
@@ -69,6 +67,7 @@ struct WelcomeView: View {
                         .padding(.vertical, 6)
                 }
                 .buttonStyle(.borderedProminent)
+                .tint(.keyholeAmber)
                 .foregroundStyle(Color.vaultInk)
 
                 if let error = model.error {
@@ -88,9 +87,10 @@ struct WelcomeView: View {
         HStack(alignment: .top, spacing: 12) {
             Text("\(n)")
                 .font(.mono(13, weight: .semibold))
-                .foregroundStyle(Color.vaultInk)
+                .foregroundStyle(Color.ink)
                 .frame(width: 24, height: 24)
-                .background(Color.keyholeAmber, in: Circle())
+                .background(Color.surfaceRaised, in: Circle())
+                .overlay(Circle().strokeBorder(Color.line))
             VStack(alignment: .leading, spacing: 6) {
                 Text(text).font(.plex(15)).foregroundStyle(Color.ink)
                 if let code {
@@ -116,7 +116,7 @@ struct LockView: View {
             Spacer()
             StashMark(size: 76)
             VStack(spacing: 6) {
-                Text("stash").font(.plex(30, weight: .bold)).foregroundStyle(Color.ink)
+                Wordmark(size: 30)
                 Text("Your cards, one glance away.").font(.plex(15)).foregroundStyle(Color.inkSecondary)
             }
             if model.faceIDEnrolled {
@@ -129,18 +129,22 @@ struct LockView: View {
                         .padding(.vertical, 6)
                 }
                 .buttonStyle(.borderedProminent)
+                .tint(.keyholeAmber)
                 .foregroundStyle(Color.vaultInk)
             }
             HStack {
                 SecureField("Vault password", text: $password)
                     .textContentType(.password)
                     .focused($focused)
+                    .tint(.keyholeAmber) // the cursor
                     .submitLabel(.go)
                     .onSubmit(submit)
                     .font(.plex(16))
                 Button(action: submit) {
                     Image(systemName: "arrow.right.circle.fill").font(.system(size: 26))
                 }
+                // Amber only when it's the main way in.
+                .tint(model.faceIDEnrolled ? .inkSecondary : .keyholeAmber)
                 .disabled(password.isEmpty || model.busy)
             }
             .padding(.horizontal, 14).padding(.vertical, 10)
@@ -202,6 +206,7 @@ struct VaultListView: View {
             .scrollContentBackground(.hidden)
             .background(Color.canvas)
             .navigationTitle("stash")
+            .navigationBarTitleDisplayMode(.inline)
             .navigationDestination(for: PhoneItem.self) { DetailView(item: $0) }
             #if DEBUG
             .onAppear {
@@ -213,6 +218,7 @@ struct VaultListView: View {
             }
             #endif
             .toolbar {
+                ToolbarItem(placement: .principal) { Wordmark(size: 19) }
                 ToolbarItem(placement: .topBarLeading) {
                     Menu {
                         if FaceIDKeys.available {
@@ -302,6 +308,11 @@ struct DetailView: View {
         .background(Color.canvas)
         .navigationTitle(item.title)
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .principal) {
+                Text(item.title).font(.mono(15, weight: .semibold)).foregroundStyle(Color.ink)
+            }
+        }
         .onAppear { detail = model.detail(item.name) }
         .onDisappear { shown = [:] }
     }

@@ -39,7 +39,7 @@ extension Color {
     static let line = Color(light: 0xE4E0D6, dark: 0x2A303B)
     static let ink = Color(light: 0x0E1116, dark: 0xE8EAED)
     static let inkSecondary = Color(light: 0x4A5160, dark: 0xB9C0CC)
-    static let inkTertiary = Color(light: 0x7D8594, dark: 0x8A93A3)
+    static let inkTertiary = Color(light: 0x5F6877, dark: 0x8A93A3)
     static let amberTint = Color(light: 0xFCEFD4, dark: 0x3A2F17)
     static let amberText = Color(light: 0x8A5A00, dark: 0xF5B544)
     static let danger = Color(light: 0xC2410C, dark: 0xFF8A65)
@@ -58,6 +58,24 @@ extension Font {
         UIFont(name: "JetBrains Mono", size: size) != nil
             ? .custom("JetBrains Mono", size: size).weight(weight)
             : .system(size: size, weight: weight, design: .monospaced)
+    }
+}
+
+/// The wordmark (docs/brand): lowercase JetBrains Mono ExtraBold with tight
+/// tracking, and the amber dot.
+struct Wordmark: View {
+    var size: CGFloat = 30
+
+    var body: some View {
+        // A monospaced "." sits mid-cell: pull it in to the "h", as in the logo.
+        // One Text, so its width is measured correctly.
+        (Text("stas").foregroundStyle(Color.ink).tracking(-size * 0.05)
+            + Text("h").foregroundStyle(Color.ink).tracking(-size * 0.25)
+            + Text(".").foregroundStyle(Color.keyholeAmber))
+            .font(.mono(size, weight: .heavy))
+            .lineLimit(1)
+            .fixedSize()
+            .accessibilityLabel("stash")
     }
 }
 

@@ -22,7 +22,8 @@ struct StashPhoneApp: App {
                     default: break
                     }
                 }
-                .tint(.keyholeAmber)
+                // Neutral: amber is for primary actions, set where they are.
+                .tint(.inkSecondary)
         }
     }
 }
