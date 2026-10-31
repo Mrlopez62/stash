@@ -23,7 +23,9 @@ struct RootView: View {
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
         }
-        .alert("Replace the vault on this iPhone?", isPresented: $model.pendingImport) {
+        .alert("Replace the vault on this iPhone?", isPresented: Binding(
+            get: { model.pendingImport && model.canAskToReplace }, set: { _ in })
+        ) {
             Button("Replace", role: .destructive) { model.installStaged() }
             Button("Cancel", role: .cancel) { model.cancelImport() }
         } message: {
@@ -96,7 +98,7 @@ struct WelcomeView: View {
             .padding(24)
         }
         .background(Color.canvas.ignoresSafeArea())
-        .sheet(isPresented: $creating) { CreateVaultView() }
+        .sheet(isPresented: $creating) { CreateVaultView().privacyCovered() }
         #if DEBUG
         .task {
             // Simulator checks only (never in release builds).
@@ -285,7 +287,7 @@ struct VaultListView: View {
                     Button { model.lock() } label: { Label("Lock", systemImage: "lock.fill") }
                 }
             }
-            .sheet(item: $adding) { AddPaymentView(kind: $0) }
+            .sheet(item: $adding) { AddPaymentView(kind: $0).privacyCovered() }
             .fileImporter(isPresented: $choosing, allowedContentTypes: [.stashVault, .data]) { result in
                 if case .success(let url) = result { model.received(url) }
             }

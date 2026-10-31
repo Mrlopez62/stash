@@ -39,9 +39,10 @@ pub fn export_phone(
         );
     }
 
+    // The path goes in an approval prompt, so it can't be allowed to disguise itself.
     let purpose = format!(
         "copy your cards and bank accounts to {}",
-        opts.file.display()
+        crate::text::clean(&opts.file.display().to_string(), 400)
     );
     let mut unlocked = unlock(&purpose)?;
     // Every card at once, into a new file: a session isn't enough.

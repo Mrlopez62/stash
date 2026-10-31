@@ -11,8 +11,7 @@ struct StashPhoneApp: App {
                 .environmentObject(model)
                 // AirDrop, "Open in stash" from Files, or a tap on the file.
                 .onOpenURL { model.received($0) }
-                // Hidden from the app switcher's snapshot.
-                .overlay { if phase != .active { PrivacyCover() } }
+                .privacyCovered()
                 .onChange(of: phase) { _, new in
                     switch new {
                     case .background: model.wentToBackground()
@@ -26,6 +25,20 @@ struct StashPhoneApp: App {
                 .tint(.inkSecondary)
         }
     }
+}
+
+/// Hidden from the app switcher's snapshot. A sheet sits above the view it
+/// came from, so each sheet needs this too.
+struct PrivacyCovered: ViewModifier {
+    @Environment(\.scenePhase) private var phase
+
+    func body(content: Content) -> some View {
+        content.overlay { if phase != .active { PrivacyCover() } }
+    }
+}
+
+extension View {
+    func privacyCovered() -> some View { modifier(PrivacyCovered()) }
 }
 
 struct PrivacyCover: View {

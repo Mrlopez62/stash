@@ -69,6 +69,7 @@ final class PhoneModel: ObservableObject {
                 installStaged()
             } else {
                 pendingImport = true
+                if !canAskToReplace { flash("Unlock stash to replace this vault with the new file.") }
             }
         } catch {
             try? fm.removeItem(at: Self.stagedURL)
@@ -134,6 +135,10 @@ final class PhoneModel: ObservableObject {
         try? FileManager.default.removeItem(at: URL(filePath: url.path + "-journal"))
     }
 
+    /// A vault made here is the only copy, so only someone who can open it
+    /// gets to replace it. The file waits for them to unlock.
+    var canAskToReplace: Bool { !madeHere || screen == .unlocked }
+
     /// Keep the vault in the checked copy, replacing any there.
     func installStaged() {
         pendingImport = false
@@ -190,12 +195,13 @@ final class PhoneModel: ObservableObject {
     func unlock(password: String) async {
         guard !password.isEmpty else { return }
         await open { try VaultCore.open(path: Self.vaultURL, password: password) }
-        // First unlock with the password: offer Face ID from now on.
+        // First unlock with the password: Face ID from now on, unless it was
+        // turned off.
         if screen == .unlocked { enrollFaceID() }
     }
 
     private func enrollFaceID() {
-        guard FaceIDKeys.available, !FaceIDKeys.enrolled, let keys = core?.copyKeys() else { return }
+        guard FaceIDKeys.available, !FaceIDKeys.enrolled, !FaceIDKeys.turnedOff, let keys = core?.copyKeys() else { return }
         do {
             try FaceIDKeys.enroll(keys)
             faceIDEnrolled = true
@@ -262,11 +268,13 @@ final class PhoneModel: ObservableObject {
         if on, let keys = core?.copyKeys() {
             do {
                 try FaceIDKeys.enroll(keys)
+                FaceIDKeys.turnedOff = false
             } catch {
                 self.error = "Face ID couldn't be set up: \(error.localizedDescription)"
             }
         } else if !on {
             FaceIDKeys.forget()
+            FaceIDKeys.turnedOff = true
         }
         faceIDEnrolled = FaceIDKeys.enrolled
     }

@@ -2,7 +2,7 @@
 // (swift/stash-touchid): the vault's keys are encrypted to a Secure
 // Enclave key that only works after a Face ID match on this device
 // (`biometryCurrentSet`), so enrolling a new face makes the saved keys
-// unusable until you unlock with the password again. The Secure Enclave key
+// unusable, and you decide whether to turn it back on. The Secure Enclave key
 // never leaves the chip; the encrypted blob sits in the app's private
 // storage with complete file protection.
 
@@ -25,6 +25,13 @@ enum FaceIDKeys {
     }
 
     static var enrolled: Bool { FileManager.default.fileExists(atPath: file.path) }
+
+    /// Face ID is off until you turn it back on yourself: you turned it off,
+    /// or the faces on this iPhone changed. A password unlock never undoes it.
+    static var turnedOff: Bool {
+        get { UserDefaults.standard.bool(forKey: "faceIDTurnedOff") }
+        set { UserDefaults.standard.set(newValue, forKey: "faceIDTurnedOff") }
+    }
 
     private static func wrappingKey(_ shared: SharedSecret, ephemeral: Data, recipient: Data) -> SymmetricKey {
         shared.hkdfDerivedSymmetricKey(using: SHA256.self, salt: ephemeral + recipient, sharedInfo: info, outputByteCount: 32)
@@ -70,14 +77,17 @@ enum FaceIDKeys {
             throw CancellationError()
         }
         let seKey: SecureEnclave.P256.KeyAgreement.PrivateKey
+        let shared: SharedSecret
         do {
             seKey = try SecureEnclave.P256.KeyAgreement.PrivateKey(dataRepresentation: handle, authenticationContext: context)
+            shared = try seKey.sharedSecretFromKeyAgreement(with: P256.KeyAgreement.PublicKey(x963Representation: ephemeralPub))
         } catch {
-            // A face was added or removed since: the password is needed again.
+            // A face was added or removed since. It may not be yours, so it
+            // stays off until you choose to trust the faces here now.
             forget()
-            throw VaultError(message: "Face ID changed on this iPhone. Unlock with the password to turn it back on.")
+            turnedOff = true
+            throw VaultError(message: "The faces on this iPhone changed, so Face ID is off for stash. Unlock with the password. If the change was yours, turn it back on from the ⋯ menu.")
         }
-        let shared = try seKey.sharedSecretFromKeyAgreement(with: P256.KeyAgreement.PublicKey(x963Representation: ephemeralPub))
         let key = wrappingKey(shared, ephemeral: ephemeralPub, recipient: seKey.publicKey.x963Representation)
         return try ChaChaPoly.open(ChaChaPoly.SealedBox(combined: sealed), using: key)
     }
