@@ -27,7 +27,9 @@ struct RootView: View {
             Button("Replace", role: .destructive) { model.installStaged() }
             Button("Cancel", role: .cancel) { model.cancelImport() }
         } message: {
-            Text("The cards and bank accounts here are swapped for the ones in the new file. Face ID is set up again after you unlock it.")
+            Text(model.madeHere
+                 ? "The cards and bank accounts you added on this iPhone are deleted for good and swapped for the ones in the new file. This is the only copy of them."
+                 : "The cards and bank accounts here are swapped for the ones in the new file. Face ID is set up again after you unlock it.")
         }
     }
 }
@@ -37,6 +39,7 @@ struct RootView: View {
 struct WelcomeView: View {
     @EnvironmentObject var model: PhoneModel
     @State private var choosing = false
+    @State private var creating = false
 
     var body: some View {
         ScrollView {
@@ -44,11 +47,14 @@ struct WelcomeView: View {
                 VStack(alignment: .leading, spacing: 10) {
                     StashMark(size: 64)
                     Wordmark(size: 34)
-                    Text("Your cards and bank accounts, from your Mac, with Face ID.")
+                    Text("Your cards and bank accounts, with Face ID.")
                         .font(.plex(17))
                         .foregroundStyle(Color.inkSecondary)
                 }
                 VStack(alignment: .leading, spacing: 14) {
+                    Text("Bring them from your Mac")
+                        .font(.plex(15, weight: .semibold))
+                        .foregroundStyle(Color.ink)
                     step(1, "On your Mac, run:", code: "stash export --phone ~/Desktop/phone.stashvault")
                     step(2, "AirDrop phone.stashvault to this iPhone and open it in stash. Or, in Finder, drop it on this iPhone under Files → stash.")
                     step(3, "Unlock it with the password you chose. After that, Face ID.")
@@ -70,7 +76,19 @@ struct WelcomeView: View {
                 .tint(.keyholeAmber)
                 .foregroundStyle(Color.vaultInk)
 
-                if let error = model.error {
+                VStack(spacing: 6) {
+                    Button("Skip") { model.error = nil; creating = true }
+                        .font(.plex(16, weight: .semibold))
+                        .foregroundStyle(Color.ink)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 6)
+                    Text("No Mac or file: make a vault here and add your cards on this iPhone.")
+                        .font(.plex(13))
+                        .foregroundStyle(Color.inkSecondary)
+                        .multilineTextAlignment(.center)
+                }
+
+                if let error = model.error, !creating {
                     Label(error, systemImage: "exclamationmark.circle")
                         .font(.plex(14)).foregroundStyle(Color.danger)
                 }
@@ -78,6 +96,23 @@ struct WelcomeView: View {
             .padding(24)
         }
         .background(Color.canvas.ignoresSafeArea())
+        .sheet(isPresented: $creating) { CreateVaultView() }
+        #if DEBUG
+        .task {
+            // Simulator checks only (never in release builds).
+            let env = ProcessInfo.processInfo.environment
+            if env["STASH_SIM_SHOW"] == "create" { creating = true }
+            if let pw = env["STASH_SIM_CREATE"] {
+                await model.createVault(password: pw)
+                try? model.addPayment(fields: ["kind": "card", "cardholder": "Samus Aran", "number": "4242424242424242",
+                                               "expiry": "08/27", "cvv": "123", "billing_zip": "12345"],
+                                      folder: "cards", nickname: "", suggested: "visa-4242")
+                try? model.addPayment(fields: ["kind": "bank", "bank": "Chase", "holder": "Samus Aran", "account_type": "checking",
+                                               "routing": "021000021", "account_number": "000123456789"],
+                                      folder: "banks", nickname: "", suggested: "chase-6789")
+            }
+        }
+        #endif
         .fileImporter(isPresented: $choosing, allowedContentTypes: [.stashVault, .data]) { result in
             if case .success(let url) = result { model.received(url) }
         }
@@ -189,6 +224,7 @@ struct VaultListView: View {
     @State private var confirmRemove = false
     @State private var choosing = false
     @State private var path: [PhoneItem] = []
+    @State private var adding: PaymentKind?
 
     var body: some View {
         NavigationStack(path: $path) {
@@ -200,7 +236,10 @@ struct VaultListView: View {
                     Section("Bank Accounts") { ForEach(model.banks) { row($0) } }
                 }
                 if model.items.isEmpty {
-                    Text("No cards or bank accounts in this vault.").foregroundStyle(Color.inkSecondary)
+                    Text(model.madeHere
+                         ? "Nothing here yet. Tap + to add a card or bank account."
+                         : "No cards or bank accounts in this vault.")
+                        .foregroundStyle(Color.inkSecondary)
                 }
             }
             .scrollContentBackground(.hidden)
@@ -211,10 +250,13 @@ struct VaultListView: View {
             #if DEBUG
             .onAppear {
                 // Simulator screenshots only (never in release builds).
-                if let name = ProcessInfo.processInfo.environment["STASH_SIM_OPEN"],
+                let env = ProcessInfo.processInfo.environment
+                if let name = env["STASH_SIM_OPEN"],
                    let item = model.items.first(where: { $0.name == name }) {
                     path = [item]
                 }
+                if env["STASH_SIM_SHOW"] == "add-card" { adding = .card }
+                if env["STASH_SIM_SHOW"] == "add-bank" { adding = .bank }
             }
             #endif
             .toolbar {
@@ -231,10 +273,19 @@ struct VaultListView: View {
                         Image(systemName: "ellipsis.circle")
                     }
                 }
-                ToolbarItem(placement: .topBarTrailing) {
+                ToolbarItemGroup(placement: .topBarTrailing) {
+                    if model.madeHere {
+                        Menu {
+                            Button("Add a Card", systemImage: "creditcard") { adding = .card }
+                            Button("Add a Bank Account", systemImage: "building.columns") { adding = .bank }
+                        } label: {
+                            Label("Add", systemImage: "plus")
+                        }
+                    }
                     Button { model.lock() } label: { Label("Lock", systemImage: "lock.fill") }
                 }
             }
+            .sheet(item: $adding) { AddPaymentView(kind: $0) }
             .fileImporter(isPresented: $choosing, allowedContentTypes: [.stashVault, .data]) { result in
                 if case .success(let url) = result { model.received(url) }
             }
@@ -249,7 +300,9 @@ struct VaultListView: View {
                                 isPresented: $confirmRemove, titleVisibility: .visible) {
                 Button("Remove", role: .destructive) { model.removeVault() }
             } message: {
-                Text("They stay in your vault on your Mac.")
+                Text(model.madeHere
+                     ? "This is the only copy of them, and it can't be undone."
+                     : "They stay in your vault on your Mac.")
             }
         }
     }
@@ -283,6 +336,8 @@ struct DetailView: View {
     @State private var detail: PhoneDetail?
     /// Revealed values, by label; hidden again after 30 seconds.
     @State private var shown: [String: String] = [:]
+    @State private var confirmDelete = false
+    @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         List {
@@ -302,6 +357,12 @@ struct DetailView: View {
                 if detail.hasNotes {
                     Section { fieldRow(FieldInfo(label: "notes", kind: .concealed, value: nil)) }
                 }
+                if model.madeHere {
+                    Section {
+                        Button("Delete", role: .destructive) { confirmDelete = true }
+                            .listRowBackground(Color.surface)
+                    }
+                }
             }
         }
         .scrollContentBackground(.hidden)
@@ -312,6 +373,13 @@ struct DetailView: View {
             ToolbarItem(placement: .principal) {
                 Text(item.title).font(.mono(15, weight: .semibold)).foregroundStyle(Color.ink)
             }
+        }
+        .confirmationDialog("Delete \(item.title)?", isPresented: $confirmDelete, titleVisibility: .visible) {
+            Button("Delete", role: .destructive) {
+                if model.removeItem(item.name) { dismiss() }
+            }
+        } message: {
+            Text("This is the only copy, and it can't be undone.")
         }
         .onAppear { detail = model.detail(item.name) }
         .onDisappear { shown = [:] }

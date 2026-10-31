@@ -7,9 +7,9 @@ extension UTType {
     static let stashVault = UTType(exportedAs: "io.github.mrlopez62.stash.vault", conformingTo: .data)
 }
 
-/// Everything the phone app knows. Its vault is a copy of the one
-/// `stash export --phone` wrote on the Mac, kept in the app's private
-/// storage with complete file protection.
+/// Everything the phone app knows. Its vault is either a copy of the one
+/// `stash export --phone` wrote on the Mac, or one made here, kept in the
+/// app's private storage with complete file protection.
 @MainActor
 final class PhoneModel: ObservableObject {
     enum Screen { case welcome, locked, unlocked }
@@ -22,15 +22,23 @@ final class PhoneModel: ObservableObject {
     /// A checked vault file is waiting to replace the current one (asks first).
     @Published var pendingImport = false
     @Published var faceIDEnrolled = FaceIDKeys.enrolled
+    /// This vault was made here, so it's the only copy and can be changed
+    /// here. One from the Mac stays read-only: changes belong on the Mac.
+    @Published var madeHere = UserDefaults.standard.bool(forKey: madeHereKey) {
+        didSet { UserDefaults.standard.set(madeHere, forKey: Self.madeHereKey) }
+    }
 
     private var core: VaultCore?
     /// Ask for Face ID without a tap: only when the app opens or you come
     /// back to it. After you lock it, it waits for "Unlock with Face ID".
     private var offerFaceID = true
 
+    private nonisolated static let madeHereKey = "vaultMadeHere"
     nonisolated static var vaultURL: URL { URL.applicationSupportDirectory.appending(path: "vault.stashvault") }
     /// An incoming file, while it's checked and waits to be confirmed.
     nonisolated static var stagedURL: URL { URL.applicationSupportDirectory.appending(path: "incoming.stashvault") }
+    /// A new vault, until it's complete.
+    nonisolated static var newVaultURL: URL { URL.applicationSupportDirectory.appending(path: "new.stashvault") }
     /// Files dropped into stash from Finder or the Files app.
     nonisolated static var inbox: URL { URL.documentsDirectory }
 
@@ -82,18 +90,64 @@ final class PhoneModel: ObservableObject {
         }
     }
 
+    /// Make a vault on this iPhone, for someone skipping the Mac file. It's
+    /// built aside and moved into place whole, so a crash can't leave a broken
+    /// vault behind.
+    func createVault(password: String) async {
+        guard !busy else { return }
+        busy = true
+        defer { busy = false }
+        let fm = FileManager.default
+        let new = Self.newVaultURL
+        do {
+            try fm.createDirectory(at: new.deletingLastPathComponent(), withIntermediateDirectories: true)
+            Self.removeVaultFiles(at: new)
+            // Argon2 takes a moment: keep the screen responsive.
+            let keys = try await Task.detached(priority: .userInitiated) {
+                let made = try VaultCore.create(path: new, password: password)
+                defer { made.close() }
+                guard let keys = made.copyKeys() else { throw VaultError(message: "something went wrong") }
+                return keys
+            }.value
+            try Self.protect(new)
+            try fm.moveItem(at: new, to: Self.vaultURL)
+            madeHere = true
+            // Any saved keys are from an older vault (they outlive the app).
+            FaceIDKeys.forget()
+            faceIDEnrolled = false
+            await open { try VaultCore.open(path: Self.vaultURL, keys: keys) }
+            if screen == .unlocked {
+                enrollFaceID()
+            } else {
+                screen = .locked
+            }
+        } catch {
+            Self.removeVaultFiles(at: new)
+            self.error = error.localizedDescription
+        }
+    }
+
+    /// A vault and any journal SQLite left beside it: a stale journal must
+    /// never be applied to the next vault at this path.
+    private nonisolated static func removeVaultFiles(at url: URL) {
+        try? FileManager.default.removeItem(at: url)
+        try? FileManager.default.removeItem(at: URL(filePath: url.path + "-journal"))
+    }
+
     /// Keep the vault in the checked copy, replacing any there.
     func installStaged() {
         pendingImport = false
         let fm = FileManager.default
         do {
             lock()
+            try? fm.removeItem(at: URL(filePath: Self.vaultURL.path + "-journal"))
             if fm.fileExists(atPath: Self.vaultURL.path) {
                 _ = try fm.replaceItemAt(Self.vaultURL, withItemAt: Self.stagedURL)
             } else {
                 try fm.moveItem(at: Self.stagedURL, to: Self.vaultURL)
             }
             try Self.protect(Self.vaultURL)
+            madeHere = false
             // New keys: Face ID has to be set up again for this vault.
             FaceIDKeys.forget()
             faceIDEnrolled = false
@@ -124,9 +178,10 @@ final class PhoneModel: ObservableObject {
     /// Remove the vault (and Face ID) from this iPhone.
     func removeVault() {
         lock()
-        try? FileManager.default.removeItem(at: Self.vaultURL)
+        Self.removeVaultFiles(at: Self.vaultURL)
         FaceIDKeys.forget()
         faceIDEnrolled = false
+        madeHere = false
         screen = .welcome
     }
 
@@ -136,13 +191,16 @@ final class PhoneModel: ObservableObject {
         guard !password.isEmpty else { return }
         await open { try VaultCore.open(path: Self.vaultURL, password: password) }
         // First unlock with the password: offer Face ID from now on.
-        if screen == .unlocked, FaceIDKeys.available, !FaceIDKeys.enrolled, let keys = core?.copyKeys() {
-            do {
-                try FaceIDKeys.enroll(keys)
-                faceIDEnrolled = true
-            } catch {
-                self.error = "Face ID couldn't be set up: \(error.localizedDescription)"
-            }
+        if screen == .unlocked { enrollFaceID() }
+    }
+
+    private func enrollFaceID() {
+        guard FaceIDKeys.available, !FaceIDKeys.enrolled, let keys = core?.copyKeys() else { return }
+        do {
+            try FaceIDKeys.enroll(keys)
+            faceIDEnrolled = true
+        } catch {
+            self.error = "Face ID couldn't be set up: \(error.localizedDescription)"
         }
     }
 
@@ -163,6 +221,11 @@ final class PhoneModel: ObservableObject {
         do {
             // Argon2 takes a moment: keep the screen responsive.
             let opened = try await Task.detached(priority: .userInitiated) { try make() }.value
+            // Left the app while that ran: stay locked.
+            if UIApplication.shared.applicationState == .background {
+                opened.close()
+                return
+            }
             core = opened
             items = try opened.list()
             screen = .unlocked
@@ -226,6 +289,42 @@ final class PhoneModel: ObservableObject {
             self.error = error.localizedDescription
             return nil
         }
+    }
+
+    /// Add a card or bank account to a vault made here. The name comes from
+    /// the nickname or `suggested`, made unique. Throws why it was refused.
+    func addPayment(fields: [String: String], folder: String, nickname: String, suggested: String) throws {
+        guard madeHere, let core else { throw VaultError(message: "This vault can only be changed on your Mac.") }
+        let slug = Self.slug(nickname).isEmpty ? Self.slug(suggested) : Self.slug(nickname)
+        let base = "\(folder)/\(slug)"
+        var name = base
+        var n = 2
+        while items.contains(where: { $0.name == name }) {
+            name = "\(base)-\(n)"
+            n += 1
+        }
+        try core.addPayment(name: name, fields: fields)
+        items = try core.list()
+        flash("Added \(name.split(separator: "/").last ?? "")")
+    }
+
+    /// Delete an item from a vault made here.
+    func removeItem(_ name: String) -> Bool {
+        guard madeHere, let core else { return false }
+        do {
+            try core.remove(name)
+            items = try core.list()
+            return true
+        } catch {
+            self.error = error.localizedDescription
+            return false
+        }
+    }
+
+    /// "Chase Checking!" → "chase-checking": what item names allow.
+    nonisolated static func slug(_ text: String) -> String {
+        let mapped = text.lowercased().map { $0.isASCII && ($0.isLetter || $0.isNumber) ? $0 : "-" }
+        return String(mapped).split(separator: "-").joined(separator: "-").prefix(60).description
     }
 
     /// Copy a value: kept on this iPhone (no Universal Clipboard) and

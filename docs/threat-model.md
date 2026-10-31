@@ -146,7 +146,7 @@ After an unlock, `stash` starts `stash agent` in the background. The agent keeps
 
 ## The iPhone app
 
-The iPhone holds a separate vault with only your cards and bank accounts, written by `stash export --phone`.
+The iPhone holds a separate vault with only your cards and bank accounts, written by `stash export --phone`, or made on the phone if you skip that. Either way it's the same format and encryption. A vault made on the phone has at least an 8-character password, is built aside and moved into place only once complete, and is the only copy: it isn't backed up, so losing the phone, or the password once Face ID stops working, loses it. Only a vault made on the phone can be changed there; the app can add and delete cards and bank accounts, and nothing else.
 
 - **Same vault format and code.** It's a normal vault (Argon2id, sealed items, the separate sensitive key, tamper detection), opened by the same Rust code through `crates/stash-ffi`. Its password is chosen for the phone and needn't be your master password.
 - **Less to lose.** A lost or seized phone holds no logins, notes, or SSH keys, only the cards and bank accounts you'd carry in a wallet.

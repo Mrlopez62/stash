@@ -20,7 +20,7 @@ A free, open-source password and secrets manager for macOS, built for developers
 > - **Browser autofill** in Chrome, Brave, Edge, Arc, and Firefox, with saving new logins and cards
 > - **Developer tools:** `stash://` references, `stash run`, `stash inject`, an SSH agent with git commit signing
 > - **AI agents:** an MCP server with Touch ID approval for every use, and an encrypted audit log
-> - **The stash iPhone app:** your cards and bank accounts, with Face ID (read-only)
+> - **The stash iPhone app:** your cards and bank accounts, with Face ID, copied from your Mac or added on the phone
 >
 > stash hasn't had an outside security review yet, so don't trust it with production secrets. There are no prebuilt downloads yet: you build it from source, which takes a few minutes.
 
@@ -68,8 +68,11 @@ stash export --phone ~/Desktop/phone.stashvault   # asks for Touch ID, then a pa
 
 Then AirDrop `phone.stashvault` to your iPhone and open it in stash (or, in Finder, drop it on your iPhone under Files → stash), unlock it with the password you chose, and delete the file from your Desktop. From then on, Face ID opens it.
 
+**No Mac vault to copy?** Tap **Skip** on the first screen, choose a password, and add your cards and bank accounts on the phone. That vault exists only on that iPhone: it isn't in iCloud or any backup, and nothing syncs it to your Mac.
+
 - **What it does:** shows your cards (with the same card face as the Mac app) and bank accounts, reveals a number or security code when you tap the eye, and copies values to the clipboard, where they stay on the phone (no Universal Clipboard) and clear after a minute. It locks as soon as you leave the app and hides itself in the app switcher.
-- **Read-only, for now:** to change something, change it on your Mac and export again; opening the new file replaces the old one. Syncing is planned.
+- **A vault from your Mac is read-only:** to change something, change it on your Mac and export again; opening the new file replaces the old one. Syncing is planned.
+- **A vault made on the phone** can have cards and bank accounts added and deleted there. To correct one, delete it and add it again. Opening a file from your Mac replaces it, after asking.
 - **Installing:** needs Xcode (free) and an Apple ID: sign in under Xcode → Settings → Accounts, plug in your iPhone, and turn on Developer Mode (Settings → Privacy & Security). With a free Apple ID, Apple lets the app open for 7 days at a time: run `./scripts/ios-install.sh` again to renew it; your cards stay on the phone. A paid developer account ($99/yr) makes it last a year.
 - **Build for the simulator** with `./scripts/ios-build.sh` (needs `brew install xcodegen`).
 
@@ -114,7 +117,7 @@ How unlocking works:
 `stash` aims to give you that same developer workflow for free:
 
 - **Free and open source.** No subscription, no account.
-- **Your data stays on your devices.** One encrypted vault file, no account, no cloud. The iPhone gets only a separate file you copy over yourself.
+- **Your data stays on your devices.** One encrypted vault file, no account, no cloud. The iPhone gets only a separate file you copy over yourself, or a vault you make on it.
 - **Built for the terminal.** Every feature works from the CLI first.
 - **A full password manager, too.** A native Mac app, browser autofill, cards and bank accounts, and an SSH agent, all from the same vault.
 - **Ready for AI agents.** A built-in MCP server lets tools like Claude Code use secrets without the secret values ending up in the model's context.
@@ -391,7 +394,7 @@ Rust handles everything that is security-critical: the vault, keys, and every de
 | Price | Free | Paid | Free tier / paid | Free | Free |
 | Independent security audit | ❌ not yet | ✅ | ✅ | ✅ | — |
 | Platforms | macOS (CLI also builds on Linux) | All | All | Windows, macOS, Linux | macOS, Linux |
-| Phone | iPhone: cards and bank accounts, read-only | ✅ | ✅ | Third-party apps | Third-party apps |
+| Phone | iPhone: cards and bank accounts | ✅ | ✅ | Third-party apps | Third-party apps |
 | Data stays local | ✅ | ❌ (cloud) | ❌ unless self-hosted | ✅ | ✅ |
 | Touch ID in the CLI | ✅ | ✅ | Partial | App only | ❌ |
 | Secret references + `run` | ✅ | ✅ | Partial (Secrets Manager) | ❌ | ❌ |

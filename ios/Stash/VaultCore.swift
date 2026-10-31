@@ -50,6 +50,18 @@ final class VaultCore: @unchecked Sendable {
         if !ok { throw take(error) }
     }
 
+    /// A new, empty vault at `path`, open. Argon2 runs here too.
+    static func create(path: URL, password: String) throws -> VaultCore {
+        var error: UnsafeMutablePointer<CChar>?
+        var bytes = Array(password.utf8)
+        defer { bytes.withUnsafeMutableBufferPointer { $0.update(repeating: 0) } }
+        let handle = path.path.withCString { p in
+            stash_create(p, bytes, bytes.count, &error)
+        }
+        guard let handle else { throw take(error) }
+        return VaultCore(handle)
+    }
+
     static func open(path: URL, password: String) throws -> VaultCore {
         var error: UnsafeMutablePointer<CChar>?
         var bytes = Array(password.utf8)
@@ -97,6 +109,23 @@ final class VaultCore: @unchecked Sendable {
         guard let value else { throw Self.take(error) }
         defer { stash_string_free(value) }
         return String(cString: value)
+    }
+
+    /// Add a card or bank account, never replacing one. `fields` holds "kind"
+    /// and its details; the core checks them.
+    func addPayment(name: String, fields: [String: String]) throws {
+        let data = try JSONSerialization.data(withJSONObject: fields)
+        var error: UnsafeMutablePointer<CChar>?
+        let ok = name.withCString { n in
+            String(decoding: data, as: UTF8.self).withCString { stash_add_payment(handle, n, $0, &error) }
+        }
+        if !ok { throw Self.take(error) }
+    }
+
+    func remove(_ name: String) throws {
+        var error: UnsafeMutablePointer<CChar>?
+        let ok = name.withCString { stash_remove(handle, $0, &error) }
+        if !ok { throw Self.take(error) }
     }
 
     func close() {
