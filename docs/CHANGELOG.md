@@ -2,6 +2,29 @@
 
 All notable changes to stash. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/) (pre-1.0: minor versions may change behavior).
 
+## [0.19.0] - 2026-10-25
+
+### Added
+- **The stash iPhone app.** Your cards and bank accounts on your iPhone: Face ID to unlock, the Mac app's card face, tap to reveal a number or security code, and copies that stay on the phone and clear after a minute. It locks when you leave it and hides from the app switcher. A vault from your Mac is read-only there.
+- **Skip the Mac file.** Tap Skip on the iPhone's first screen to make a vault on the phone, with its own password and Face ID, and add, edit, or delete cards and bank accounts there. It's the only copy: it isn't backed up or synced. Opening a file from your Mac later asks before replacing it.
+- **Logins on the iPhone.** Add, edit, and delete them in a vault made on the phone, with a password generator, 2FA codes, and search. `stash export --phone --logins` brings them from your Mac; without that flag, an export still holds only cards and bank accounts.
+- **Cards that catch the light.** On the iPhone, a card at rest has no shine. Move the phone and light slides across it: a soft bloom, a long streak with a faint prism, and the edge catching the light. Held still, it fades out. Off with Reduce Motion. Motion readings stay in the app and aren't stored.
+- **Expiry dates are checked as you type.** An impossible month, or a year more than 20 years away, is refused by the vault everywhere and flagged in the Mac and iPhone forms. An expired card gets a warning but can still be saved. Valid numbers and dates show a green check.
+- **Card colors.** Choose graphite, midnight, forest, plum, oxblood, copper, or titanium for any card on the iPhone.
+- **An unlock animation.** The stash mark's prompt slides into the keyhole, the keyhole turns, and the vault appears. A quick fade with Reduce Motion.
+- **Real network logos.** Visa and Mastercard cards show their logos on the card and under the card number as you type it, on the Mac and iPhone. Card numbers group into fours as you type on the iPhone.
+- **`stash export --phone FILE.stashvault`** writes a separate encrypted vault with only your cards and bank accounts, under a password you choose for the phone (Touch ID or the master password first). Open it on the iPhone through AirDrop, the Files app, or Finder.
+- **`crates/stash-ffi`**, a small C interface to the vault, so the iPhone app uses the same Rust code and vault format as the Mac. `scripts/ios-build.sh` builds the app for the simulator, `scripts/ios-install.sh` installs it on your iPhone with your own Apple ID, and CI builds it.
+
+### Changed
+- **The Mac list shows which account or card each row is.** A Details column (username, or `Visa •••• 4242`) replaces the Kind column, and stays visible with the detail panel open; the icon already shows the kind.
+- **Amber is reserved for what matters,** as the brand guide says: the primary action, the selection, the keyhole. API keys no longer get amber tiles, and the iPhone's icons are neutral.
+- **Muted text in light mode is darker,** and now passes 4.5:1 contrast on every background, in the Mac app, the iPhone app, and the browser extension.
+- The iPhone app uses the real wordmark.
+
+### Fixed
+- List rows in the Mac app no longer have notched corners on recent macOS.
+
 ## [0.18.0] - 2026-10-21
 
 ### Added

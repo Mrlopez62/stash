@@ -254,6 +254,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         _ = await m.addSSHKey(name: "ssh/new") { try await $0.sshGenerate(name: "ssh/new", comment: nil) }
         check(m.filter == .kind(.ssh), "an SSH key made in Logins goes to SSH Keys")
 
+        // With the inspector open at the default window size, the table is
+        // 608pt wide: it must still say which account or card each row is.
+        let inspectorOpen = Columns(width: 608)
+        check(inspectorOpen.details && inspectorOpen.updated && !inspectorOpen.site, "the list keeps its details with the inspector open")
+        check(!Columns(width: 442).details, "the narrowest list keeps room for the name")
+        check(Columns(width: 900).site, "a wide list shows every column")
+
         m = await fresh(.kind(.ssh), search: "zzz")
         let sample = try? await MockBackend(locked: false).importPreview(path: "/sample.csv")
         let picked = (sample?.entries ?? []).filter { [0, 2].contains($0.index) }

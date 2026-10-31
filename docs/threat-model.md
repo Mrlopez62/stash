@@ -68,7 +68,7 @@ What stays possible for a program running as you, and how to limit it:
 
 - **Malware running as your user,** beyond what the section above covers. It can read your keystrokes or simply run `stash get` and hope you approve the prompt. Read every prompt; decline anything you didn't cause. No local password manager can fully defend against this.
 - **`STASH_PASSWORD`.** If you set this environment variable, any process that can read your environment can read your master password. It's meant only for scripts and CI.
-- **Secrets after you use them.** Once `stash get` prints a value, stash can't control what your shell, terminal scrollback, or the receiving program does with it. The planned `stash run` reduces this exposure.
+- **Secrets after you use them.** Once `stash get` prints a value, stash can't control what your shell, terminal scrollback, or the receiving program does with it. `stash run` and `stash inject` reduce this exposure.
 - **Losing your master password.** There's no recovery. Without the password, the vault can't be opened.
 
 ## Touch ID unlock (macOS)
@@ -143,6 +143,19 @@ After an unlock, `stash` starts `stash agent` in the background. The agent keeps
 | A secret left on the clipboard | ✅ | Cleared after 30 seconds (`STASH_CLIPBOARD_TIMEOUT`). |
 | Clipboard history managers and Universal Clipboard (Handoff) | ✅ on macOS | The app, and the CLI through `stash-touchid copy`, mark copies `org.nspasteboard.ConcealedType` and `TransientType`, so well-behaved managers skip them, and keep them on this Mac only (no Universal Clipboard). If the helper is missing, the CLI falls back to `pbcopy` and says so. On Linux, `wl-copy` and `xclip` can't mark copies. |
 | Apps that read the clipboard while it holds the secret | ❌ | Any app can read the clipboard. Prefer `stash run` where you can. |
+
+## The iPhone app
+
+The iPhone holds a separate vault with your cards and bank accounts, written by `stash export --phone` (and your logins with `--logins`), or made on the phone if you skip that. Either way it's the same format and encryption. A vault made on the phone has at least an 8-character password, is built aside and moved into place only once complete, and is the only copy: it isn't backed up, so losing the phone, or the password once Face ID stops working, loses it. Only a vault made on the phone can be changed there; the app can add, edit, and delete logins, cards, and bank accounts, and nothing else. Choosing a card's color writes to either kind of vault, since it changes only how the card looks. Replacing that vault with a file waits until it's unlocked. Someone with your passcode can still delete the app, and the vault with it.
+
+- **Same vault format and code.** It's a normal vault (Argon2id, sealed items, the separate sensitive key, tamper detection), opened by the same Rust code through `crates/stash-ffi`. Its password is chosen for the phone and needn't be your master password.
+- **Less to lose, by your choice.** A lost or seized phone holds no notes or SSH keys. It holds logins only if you added them there or exported with `--logins`; those include their 2FA secrets, so anyone who gets past the vault's password or Face ID has both factors for those sites. Passwords stay hidden until revealed, and the app never reads a 2FA secret back: it asks the core for the current code.
+- **Face ID.** After the first unlock with the password, the vault's two keys are encrypted to a Secure Enclave key that works only after a Face ID match on that iPhone (`biometryCurrentSet`), the same scheme as Touch ID on the Mac. Adding or removing a face makes the saved keys unusable and turns Face ID off; it stays off, like one you turned off yourself, until you turn it back on from the unlocked app. A password unlock never turns it back on. The encrypted keys and the vault live in the app's private storage with complete file protection (unreadable while the phone is locked), and are left out of iCloud and computer backups, where only the vault's password would protect them. A new phone gets a new export.
+- **Values on demand.** The list and card faces show only the brand and last four digits; each number, security code, or account number is decrypted when you tap to see or copy it, and hidden again after 30 seconds.
+- **Clipboard.** Copies are local-only (no Universal Clipboard) and expire after a minute. Any app in the foreground can read the clipboard while a value is on it; iOS shows a paste notice when one does.
+- **Locking.** The vault closes, and its keys are dropped, whenever the app goes to the background; the app switcher shows a cover instead of its screen.
+- **The export file.** `phone.stashvault` is encrypted, but delete it from your Mac after copying it over, so it doesn't linger in backups or sync folders. The phone checks an incoming file is a stash vault before it can replace anything, asks before replacing, and removes the copy it was handed.
+- **Not covered:** a jailbroken phone, or malware with access to the app's memory while it's unlocked. Revealed values pass through Swift strings, which can't be reliably wiped from memory. With a free Apple ID the app is signed for 7 days at a time; it's built on your Mac from this source.
 
 ## Importing from other password managers
 

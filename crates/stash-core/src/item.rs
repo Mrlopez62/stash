@@ -239,6 +239,9 @@ impl Item {
         push(CARDHOLDER, FieldKind::Text, c.cardholder);
         let number = payment::digits(c.number);
         push(CARD_NUMBER, FieldKind::Concealed, Some(&number));
+        if let Some(expiry) = c.expiry {
+            payment::validate_expiry(expiry)?;
+        }
         let expiry = c
             .expiry
             .map(payment::parse_expiry)
@@ -403,7 +406,7 @@ impl Item {
                     .ok_or_else(|| Error::InvalidPayment("a card needs its number".into()))?;
                 let brand = payment::validate_card_number(number)?;
                 if let Some(expiry) = value(EXPIRY) {
-                    payment::parse_expiry(expiry)?;
+                    payment::validate_expiry(expiry)?;
                 }
                 if let Some(cvv) = value(CVV) {
                     payment::validate_cvv(cvv, brand)?;

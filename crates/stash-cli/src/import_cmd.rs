@@ -91,7 +91,11 @@ pub fn import(
         bail!("there's nothing to import in {}", opts.file.display());
     }
 
-    let purpose = format!("import {summary} from {}", opts.file.display());
+    // The path goes in an approval prompt, so it can't be allowed to disguise itself.
+    let purpose = format!(
+        "import {summary} from {}",
+        crate::text::clean(&opts.file.display().to_string(), 400)
+    );
     let mut unlocked = unlock(&purpose)?;
     // Many items at once, from a file: a session isn't enough.
     if !unlocked.fresh {

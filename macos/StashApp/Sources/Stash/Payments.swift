@@ -37,12 +37,40 @@ enum PaymentHints {
     }
 
     /// A short status for the number being typed.
-    static func cardStatus(_ number: String) -> (ok: Bool, text: String)? {
+    /// What to say under a card number: `text` in full, or `note` beside the
+    /// network's logo.
+    static func cardStatus(_ number: String) -> (ok: Bool, text: String, brand: String?, note: String?)? {
         let d = digits(number)
         guard d.count >= 4 else { return nil }
-        let name = brand(d) ?? "Card"
-        if d.count < 12 { return (true, name) }
-        return luhn(d) ? (true, "\(name) · looks right") : (false, "\(name) · check for a typo")
+        let brand = brand(d)
+        let name = brand ?? "Card"
+        // No verdict until the number is all there.
+        let full = brand == "American Express" ? 15 : brand == "Diners Club" ? 14 : 16
+        if d.count < full { return (true, name, brand, nil) }
+        let ok = luhn(d)
+        let note = ok ? "looks right" : "check for a typo"
+        return (ok, "\(name) · \(note)", brand, note)
+    }
+
+    /// What to say about an expiry date as it's typed: nil while unfinished.
+    /// An expired card can still be kept, so only `blocks` stops a save. The
+    /// vault makes the same checks (payment.rs, validate_expiry).
+    static func expiryStatus(_ text: String, now: Date = .now) -> (ok: Bool, text: String, blocks: Bool)? {
+        let parts = text.split(separator: "/", omittingEmptySubsequences: false).map { $0.trimmingCharacters(in: .whitespaces) }
+        let typed = digits(text)
+        let monthText = parts.count == 2 ? parts[0] : String(typed.prefix(2))
+        let yearText = parts.count == 2 ? parts[1] : String(typed.dropFirst(2))
+        guard monthText.count >= 2 || (parts.count == 2 && !monthText.isEmpty), let month = Int(monthText) else { return nil }
+        guard (1...12).contains(month) else { return (false, "The month must be 01 to 12.", true) }
+        guard yearText.count == 2 || yearText.count == 4, let typedYear = Int(yearText) else { return nil }
+        let year = yearText.count == 2 ? 2000 + typedYear : typedYear
+        let today = Calendar.current.dateComponents([.year, .month], from: now)
+        let thisYear = today.year ?? 0
+        if year > thisYear + 20 { return (false, "Check the year: \(year) is too far away.", true) }
+        if year < thisYear || (year == thisYear && month < (today.month ?? 1)) {
+            return (false, "This card has expired.", false)
+        }
+        return (true, "looks right", false)
     }
 
     static func routingOK(_ routing: String) -> Bool {
@@ -69,6 +97,7 @@ struct CardFaceView: View {
     let cardholder: String?
     let expiry: String?
     let revealCVV: () async -> String?
+    var finish: CardFinish?
 
     @ViewState private var flipped = PremiumCard.startFlipped
     @ViewState private var cvv: String?
@@ -83,7 +112,8 @@ struct CardFaceView: View {
                     : "•••• •••• •••• \(face.last4)",
                 cardholder: cardholder,
                 expiry: expiry,
-                cvv: cvv),
+                cvv: cvv,
+                finish: finish),
             flipped: flipped)
             .frame(maxWidth: .infinity)
             .contentShape(Rectangle())

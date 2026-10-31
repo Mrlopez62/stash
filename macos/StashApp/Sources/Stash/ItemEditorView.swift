@@ -296,9 +296,9 @@ struct ItemEditorView: View {
                     }
                 }
                 if let status = PaymentHints.cardStatus(cardNumber) {
-                    Label(status.text, systemImage: status.ok ? "checkmark.circle.fill" : "exclamationmark.circle")
+                    CardStatusLine(ok: status.ok, brand: status.brand, text: status.text, note: status.note)
                         .font(.plex(11.5, weight: .medium))
-                        .foregroundStyle(status.ok ? Color.success : Color.danger)
+                        .foregroundStyle(Color.inkSecondary)
                 }
             }
         }
@@ -318,6 +318,10 @@ struct ItemEditorView: View {
             LabeledInput("PIN") {
                 FieldBox { SecureField("", text: $pin, prompt: keepPrompt("pin", "Optional")) }
             }
+        }
+        if let status = PaymentHints.expiryStatus(expiry) {
+            CheckLine(ok: status.ok, text: status.text)
+                .font(.plex(11.5, weight: .medium))
         }
         LabeledInput("Billing ZIP or postal code") {
             FieldBox { TextField("", text: $billingZip, prompt: Text("Optional").foregroundStyle(Color.inkTertiary)) }
@@ -505,6 +509,7 @@ struct ItemEditorView: View {
             if !expiry.isEmpty && expiry.range(of: #"^\d{1,2}/(\d{2}|\d{4})$"#, options: .regularExpression) == nil {
                 return "Use MM/YY for the expiry date."
             }
+            if let status = PaymentHints.expiryStatus(expiry), status.blocks { return status.text }
         }
         if kind == .bank {
             let hasStored = storedSensitive.contains("account number") || storedSensitive.contains("iban")
