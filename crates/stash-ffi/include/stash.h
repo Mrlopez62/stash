@@ -15,6 +15,7 @@ typedef struct StashVault StashVault;
 bool stash_check_vault(const char *path, char **error);
 StashVault *stash_create(const char *path, const uint8_t *password, size_t len, char **error);
 bool stash_add_payment(StashVault *vault, const char *name, const char *json, char **error);
+bool stash_update_payment(StashVault *vault, const char *name, const char *json, char **error);
 bool stash_remove(StashVault *vault, const char *name, char **error);
 StashVault *stash_open_password(const char *path, const uint8_t *password, size_t len, char **error);
 StashVault *stash_open_keys(const char *path, const uint8_t *keys /* 64 bytes */, char **error);

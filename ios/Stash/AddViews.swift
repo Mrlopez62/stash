@@ -103,6 +103,11 @@ struct AddPaymentView: View {
     @EnvironmentObject var model: PhoneModel
     @Environment(\.dismiss) private var dismiss
     let kind: PaymentKind
+    /// The item being changed; nil adds a new one.
+    var editing: PhoneItem?
+    /// After saving, with the item's name.
+    var onSaved: (String) -> Void = { _ in }
+    @State private var loaded = false
 
     @State private var nickname = ""
     @State private var error: String?
@@ -147,7 +152,14 @@ struct AddPaymentView: View {
             .textInputAutocapitalization(.never)
             .scrollContentBackground(.hidden)
             .background(Color.canvas)
-            .navigationTitle(kind == .card ? "New Card" : "New Bank Account")
+            #if DEBUG
+            // Simulator checks only (never in release builds).
+            .onAppear {
+                if let typed = ProcessInfo.processInfo.environment["STASH_SIM_NUMBER"] { number = typed }
+            }
+            #endif
+            .onAppear(perform: fill)
+            .navigationTitle(title)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -169,6 +181,10 @@ struct AddPaymentView: View {
                 TextField("Card number", text: $number)
                     .keyboardType(.numberPad)
                     .font(.mono(16))
+                    .onChange(of: number) { _, new in
+                        let grouped = CardNumberDisplay.typed(new)
+                        if grouped != new { number = grouped }
+                    }
                 TextField("Name on card", text: $cardholder)
                     .textInputAutocapitalization(.words)
                 TextField("Expiry (MM/YY)", text: $expiry)
@@ -180,7 +196,8 @@ struct AddPaymentView: View {
                     }
             } footer: {
                 if let status = PaymentHints.cardStatus(number) {
-                    Text(status.text).foregroundStyle(status.ok ? Color.inkSecondary : Color.danger)
+                    CardStatusLine(brand: status.brand, text: status.text, note: status.note)
+                        .foregroundStyle(status.ok ? Color.inkSecondary : Color.danger)
                 }
             }
             .listRowBackground(Color.surface)
@@ -239,6 +256,40 @@ struct AddPaymentView: View {
         }
     }
 
+    private var title: String {
+        switch (kind, editing) {
+        case (.card, nil): "New Card"
+        case (.bank, nil): "New Bank Account"
+        case (.card, _): "Edit Card"
+        case (.bank, _): "Edit Bank Account"
+        }
+    }
+
+    /// Start from what's saved when editing. Values are fetched only now.
+    private func fill() {
+        guard let editing, !loaded else { return }
+        loaded = true
+        let saved = model.editableValues(editing.name)
+        nickname = editing.title
+        pin = saved["pin"] ?? ""
+        switch kind {
+        case .card:
+            number = saved["number"] ?? ""
+            cardholder = saved["cardholder"] ?? ""
+            expiry = saved["expiry"] ?? ""
+            cvv = saved["cvv"] ?? ""
+            billingZip = saved["billing zip"] ?? ""
+        case .bank:
+            bank = saved["bank"] ?? ""
+            holder = saved["account holder"] ?? ""
+            accountType = saved["account type"] ?? accountType
+            routing = saved["routing number"] ?? ""
+            accountNumber = saved["account number"] ?? ""
+            iban = saved["iban"] ?? ""
+            swift = saved["swift"] ?? ""
+        }
+    }
+
     private var canSave: Bool {
         switch kind {
         case .card: !number.isEmpty
@@ -267,9 +318,13 @@ struct AddPaymentView: View {
             ["kind": "bank", "bank": bank, "holder": holder, "account_type": accountType, "routing": routing,
              "account_number": accountNumber, "iban": iban, "swift": swift, "pin": pin]
         }
+        let folder = kind == .card ? "cards" : "banks"
         do {
-            try model.addPayment(fields: fields, folder: kind == .card ? "cards" : "banks",
-                                 nickname: nickname, suggested: suggestedName)
+            if let editing {
+                onSaved(try model.updatePayment(editing, fields: fields, folder: folder, nickname: nickname))
+            } else {
+                try model.addPayment(fields: fields, folder: folder, nickname: nickname, suggested: suggestedName)
+            }
             dismiss()
         } catch {
             self.error = error.localizedDescription

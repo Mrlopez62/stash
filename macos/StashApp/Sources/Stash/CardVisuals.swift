@@ -6,6 +6,9 @@
 // tilt or sheen, and flips become cross-fades.
 
 import SwiftUI
+#if os(iOS)
+import CoreMotion
+#endif
 
 /// Everything the card shows. The number arrives already masked or
 /// grouped; the card never decides what to reveal.
@@ -73,7 +76,17 @@ struct PremiumCard: View {
                 }
             }
         }
+        #if os(iOS)
+        .task(id: reduceMotion) {
+            guard interactive && !reduceMotion else { return }
+            for await lean in CardMotion.leans() { reflect(lean) }
+        }
+        #endif
         .onAppear {
+            #if os(iOS)
+            // The phone's own movement moves the light instead.
+            guard !CardMotion.available else { return }
+            #endif
             guard sheenOnAppear && !reduceMotion else { return }
             sheen = -0.6
             withAnimation(.easeInOut(duration: 1.4).delay(0.2)) { sheen = 1.6 }
@@ -81,9 +94,65 @@ struct PremiumCard: View {
         .accessibilityElement(children: .contain)
     }
 
+    #if os(iOS)
+    /// Light stays put in the room as the phone moves, so the reflection
+    /// slides against the lean, and the card leans back a little to meet it.
+    private func reflect(_ lean: CGPoint) {
+        withAnimation(.interactiveSpring(response: 0.3, dampingFraction: 0.85)) {
+            pointer = CGPoint(x: size.width * (0.5 - lean.x * 0.65), y: size.height * (0.5 + lean.y * 0.65))
+            sheen = -lean.x * 0.75
+            tilt = CGSize(width: -lean.x * 5, height: -lean.y * 4)
+        }
+    }
+    #endif
+
     /// `--card-back` for snapshots: inspector cards start turned over.
     nonisolated(unsafe) static var startFlipped = false
 }
+
+#if os(iOS)
+/// How far the phone has leaned from the way you're holding it.
+enum CardMotion {
+    static var available: Bool { CMMotionManager().isDeviceMotionAvailable }
+
+    /// Each lean is -1...1 on both axes: +x is the right edge going down, +y
+    /// the top edge going away. Whatever angle you settle at slowly becomes
+    /// the new rest, so the light returns to the middle of the card. Ends
+    /// (and the sensor stops) when the task reading it does.
+    static func leans() -> AsyncStream<CGPoint> {
+        AsyncStream { continuation in
+            #if DEBUG
+            // Simulator checks only (never in release builds).
+            if let fixed = ProcessInfo.processInfo.environment["STASH_SIM_TILT"]?.split(separator: ",").compactMap({ Double($0) }),
+               fixed.count == 2 {
+                continuation.yield(CGPoint(x: fixed[0], y: fixed[1]))
+                return
+            }
+            #endif
+            let manager = CMMotionManager()
+            guard manager.isDeviceMotionAvailable else {
+                continuation.finish()
+                return
+            }
+            let range = 0.45 // of gravity, for a full lean: about 27°
+            let settle = 0.008 // per reading, about 4 seconds at 30 a second
+            var rest: (x: Double, y: Double)?
+            manager.deviceMotionUpdateInterval = 1.0 / 30
+            manager.startDeviceMotionUpdates(to: .main) { motion, _ in
+                guard let gravity = motion?.gravity else { return }
+                var held = rest ?? (gravity.x, gravity.y)
+                let lean = CGPoint(x: max(-1, min(1, (gravity.x - held.x) / range)),
+                                   y: max(-1, min(1, (gravity.y - held.y) / range)))
+                held.x += (gravity.x - held.x) * settle
+                held.y += (gravity.y - held.y) * settle
+                rest = held
+                continuation.yield(lean)
+            }
+            continuation.onTermination = { _ in manager.stopDeviceMotionUpdates() }
+        }
+    }
+}
+#endif
 
 // MARK: - Faces
 
@@ -141,12 +210,18 @@ private struct CardFront: View {
                             .padding(.leading, 6)
                             .padding(.top, 5)
                         Spacer()
-                        Text(content.brand ?? "")
-                            .font(.plex(15, weight: .bold))
-                            .italic(content.brand == "Visa")
-                            .foregroundStyle(Color.plaintext)
-                            .contentTransition(.opacity)
-                            .animation(.easeInOut(duration: 0.3), value: content.brand)
+                        Group {
+                            if let brand = content.brand, CardNetworkLogo.has(brand) {
+                                CardNetworkLogo(brand: brand, height: brand == "Visa" ? 17 : 30, onCard: true)
+                                    .transition(.opacity)
+                            } else {
+                                Text(content.brand ?? "")
+                                    .font(.plex(15, weight: .bold))
+                                    .foregroundStyle(Color.plaintext)
+                                    .contentTransition(.opacity)
+                            }
+                        }
+                        .animation(.easeInOut(duration: 0.3), value: content.brand)
                     }
                     Spacer()
                     Text(content.number)
@@ -178,6 +253,8 @@ private struct CardFront: View {
                 LinearGradient(colors: [.clear, .white.opacity(0.18), .clear],
                                startPoint: .leading, endPoint: .trailing)
                     .frame(width: geo.size.width * 0.35)
+                    // Longer than the card, so its ends never show once it's angled.
+                    .scaleEffect(y: 2.5)
                     .rotationEffect(.degrees(20))
                     .offset(x: sheen * geo.size.width)
                     .blendMode(.plusLighter)
@@ -241,9 +318,13 @@ private struct CardBack: View {
                     .padding(.top, geo.size.height * 0.1)
                     Spacer()
                     HStack {
-                        Text(content.brand ?? "")
-                            .font(.plex(12, weight: .bold))
-                            .foregroundStyle(Color.plaintext.opacity(0.8))
+                        if let brand = content.brand, CardNetworkLogo.has(brand) {
+                            CardNetworkLogo(brand: brand, height: brand == "Visa" ? 11 : 20, onCard: true)
+                        } else {
+                            Text(content.brand ?? "")
+                                .font(.plex(12, weight: .bold))
+                                .foregroundStyle(Color.plaintext.opacity(0.8))
+                        }
                         Spacer()
                         Text("stash")
                             .font(.mono(11, weight: .heavy))
@@ -332,6 +413,17 @@ enum CardNumberDisplay {
     /// "4242 4242 4242 4242", or 4-6-5 for American Express.
     static func grouped(_ digits: String) -> String {
         let groups = digits.count == 15 || digits.hasPrefix("34") || digits.hasPrefix("37") ? [4, 6, 5] : [4, 4, 4, 4, 4]
+        return split(digits, groups)
+    }
+
+    /// A number as it's typed: in fours (4-6-5 for American Express). Goes by
+    /// the first digits alone, so groups don't jump around at the 15th digit.
+    static func typed(_ text: String) -> String {
+        let digits = String(PaymentHints.digits(text).prefix(19))
+        return split(digits, digits.hasPrefix("34") || digits.hasPrefix("37") ? [4, 6, 5] : [4, 4, 4, 4, 4])
+    }
+
+    private static func split(_ digits: String, _ groups: [Int]) -> String {
         var out: [String] = []
         var rest = Substring(digits)
         for g in groups where !rest.isEmpty {

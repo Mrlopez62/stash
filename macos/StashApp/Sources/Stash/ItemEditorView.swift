@@ -296,9 +296,12 @@ struct ItemEditorView: View {
                     }
                 }
                 if let status = PaymentHints.cardStatus(cardNumber) {
-                    Label(status.text, systemImage: status.ok ? "checkmark.circle.fill" : "exclamationmark.circle")
-                        .font(.plex(11.5, weight: .medium))
-                        .foregroundStyle(status.ok ? Color.success : Color.danger)
+                    HStack(spacing: 5) {
+                        Image(systemName: status.ok ? "checkmark.circle.fill" : "exclamationmark.circle")
+                        CardStatusLine(brand: status.brand, text: status.text, note: status.note)
+                    }
+                    .font(.plex(11.5, weight: .medium))
+                    .foregroundStyle(status.ok ? Color.success : Color.danger)
                 }
             }
         }

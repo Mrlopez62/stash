@@ -6,7 +6,9 @@ All notable changes to stash. The format follows [Keep a Changelog](https://keep
 
 ### Added
 - **The stash iPhone app.** Your cards and bank accounts on your iPhone: Face ID to unlock, the Mac app's card face, tap to reveal a number or security code, and copies that stay on the phone and clear after a minute. It locks when you leave it and hides from the app switcher. A vault from your Mac is read-only there.
-- **Skip the Mac file.** Tap Skip on the iPhone's first screen to make a vault on the phone, with its own password and Face ID, and add or delete cards and bank accounts there. It's the only copy: it isn't backed up or synced. Opening a file from your Mac later asks before replacing it.
+- **Skip the Mac file.** Tap Skip on the iPhone's first screen to make a vault on the phone, with its own password and Face ID, and add, edit, or delete cards and bank accounts there. It's the only copy: it isn't backed up or synced. Opening a file from your Mac later asks before replacing it.
+- **Cards that catch the light.** On the iPhone, the card's reflection follows the phone's movement, unless Reduce Motion is on. Motion readings stay in the app and aren't stored.
+- **Real network logos.** Visa and Mastercard cards show their logos on the card and under the card number as you type it, on the Mac and iPhone. Card numbers group into fours as you type on the iPhone.
 - **`stash export --phone FILE.stashvault`** writes a separate encrypted vault with only your cards and bank accounts, under a password you choose for the phone (Touch ID or the master password first). Open it on the iPhone through AirDrop, the Files app, or Finder.
 - **`crates/stash-ffi`**, a small C interface to the vault, so the iPhone app uses the same Rust code and vault format as the Mac. `scripts/ios-build.sh` builds the app for the simulator, `scripts/ios-install.sh` installs it on your iPhone with your own Apple ID, and CI builds it.
 

@@ -303,6 +303,13 @@ final class PhoneModel: ObservableObject {
     /// the nickname or `suggested`, made unique. Throws why it was refused.
     func addPayment(fields: [String: String], folder: String, nickname: String, suggested: String) throws {
         guard madeHere, let core else { throw VaultError(message: "This vault can only be changed on your Mac.") }
+        let name = unusedName(folder: folder, nickname: nickname, suggested: suggested)
+        try core.addPayment(name: name, fields: fields)
+        items = try core.list()
+        flash("Added \(name.split(separator: "/").last ?? "")")
+    }
+
+    private func unusedName(folder: String, nickname: String, suggested: String) -> String {
         let slug = Self.slug(nickname).isEmpty ? Self.slug(suggested) : Self.slug(nickname)
         let base = "\(folder)/\(slug)"
         var name = base
@@ -311,9 +318,36 @@ final class PhoneModel: ObservableObject {
             name = "\(base)-\(n)"
             n += 1
         }
-        try core.addPayment(name: name, fields: fields)
+        return name
+    }
+
+    /// Every value of an item, to fill in its edit form.
+    func editableValues(_ name: String) -> [String: String] {
+        guard madeHere, let core, let detail = try? core.item(name) else { return [:] }
+        var values: [String: String] = [:]
+        for field in detail.fields {
+            values[field.label] = field.value ?? (try? core.reveal(name, field: field.label))
+        }
+        return values
+    }
+
+    /// Save changes to a card or bank account in a vault made here, and
+    /// return its name, which changes if the nickname did. The renamed copy
+    /// is saved before the old one goes, so a failure can't lose it.
+    func updatePayment(_ item: PhoneItem, fields: [String: String], folder: String, nickname: String) throws -> String {
+        guard madeHere, let core else { throw VaultError(message: "This vault can only be changed on your Mac.") }
+        let slug = Self.slug(nickname)
+        var name = item.name
+        if slug.isEmpty || slug == Self.slug(item.title) {
+            try core.updatePayment(name: name, fields: fields)
+        } else {
+            name = unusedName(folder: folder, nickname: nickname, suggested: slug)
+            try core.addPayment(name: name, fields: fields)
+            try core.remove(item.name)
+        }
         items = try core.list()
-        flash("Added \(name.split(separator: "/").last ?? "")")
+        flash("Saved \(name.split(separator: "/").last ?? "")")
+        return name
     }
 
     /// Delete an item from a vault made here.

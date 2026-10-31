@@ -109,6 +109,9 @@ struct WelcomeView: View {
                 try? model.addPayment(fields: ["kind": "card", "cardholder": "Samus Aran", "number": "4242424242424242",
                                                "expiry": "08/27", "cvv": "123", "billing_zip": "12345"],
                                       folder: "cards", nickname: "", suggested: "visa-4242")
+                try? model.addPayment(fields: ["kind": "card", "cardholder": "Samus Aran", "number": "5555555555554444",
+                                               "expiry": "11/28", "cvv": "456"],
+                                      folder: "cards", nickname: "", suggested: "mastercard-4444")
                 try? model.addPayment(fields: ["kind": "bank", "bank": "Chase", "holder": "Samus Aran", "account_type": "checking",
                                                "routing": "021000021", "account_number": "000123456789"],
                                       folder: "banks", nickname: "", suggested: "chase-6789")
@@ -339,6 +342,7 @@ struct DetailView: View {
     /// Revealed values, by label; hidden again after 30 seconds.
     @State private var shown: [String: String] = [:]
     @State private var confirmDelete = false
+    @State private var editing = false
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
@@ -375,7 +379,26 @@ struct DetailView: View {
             ToolbarItem(placement: .principal) {
                 Text(item.title).font(.mono(15, weight: .semibold)).foregroundStyle(Color.ink)
             }
+            if model.madeHere {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Edit") { editing = true }
+                }
+            }
         }
+        .sheet(isPresented: $editing) {
+            AddPaymentView(kind: item.kind == .bank ? .bank : .card, editing: item) { saved in
+                shown = [:]
+                // A new nickname is a new item: back to the list to find it.
+                if saved == item.name { detail = model.detail(saved) } else { dismiss() }
+            }
+            .privacyCovered()
+        }
+        #if DEBUG
+        .onAppear {
+            // Simulator checks only (never in release builds).
+            if ProcessInfo.processInfo.environment["STASH_SIM_SHOW"] == "edit" { editing = true }
+        }
+        #endif
         .confirmationDialog("Delete \(item.title)?", isPresented: $confirmDelete, titleVisibility: .visible) {
             Button("Delete", role: .destructive) {
                 if model.removeItem(item.name) { dismiss() }

@@ -184,6 +184,45 @@ pub unsafe extern "C" fn stash_add_payment(
     }
 }
 
+/// Replace a card or bank account's details, keeping when it was created. It
+/// must already exist and stay the same kind. False sets `*error`.
+///
+/// # Safety
+/// `vault` came from a `stash_open_*` or `stash_create` call and holds no
+/// other reference; `name` and `json` are NUL-terminated.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn stash_update_payment(
+    vault: *mut StashVault,
+    name: *const c_char,
+    json: *const c_char,
+    error: *mut *mut c_char,
+) -> bool {
+    let (Some(v), Some(name), Some(json)) =
+        (unsafe { vault.as_mut() }, unsafe { from_c(name) }, unsafe {
+            from_c(json)
+        })
+    else {
+        set_error(error, "invalid arguments");
+        return false;
+    };
+    let result = (|| {
+        let old = v.vault.item(name).map_err(|e| e.to_string())?;
+        let mut item = payment_item(json)?;
+        if item.kind != old.kind {
+            return Err("a card can't become a bank account, or the other way round".to_owned());
+        }
+        item.created = old.created;
+        v.vault.put(name, &item, true).map_err(|e| e.to_string())
+    })();
+    match result {
+        Ok(()) => true,
+        Err(why) => {
+            set_error(error, why);
+            false
+        }
+    }
+}
+
 /// Delete an item. False sets `*error`.
 ///
 /// # Safety
@@ -523,6 +562,23 @@ mod tests {
         // An existing item is never replaced.
         assert!(!unsafe { stash_add_payment(v, name.as_ptr(), card.as_ptr(), &mut error) });
         take(error);
+
+        // Editing replaces the details of an item that exists, kind unchanged.
+        let edited = CString::new(
+            r#"{"kind":"card","cardholder":"Samus Aran","number":"5555555555554444","expiry":"09/29","cvv":"456"}"#,
+        )
+        .unwrap();
+        assert!(unsafe { stash_update_payment(v, name.as_ptr(), edited.as_ptr(), &mut error) });
+        assert_eq!(
+            take(unsafe { stash_reveal(v, name.as_ptr(), field.as_ptr(), ptr::null_mut()) }),
+            "5555555555554444"
+        );
+        let missing = CString::new("cards/missing").unwrap();
+        assert!(!unsafe { stash_update_payment(v, missing.as_ptr(), edited.as_ptr(), &mut error) });
+        take(error);
+        let as_bank = CString::new(r#"{"kind":"bank","bank":"Chase","routing":"021000021","account_number":"000123456789"}"#).unwrap();
+        assert!(!unsafe { stash_update_payment(v, name.as_ptr(), as_bank.as_ptr(), &mut error) });
+        assert!(take(error).contains("can't become"));
 
         // A mistyped card is refused, as on the Mac.
         let typo_name = CString::new("cards/typo").unwrap();

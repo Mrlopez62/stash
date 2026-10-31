@@ -26,6 +26,7 @@ targets:
       - path: Stash
       # Shared with the Mac app: the card face, the data types, and @ViewState.
       - path: ../macos/StashApp/Sources/Stash/CardVisuals.swift
+      - path: ../macos/StashApp/Sources/Stash/CardNetworkLogo.swift
       - path: ../macos/StashApp/Sources/Stash/Payments.swift
       - path: ../macos/StashApp/Sources/Stash/Models.swift
       - path: ../macos/StashApp/Sources/Stash/ViewState.swift

@@ -122,6 +122,16 @@ final class VaultCore: @unchecked Sendable {
         if !ok { throw Self.take(error) }
     }
 
+    /// Replace an existing card or bank account's details.
+    func updatePayment(name: String, fields: [String: String]) throws {
+        let data = try JSONSerialization.data(withJSONObject: fields)
+        var error: UnsafeMutablePointer<CChar>?
+        let ok = name.withCString { n in
+            String(decoding: data, as: UTF8.self).withCString { stash_update_payment(handle, n, $0, &error) }
+        }
+        if !ok { throw Self.take(error) }
+    }
+
     func remove(_ name: String) throws {
         var error: UnsafeMutablePointer<CChar>?
         let ok = name.withCString { stash_remove(handle, $0, &error) }

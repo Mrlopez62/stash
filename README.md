@@ -72,7 +72,7 @@ Then AirDrop `phone.stashvault` to your iPhone and open it in stash (or, in Find
 
 - **What it does:** shows your cards (with the same card face as the Mac app) and bank accounts, reveals a number or security code when you tap the eye, and copies values to the clipboard, where they stay on the phone (no Universal Clipboard) and clear after a minute. It locks as soon as you leave the app and hides itself in the app switcher.
 - **A vault from your Mac is read-only:** to change something, change it on your Mac and export again; opening the new file replaces the old one. Syncing is planned.
-- **A vault made on the phone** can have cards and bank accounts added and deleted there. To correct one, delete it and add it again. Opening a file from your Mac replaces it, after asking.
+- **A vault made on the phone** can have cards and bank accounts added, edited, and deleted there. Opening a file from your Mac replaces it, after asking.
 - **Installing:** needs Xcode (free) and an Apple ID: sign in under Xcode → Settings → Accounts, plug in your iPhone, and turn on Developer Mode (Settings → Privacy & Security). With a free Apple ID, Apple lets the app open for 7 days at a time: run `./scripts/ios-install.sh` again to renew it; your cards stay on the phone. A paid developer account ($99/yr) makes it last a year.
 - **Build for the simulator** with `./scripts/ios-build.sh` (needs `brew install xcodegen`).
 
@@ -419,3 +419,5 @@ Report security issues privately as described in [SECURITY.md](docs/SECURITY.md)
 ## License
 
 [MIT](LICENSE)
+
+Visa and Mastercard names and logos are trademarks of their owners, shown only to identify a card's network. stash isn't affiliated with or endorsed by them.

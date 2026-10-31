@@ -37,12 +37,17 @@ enum PaymentHints {
     }
 
     /// A short status for the number being typed.
-    static func cardStatus(_ number: String) -> (ok: Bool, text: String)? {
+    /// What to say under a card number: `text` in full, or `note` beside the
+    /// network's logo.
+    static func cardStatus(_ number: String) -> (ok: Bool, text: String, brand: String?, note: String?)? {
         let d = digits(number)
         guard d.count >= 4 else { return nil }
-        let name = brand(d) ?? "Card"
-        if d.count < 12 { return (true, name) }
-        return luhn(d) ? (true, "\(name) · looks right") : (false, "\(name) · check for a typo")
+        let brand = brand(d)
+        let name = brand ?? "Card"
+        if d.count < 12 { return (true, name, brand, nil) }
+        let ok = luhn(d)
+        let note = ok ? "looks right" : "check for a typo"
+        return (ok, "\(name) · \(note)", brand, note)
     }
 
     static func routingOK(_ routing: String) -> Bool {
