@@ -26,10 +26,19 @@ struct PhoneDetail: Decodable {
     let kind: ItemKind
     let subtitle: String?
     let card: CardFace?
+    let cardColor: String?
     let fields: [FieldInfo]
     let hasNotes: Bool
 
     func value(_ label: String) -> String? { fields.first { $0.label == label }?.value }
+    var hasOTP: Bool { fields.contains { $0.kind == .otp } }
+}
+
+/// A login's current 2FA code.
+struct PhoneOTP: Decodable {
+    let code: String
+    let remaining: Int
+    let period: Int
 }
 
 /// An open vault. Opened off the main thread (Argon2 takes a moment), then
@@ -111,25 +120,46 @@ final class VaultCore: @unchecked Sendable {
         return String(cString: value)
     }
 
-    /// Add a card or bank account, never replacing one. `fields` holds "kind"
-    /// and its details; the core checks them.
-    func addPayment(name: String, fields: [String: String]) throws {
+    /// Add a login, card, or bank account, never replacing one. `fields` holds
+    /// "kind" and its details; the core checks them.
+    func addItem(name: String, fields: [String: String]) throws {
         let data = try JSONSerialization.data(withJSONObject: fields)
         var error: UnsafeMutablePointer<CChar>?
         let ok = name.withCString { n in
-            String(decoding: data, as: UTF8.self).withCString { stash_add_payment(handle, n, $0, &error) }
+            String(decoding: data, as: UTF8.self).withCString { stash_add_item(handle, n, $0, &error) }
         }
         if !ok { throw Self.take(error) }
     }
 
-    /// Replace an existing card or bank account's details.
-    func updatePayment(name: String, fields: [String: String]) throws {
+    /// Replace an existing item's details. See `stash_update_item` for what's
+    /// kept when `fields` leaves it out.
+    func updateItem(name: String, fields: [String: String]) throws {
         let data = try JSONSerialization.data(withJSONObject: fields)
         var error: UnsafeMutablePointer<CChar>?
         let ok = name.withCString { n in
-            String(decoding: data, as: UTF8.self).withCString { stash_update_payment(handle, n, $0, &error) }
+            String(decoding: data, as: UTF8.self).withCString { stash_update_item(handle, n, $0, &error) }
         }
         if !ok { throw Self.take(error) }
+    }
+
+    /// "" goes back to the card network's color.
+    func setCardColor(_ name: String, color: String) throws {
+        var error: UnsafeMutablePointer<CChar>?
+        let ok = name.withCString { n in color.withCString { stash_set_card_color(handle, n, $0, &error) } }
+        if !ok { throw Self.take(error) }
+    }
+
+    func otp(_ name: String) throws -> PhoneOTP {
+        var error: UnsafeMutablePointer<CChar>?
+        let json = name.withCString { stash_otp(handle, $0, &error) }
+        return try decode(json, error)
+    }
+
+    static func generatePassword() throws -> String {
+        var error: UnsafeMutablePointer<CChar>?
+        guard let value = stash_generate_password(&error) else { throw take(error) }
+        defer { stash_string_free(value) }
+        return String(cString: value)
     }
 
     func remove(_ name: String) throws {

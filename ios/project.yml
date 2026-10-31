@@ -49,7 +49,7 @@ targets:
         UILaunchScreen:
           UIColorName: ""
         UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
-        NSFaceIDUsageDescription: Face ID unlocks your cards and bank accounts in stash.
+        NSFaceIDUsageDescription: Face ID unlocks your vault in stash.
         UIAppFonts: [IBMPlexSans.ttf, JetBrainsMono.ttf]
         # Finder and the Files app can drop a .stashvault into stash.
         UIFileSharingEnabled: true

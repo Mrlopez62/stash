@@ -1,9 +1,11 @@
 //! `stash export --phone FILE`: a separate vault, for the stash iPhone app,
-//! with only your cards and bank accounts in it.
+//! with only your cards and bank accounts in it, and your logins if you ask
+//! with `--logins`.
 //!
 //! It's a normal encrypted vault (same format, same Argon2id and sealing),
-//! under its own password, so a lost phone holds no logins, notes, or SSH
-//! keys, and its password needn't be your master password. Writing it needs
+//! under its own password, so a lost phone holds no notes or SSH keys, and no
+//! logins unless you chose to bring them, and its password needn't be your
+//! master password. Writing it needs
 //! a fresh Touch ID or the master password, since it copies every card.
 
 use std::path::PathBuf;
@@ -20,6 +22,8 @@ pub const PHONE_EXTENSION: &str = "stashvault";
 pub struct Options {
     pub file: PathBuf,
     pub force: bool,
+    /// Bring logins along too.
+    pub logins: bool,
 }
 
 pub fn export_phone(
@@ -40,8 +44,13 @@ pub fn export_phone(
     }
 
     // The path goes in an approval prompt, so it can't be allowed to disguise itself.
+    let what = if opts.logins {
+        "cards, bank accounts, and logins"
+    } else {
+        "cards and bank accounts"
+    };
     let purpose = format!(
-        "copy your cards and bank accounts to {}",
+        "copy your {what} to {}",
         crate::text::clean(&opts.file.display().to_string(), 400)
     );
     let mut unlocked = unlock(&purpose)?;
@@ -54,12 +63,21 @@ pub fn export_phone(
 
     let mut items = Vec::new();
     for summary in vault.summaries()? {
-        if matches!(summary.kind, Kind::Card | Kind::Bank) {
+        if matches!(summary.kind, Kind::Card | Kind::Bank)
+            || (opts.logins && summary.kind == Kind::Login)
+        {
             items.push((summary.name.clone(), vault.item(&summary.name)?));
         }
     }
     if items.is_empty() {
-        bail!("there are no cards or bank accounts to copy");
+        bail!(
+            "there are no {} to copy",
+            if opts.logins {
+                "cards, bank accounts, or logins"
+            } else {
+                "cards or bank accounts"
+            }
+        );
     }
     drop(vault);
 
@@ -73,12 +91,18 @@ pub fn export_phone(
         phone.put(name, item, false)?;
     }
     let cards = items.iter().filter(|(_, i)| i.kind == Kind::Card).count();
-    let banks = items.len() - cards;
+    let logins = items.iter().filter(|(_, i)| i.kind == Kind::Login).count();
+    let banks = items.len() - cards - logins;
     eprintln!(
-        "Wrote {} with {cards} card{} and {banks} bank account{}.",
+        "Wrote {} with {cards} card{} and {banks} bank account{}{}.",
         opts.file.display(),
         if cards == 1 { "" } else { "s" },
         if banks == 1 { "" } else { "s" },
+        match (opts.logins, logins) {
+            (false, _) => String::new(),
+            (true, 1) => ", and 1 login".to_owned(),
+            (true, n) => format!(", and {n} logins"),
+        },
     );
     eprintln!(
         "AirDrop it to your iPhone (or drag it onto the iPhone in Finder → Files → stash), open it in stash, and delete this copy."

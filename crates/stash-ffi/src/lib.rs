@@ -4,7 +4,8 @@
 //!
 //! The app opens a vault, lists it, shows an item without its secret values,
 //! and reveals one value on demand. For a vault made on the phone, it can
-//! also create the vault, and add and remove cards and bank accounts.
+//! also create the vault, and add, change, and remove logins, cards, and bank
+//! accounts.
 //!
 //! Rules for callers:
 //! - A `StashVault` is used from one thread at a time.
@@ -16,10 +17,12 @@
 use std::ffi::{CStr, CString, c_char};
 use std::path::Path;
 use std::ptr;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::{Value, json};
-use stash_core::item::{BankDetails, CardDetails};
-use stash_core::{FieldKind, Item, KdfParams, Kind, Vault, payment};
+use stash_core::item::{BankDetails, CardDetails, FieldValue, ONE_TIME_PASSWORD};
+use stash_core::otp::Totp;
+use stash_core::{FieldKind, Item, KdfParams, Kind, Vault, generate, payment};
 use zeroize::{Zeroize, Zeroizing};
 
 /// An open vault (opaque to C).
@@ -118,9 +121,18 @@ pub unsafe extern "C" fn stash_create(
     }
 }
 
-/// A card or bank account from JSON (`{"kind": "card", "number", ...}`),
+/// Finishes a card can have; anything else is refused. No value means the
+/// card's network picks one.
+const CARD_COLORS: &[&str] = &[
+    "graphite", "midnight", "forest", "plum", "oxblood", "copper", "titanium",
+];
+/// The field that holds a card's color. It describes the card's look, so the
+/// apps show it as a choice, not a value.
+const CARD_COLOR: &str = "card color";
+
+/// A login, card, or bank account from JSON (`{"kind": "card", "number", ...}`),
 /// checked the same way as on the Mac.
-fn payment_item(json: &str) -> Result<Item, String> {
+fn phone_item(json: &str) -> Result<Item, String> {
     let v: Value = serde_json::from_str(json).map_err(|_| "invalid item".to_owned())?;
     let text = |key: &str| {
         v.get(key)
@@ -128,15 +140,39 @@ fn payment_item(json: &str) -> Result<Item, String> {
             .map(str::trim)
             .filter(|s| !s.is_empty())
     };
-    let built = match text("kind") {
-        Some("card") => Item::card(&CardDetails {
-            cardholder: text("cardholder"),
-            number: text("number").ok_or("Enter the card number.")?,
-            expiry: text("expiry"),
-            cvv: text("cvv"),
-            pin: text("pin"),
-            billing_zip: text("billing_zip"),
-        }),
+    match text("kind") {
+        Some("login") => {
+            // Spaces can be part of a password.
+            let password = v
+                .get("password")
+                .and_then(Value::as_str)
+                .filter(|p| !p.is_empty())
+                .ok_or("Enter a password.")?;
+            let mut item = Item::login(text("username"), password, text("website"));
+            if let Some(otp) = text("otp") {
+                Totp::parse_new(otp).map_err(|e| e.to_string())?;
+                item.set(ONE_TIME_PASSWORD, FieldKind::Otp, otp);
+            }
+            Ok(item)
+        }
+        Some("card") => {
+            let mut item = Item::card(&CardDetails {
+                cardholder: text("cardholder"),
+                number: text("number").ok_or("Enter the card number.")?,
+                expiry: text("expiry"),
+                cvv: text("cvv"),
+                pin: text("pin"),
+                billing_zip: text("billing_zip"),
+            })
+            .map_err(|e| e.to_string())?;
+            if let Some(color) = text("card_color") {
+                if !CARD_COLORS.contains(&color) {
+                    return Err("unknown card color".to_owned());
+                }
+                item.set(CARD_COLOR, FieldKind::Text, color);
+            }
+            Ok(item)
+        }
         Some("bank") => Item::bank(&BankDetails {
             bank: text("bank"),
             holder: text("holder"),
@@ -146,20 +182,20 @@ fn payment_item(json: &str) -> Result<Item, String> {
             iban: text("iban"),
             swift: text("swift"),
             pin: text("pin"),
-        }),
-        _ => return Err("only cards and bank accounts can be added here".to_owned()),
-    };
-    built.map_err(|e| e.to_string())
+        })
+        .map_err(|e| e.to_string()),
+        _ => Err("only logins, cards, and bank accounts can be added here".to_owned()),
+    }
 }
 
-/// Add a card or bank account under `name`, never replacing an item. `json`
-/// describes it (see `payment_item`). False sets `*error`.
+/// Add a login, card, or bank account under `name`, never replacing an item. `json`
+/// describes it (see `phone_item`). False sets `*error`.
 ///
 /// # Safety
 /// `vault` came from a `stash_open_*` or `stash_create` call and holds no
 /// other reference; `name` and `json` are NUL-terminated.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn stash_add_payment(
+pub unsafe extern "C" fn stash_add_item(
     vault: *mut StashVault,
     name: *const c_char,
     json: *const c_char,
@@ -173,7 +209,7 @@ pub unsafe extern "C" fn stash_add_payment(
         set_error(error, "invalid arguments");
         return false;
     };
-    let result = payment_item(json)
+    let result = phone_item(json)
         .and_then(|item| v.vault.put(name, &item, false).map_err(|e| e.to_string()));
     match result {
         Ok(()) => true,
@@ -184,14 +220,16 @@ pub unsafe extern "C" fn stash_add_payment(
     }
 }
 
-/// Replace a card or bank account's details, keeping when it was created. It
-/// must already exist and stay the same kind. False sets `*error`.
+/// Replace an item's details, keeping when it was created and its notes. It
+/// must already exist and stay the same kind. A login sent without an "otp"
+/// key keeps its 2FA (the apps never read that secret back), and a card
+/// without a color keeps its color. False sets `*error`.
 ///
 /// # Safety
 /// `vault` came from a `stash_open_*` or `stash_create` call and holds no
 /// other reference; `name` and `json` are NUL-terminated.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn stash_update_payment(
+pub unsafe extern "C" fn stash_update_item(
     vault: *mut StashVault,
     name: *const c_char,
     json: *const c_char,
@@ -207,11 +245,23 @@ pub unsafe extern "C" fn stash_update_payment(
     };
     let result = (|| {
         let old = v.vault.item(name).map_err(|e| e.to_string())?;
-        let mut item = payment_item(json)?;
+        let mut item = phone_item(json)?;
         if item.kind != old.kind {
             return Err("a card can't become a bank account, or the other way round".to_owned());
         }
         item.created = old.created;
+        item.notes = old.notes.clone();
+        let sent: Value = serde_json::from_str(json).map_err(|_| "invalid item".to_owned())?;
+        if sent.get("otp").is_none()
+            && let Some(otp) = old.labeled(ONE_TIME_PASSWORD)
+        {
+            item.set(ONE_TIME_PASSWORD, otp.kind, otp.value.clone());
+        }
+        if item.labeled(CARD_COLOR).is_none()
+            && let Some(color) = old.labeled(CARD_COLOR)
+        {
+            item.set(CARD_COLOR, color.kind, color.value.clone());
+        }
         v.vault.put(name, &item, true).map_err(|e| e.to_string())
     })();
     match result {
@@ -219,6 +269,104 @@ pub unsafe extern "C" fn stash_update_payment(
         Err(why) => {
             set_error(error, why);
             false
+        }
+    }
+}
+
+/// Set a card's color (`""` goes back to the network's). It only changes how
+/// the card looks, so this works on a vault from the Mac too. False sets
+/// `*error`.
+///
+/// # Safety
+/// `vault` came from a `stash_open_*` or `stash_create` call and holds no
+/// other reference; `name` and `color` are NUL-terminated.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn stash_set_card_color(
+    vault: *mut StashVault,
+    name: *const c_char,
+    color: *const c_char,
+    error: *mut *mut c_char,
+) -> bool {
+    let (Some(v), Some(name), Some(color)) =
+        (unsafe { vault.as_mut() }, unsafe { from_c(name) }, unsafe {
+            from_c(color)
+        })
+    else {
+        set_error(error, "invalid arguments");
+        return false;
+    };
+    let result = (|| {
+        if !color.is_empty() && !CARD_COLORS.contains(&color) {
+            return Err("unknown card color".to_owned());
+        }
+        let mut item = v.vault.item(name).map_err(|e| e.to_string())?;
+        if item.kind != Kind::Card {
+            return Err("only cards have a color".to_owned());
+        }
+        if color.is_empty() {
+            item.fields.retain(|f| f.label != CARD_COLOR);
+        } else {
+            item.set(CARD_COLOR, FieldKind::Text, color);
+        }
+        v.vault.put(name, &item, true).map_err(|e| e.to_string())
+    })();
+    match result {
+        Ok(()) => true,
+        Err(why) => {
+            set_error(error, why);
+            false
+        }
+    }
+}
+
+/// A login's current 2FA code, as JSON: `{"code", "remaining", "period"}`.
+/// The secret itself never crosses this interface.
+///
+/// # Safety
+/// `vault` came from a `stash_open_*` call; `name` is NUL-terminated.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn stash_otp(
+    vault: *const StashVault,
+    name: *const c_char,
+    error: *mut *mut c_char,
+) -> *mut c_char {
+    let (Some(v), Some(name)) = (unsafe { vault.as_ref() }, unsafe { from_c(name) }) else {
+        set_error(error, "invalid arguments");
+        return ptr::null_mut();
+    };
+    let result = (|| {
+        let item = v.vault.item(name).map_err(|e| e.to_string())?;
+        let Some(FieldValue::Otp(secret)) = item.field("otp") else {
+            return Err(format!("“{name}” has no 2FA"));
+        };
+        let totp = Totp::parse(secret).map_err(|e| e.to_string())?;
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        Ok(json!({
+            "code": totp.code_at(now),
+            "remaining": totp.remaining(now),
+            "period": totp.period,
+        }))
+    })();
+    match result {
+        Ok(value) => to_c(value.to_string()),
+        Err(why) => {
+            set_error(error, why);
+            ptr::null_mut()
+        }
+    }
+}
+
+/// A new random password. Free it with [`stash_string_free`], which wipes it.
+#[unsafe(no_mangle)]
+pub extern "C" fn stash_generate_password(error: *mut *mut c_char) -> *mut c_char {
+    match generate::password(generate::Rules::default()) {
+        Ok(password) => to_c(password.to_string()),
+        Err(e) => {
+            set_error(error, e.to_string());
+            ptr::null_mut()
         }
     }
 }
@@ -371,7 +519,11 @@ pub unsafe extern "C" fn stash_list(
         Ok(summaries) => {
             let items: Vec<Value> = summaries
                 .iter()
-                .map(|s| json!({ "name": s.name, "kind": kind_name(s.kind), "subtitle": s.subtitle }))
+                .map(|s| {
+                    // A login has no summary line: its username stands in.
+                    let subtitle = s.subtitle.clone().or_else(|| s.username.clone());
+                    json!({ "name": s.name, "kind": kind_name(s.kind), "subtitle": subtitle })
+                })
                 .collect();
             to_c(Value::Array(items).to_string())
         }
@@ -418,6 +570,7 @@ pub unsafe extern "C" fn stash_item(
     let fields: Vec<Value> = item
         .fields
         .iter()
+        .filter(|f| f.label != CARD_COLOR)
         .map(|f| {
             let mut field = json!({ "label": f.label, "kind": f.kind });
             if !f.kind.is_sensitive() && f.kind != FieldKind::Otp {
@@ -435,6 +588,7 @@ pub unsafe extern "C" fn stash_item(
             "kind": kind_name(item.kind),
             "subtitle": item.subtitle(),
             "card": card,
+            "card_color": item.labeled(CARD_COLOR).map(|f| f.value.clone()),
             "fields": fields,
             "has_notes": !item.notes.is_empty(),
         })
@@ -552,7 +706,7 @@ mod tests {
             r#"{"kind":"card","cardholder":"Samus Aran","number":"4242 4242 4242 4242","expiry":"08/27","cvv":"123","pin":""}"#,
         )
         .unwrap();
-        assert!(unsafe { stash_add_payment(v, name.as_ptr(), card.as_ptr(), &mut error) });
+        assert!(unsafe { stash_add_item(v, name.as_ptr(), card.as_ptr(), &mut error) });
         let field = CString::new("number").unwrap();
         assert_eq!(
             take(unsafe { stash_reveal(v, name.as_ptr(), field.as_ptr(), ptr::null_mut()) }),
@@ -560,7 +714,7 @@ mod tests {
         );
 
         // An existing item is never replaced.
-        assert!(!unsafe { stash_add_payment(v, name.as_ptr(), card.as_ptr(), &mut error) });
+        assert!(!unsafe { stash_add_item(v, name.as_ptr(), card.as_ptr(), &mut error) });
         take(error);
 
         // Editing replaces the details of an item that exists, kind unchanged.
@@ -568,35 +722,104 @@ mod tests {
             r#"{"kind":"card","cardholder":"Samus Aran","number":"5555555555554444","expiry":"09/29","cvv":"456"}"#,
         )
         .unwrap();
-        assert!(unsafe { stash_update_payment(v, name.as_ptr(), edited.as_ptr(), &mut error) });
+        assert!(unsafe { stash_update_item(v, name.as_ptr(), edited.as_ptr(), &mut error) });
         assert_eq!(
             take(unsafe { stash_reveal(v, name.as_ptr(), field.as_ptr(), ptr::null_mut()) }),
             "5555555555554444"
         );
         let missing = CString::new("cards/missing").unwrap();
-        assert!(!unsafe { stash_update_payment(v, missing.as_ptr(), edited.as_ptr(), &mut error) });
+        assert!(!unsafe { stash_update_item(v, missing.as_ptr(), edited.as_ptr(), &mut error) });
         take(error);
         let as_bank = CString::new(r#"{"kind":"bank","bank":"Chase","routing":"021000021","account_number":"000123456789"}"#).unwrap();
-        assert!(!unsafe { stash_update_payment(v, name.as_ptr(), as_bank.as_ptr(), &mut error) });
+        assert!(!unsafe { stash_update_item(v, name.as_ptr(), as_bank.as_ptr(), &mut error) });
         assert!(take(error).contains("can't become"));
 
         // A mistyped card is refused, as on the Mac.
         let typo_name = CString::new("cards/typo").unwrap();
         let typo = CString::new(r#"{"kind":"card","number":"4242424242424241"}"#).unwrap();
-        assert!(!unsafe { stash_add_payment(v, typo_name.as_ptr(), typo.as_ptr(), &mut error) });
+        assert!(!unsafe { stash_add_item(v, typo_name.as_ptr(), typo.as_ptr(), &mut error) });
         assert!(take(error).contains("typo"));
 
-        // Only payments can be added this way.
-        let login = CString::new(r#"{"kind":"login","password":"x"}"#).unwrap();
-        assert!(!unsafe { stash_add_payment(v, typo_name.as_ptr(), login.as_ptr(), &mut error) });
+        // Nothing else can be added this way.
+        let note = CString::new(r#"{"kind":"note","notes":"x"}"#).unwrap();
+        assert!(!unsafe { stash_add_item(v, typo_name.as_ptr(), note.as_ptr(), &mut error) });
         take(error);
+
+        // Logins: the password stays out of the item, and is revealed on request.
+        let login_name = CString::new("logins/github").unwrap();
+        let login = CString::new(
+            r#"{"kind":"login","username":"samus@example.com","password":" s3cret ","website":"https://github.com","otp":"JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP"}"#,
+        )
+        .unwrap();
+        assert!(unsafe { stash_add_item(v, login_name.as_ptr(), login.as_ptr(), &mut error) });
+        let shown = take(unsafe { stash_item(v, login_name.as_ptr(), ptr::null_mut()) });
+        assert!(!shown.contains("s3cret") && !shown.contains("JBSWY3"));
+        assert!(take(unsafe { stash_list(v, ptr::null_mut()) }).contains("samus@example.com"));
+        let password = CString::new("password").unwrap();
+        assert_eq!(
+            take(unsafe {
+                stash_reveal(v, login_name.as_ptr(), password.as_ptr(), ptr::null_mut())
+            }),
+            " s3cret "
+        );
+        let code = take(unsafe { stash_otp(v, login_name.as_ptr(), ptr::null_mut()) });
+        let code: Value = serde_json::from_str(&code).unwrap();
+        assert_eq!(code["code"].as_str().unwrap().len(), 6);
+
+        // Editing without "otp" keeps the 2FA; an empty one removes it.
+        let kept = CString::new(r#"{"kind":"login","username":"samus","password":"new"}"#).unwrap();
+        assert!(unsafe { stash_update_item(v, login_name.as_ptr(), kept.as_ptr(), &mut error) });
+        let code = unsafe { stash_otp(v, login_name.as_ptr(), ptr::null_mut()) };
+        assert!(!code.is_null());
+        take(code);
+        let cleared = CString::new(r#"{"kind":"login","password":"new","otp":""}"#).unwrap();
+        assert!(unsafe { stash_update_item(v, login_name.as_ptr(), cleared.as_ptr(), &mut error) });
+        assert!(unsafe { stash_otp(v, login_name.as_ptr(), &mut error) }.is_null());
+        take(error);
+
+        // A mistyped 2FA secret is refused.
+        let bad_otp = CString::new(r#"{"kind":"login","password":"x","otp":"short"}"#).unwrap();
+        let bad_name = CString::new("logins/bad").unwrap();
+        assert!(!unsafe { stash_add_item(v, bad_name.as_ptr(), bad_otp.as_ptr(), &mut error) });
+        take(error);
+
+        // Card colors: known ones only, kept across edits, not shown as a field.
+        let plum = CString::new("plum").unwrap();
+        assert!(unsafe { stash_set_card_color(v, name.as_ptr(), plum.as_ptr(), &mut error) });
+        assert!(unsafe { stash_update_item(v, name.as_ptr(), edited.as_ptr(), &mut error) });
+        let shown = take(unsafe { stash_item(v, name.as_ptr(), ptr::null_mut()) });
+        let shown: Value = serde_json::from_str(&shown).unwrap();
+        assert_eq!(shown["card_color"], "plum");
+        assert!(
+            shown["fields"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|f| f["label"] != "card color")
+        );
+        let neon = CString::new("neon").unwrap();
+        assert!(!unsafe { stash_set_card_color(v, name.as_ptr(), neon.as_ptr(), &mut error) });
+        take(error);
+        assert!(!unsafe {
+            stash_set_card_color(v, login_name.as_ptr(), plum.as_ptr(), &mut error)
+        });
+        take(error);
+        let automatic = CString::new("").unwrap();
+        assert!(unsafe { stash_set_card_color(v, name.as_ptr(), automatic.as_ptr(), &mut error) });
+        assert!(
+            take(unsafe { stash_item(v, name.as_ptr(), ptr::null_mut()) })
+                .contains(r#""card_color":null"#)
+        );
+
+        let generated = take(stash_generate_password(ptr::null_mut()));
+        assert_eq!(generated.chars().count(), 24);
 
         let bank_name = CString::new("banks/chase-6789").unwrap();
         let bank = CString::new(
             r#"{"kind":"bank","bank":"Chase","routing":"021000021","account_number":"000123456789","account_type":"checking"}"#,
         )
         .unwrap();
-        assert!(unsafe { stash_add_payment(v, bank_name.as_ptr(), bank.as_ptr(), &mut error) });
+        assert!(unsafe { stash_add_item(v, bank_name.as_ptr(), bank.as_ptr(), &mut error) });
         let list = take(unsafe { stash_list(v, ptr::null_mut()) });
         assert!(list.contains("cards/visa-4242") && list.contains("banks/chase-6789"));
 
@@ -616,7 +839,7 @@ mod tests {
         unsafe { stash_close(v) };
         let v = unsafe { stash_open_keys(c_path.as_ptr(), keys.as_ptr(), ptr::null_mut()) };
         assert!(!v.is_null());
-        assert!(unsafe { stash_add_payment(v, name.as_ptr(), card.as_ptr(), &mut error) });
+        assert!(unsafe { stash_add_item(v, name.as_ptr(), card.as_ptr(), &mut error) });
         unsafe { stash_close(v) };
     }
 

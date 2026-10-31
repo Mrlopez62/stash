@@ -204,12 +204,13 @@ enum Command {
         #[arg(long)]
         no_approval: bool,
     },
-    /// Write a vault for the stash iPhone app with only your cards and bank accounts
+    /// Write a vault for the stash iPhone app with your cards and bank accounts
     ///
     /// The file is a separate encrypted vault under a password you choose
-    /// for the phone, so a lost phone holds none of your logins, notes, or
-    /// SSH keys. Needs a fresh Touch ID or your master password.
-    #[command(after_help = "Example:\n  stash export --phone ~/Desktop/phone.stashvault")]
+    /// for the phone, so a lost phone holds none of your notes or SSH keys,
+    /// and no logins unless you add --logins. Needs a fresh Touch ID or your
+    /// master password.
+    #[command(after_help = "Example:\n  stash export --phone ~/Desktop/phone.stashvault --logins")]
     Export {
         /// Where to write the phone vault (a .stashvault file)
         #[arg(long, value_name = "FILE")]
@@ -217,6 +218,9 @@ enum Command {
         /// Replace the file if it exists
         #[arg(long)]
         force: bool,
+        /// Bring your logins too, with their 2FA secrets
+        #[arg(long)]
+        logins: bool,
     },
     /// Import logins, notes, cards, and bank accounts from another password manager
     ///
@@ -632,8 +636,16 @@ fn run(cli: Cli) -> Result<ExitCode> {
             };
             mcp::serve(path, opts)?;
         }
-        Command::Export { phone, force } => {
-            let opts = export_cmd::Options { file: phone, force };
+        Command::Export {
+            phone,
+            force,
+            logins,
+        } => {
+            let opts = export_cmd::Options {
+                file: phone,
+                force,
+                logins,
+            };
             export_cmd::export_phone(
                 opts,
                 |purpose| unlock_checked(&path, purpose),

@@ -19,6 +19,61 @@ struct CardContent: Equatable {
     var expiry: String?
     /// The back's security code; nil shows dots.
     var cvv: String?
+    /// The chosen color; nil lets the card's network pick.
+    var finish: CardFinish?
+}
+
+/// The colors a card can be. Dark enough that white print always reads. The
+/// raw values are what the vault stores (crates/stash-ffi, CARD_COLORS).
+enum CardFinish: String, CaseIterable, Identifiable {
+    case graphite, midnight, forest, plum, oxblood, copper, titanium
+    var id: Self { self }
+
+    var title: String { rawValue.capitalized }
+
+    var top: Color {
+        switch self {
+        case .graphite: Color(hex: 0x3A3D42)
+        case .midnight: Color(hex: 0x1B2A4E)
+        case .forest: Color(hex: 0x1F3D33)
+        case .plum: Color(hex: 0x3F2248)
+        case .oxblood: Color(hex: 0x4A1A1E)
+        case .copper: Color(hex: 0x5A3620)
+        case .titanium: Color(hex: 0x6A6C70)
+        }
+    }
+
+    var bottom: Color {
+        switch self {
+        case .graphite: Color(hex: 0x17181B)
+        case .midnight: Color(hex: 0x0A1022)
+        case .forest: Color(hex: 0x0A1714)
+        case .plum: Color(hex: 0x160B1B)
+        case .oxblood: Color(hex: 0x1A080A)
+        case .copper: Color(hex: 0x1E120B)
+        case .titanium: Color(hex: 0x2C2E31)
+        }
+    }
+
+    var glow: Color {
+        switch self {
+        case .graphite: Color(hex: 0x6B7078)
+        case .midnight: Color(hex: 0x3A5BA8)
+        case .forest: Color(hex: 0x3E7D66)
+        case .plum: Color(hex: 0x8A4A9A)
+        case .oxblood: Color(hex: 0xA33A40)
+        case .copper: Color(hex: 0xC07A45)
+        case .titanium: Color(hex: 0xB8BCC2)
+        }
+    }
+}
+
+/// Where the light falls on a card (0...1 across it) and how strongly.
+/// Strength 0 is a card at rest, with no shine at all.
+struct CardLight: Equatable {
+    var x: CGFloat = 0.5
+    var y: CGFloat = 0.5
+    var strength: CGFloat = 0
 }
 
 struct PremiumCard: View {
@@ -31,13 +86,13 @@ struct PremiumCard: View {
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @ViewState private var tilt = CGSize.zero
-    @ViewState private var pointer: CGPoint?
+    @ViewState private var light = CardLight()
     @ViewState private var sheen: CGFloat = -0.6
     @ViewState private var size = CGSize(width: 330, height: 208)
 
     var body: some View {
         ZStack {
-            CardFront(content: content, sheen: sheen, pointer: flipped ? nil : pointer)
+            CardFront(content: content, sheen: sheen, light: flipped ? CardLight() : light)
                 .opacity(flipped ? 0 : 1)
                 .accessibilityHidden(flipped)
             // Pre-mirrored, so it reads correctly once the card turns over.
@@ -67,12 +122,12 @@ struct PremiumCard: View {
                 let y = (location.y / max(size.height, 1) - 0.5) * 2
                 withAnimation(.interactiveSpring(response: 0.35, dampingFraction: 0.7)) {
                     tilt = CGSize(width: x * 8, height: -y * 6)
-                    pointer = location
+                    light = CardLight(x: location.x / max(size.width, 1), y: location.y / max(size.height, 1), strength: 0.8)
                 }
             case .ended:
                 withAnimation(.spring(response: 0.6, dampingFraction: 0.65)) {
                     tilt = .zero
-                    pointer = nil
+                    light.strength = 0
                 }
             }
         }
@@ -82,27 +137,24 @@ struct PremiumCard: View {
             for await lean in CardMotion.leans() { reflect(lean) }
         }
         #endif
+        #if os(macOS)
         .onAppear {
-            #if os(iOS)
-            // The phone's own movement moves the light instead.
-            guard !CardMotion.available else { return }
-            #endif
             guard sheenOnAppear && !reduceMotion else { return }
             sheen = -0.6
             withAnimation(.easeInOut(duration: 1.4).delay(0.2)) { sheen = 1.6 }
         }
+        #endif
         .accessibilityElement(children: .contain)
     }
 
     #if os(iOS)
     /// Light stays put in the room as the phone moves, so the reflection
     /// slides against the lean, and the card leans back a little to meet it.
+    /// Held still, the lean settles to nothing and the shine goes out.
     private func reflect(_ lean: CGPoint) {
-        withAnimation(.interactiveSpring(response: 0.3, dampingFraction: 0.85)) {
-            pointer = CGPoint(x: size.width * (0.5 - lean.x * 0.65), y: size.height * (0.5 + lean.y * 0.65))
-            sheen = -lean.x * 0.75
-            tilt = CGSize(width: -lean.x * 5, height: -lean.y * 4)
-        }
+        let t = max(0, min(1, (hypot(lean.x, lean.y) - 0.02) / 0.38))
+        light = CardLight(x: 0.5 - lean.x * 0.65, y: 0.5 + lean.y * 0.65, strength: t * t * (3 - 2 * t))
+        tilt = CGSize(width: -lean.x * 5, height: -lean.y * 4)
     }
     #endif
 
@@ -113,12 +165,10 @@ struct PremiumCard: View {
 #if os(iOS)
 /// How far the phone has leaned from the way you're holding it.
 enum CardMotion {
-    static var available: Bool { CMMotionManager().isDeviceMotionAvailable }
-
     /// Each lean is -1...1 on both axes: +x is the right edge going down, +y
-    /// the top edge going away. Whatever angle you settle at slowly becomes
-    /// the new rest, so the light returns to the middle of the card. Ends
-    /// (and the sensor stops) when the task reading it does.
+    /// the top edge going away. Whatever angle you settle at soon becomes the
+    /// new rest, so a phone held still reads as no lean. Ends (and the sensor
+    /// stops) when the task reading it does.
     static func leans() -> AsyncStream<CGPoint> {
         AsyncStream { continuation in
             #if DEBUG
@@ -135,18 +185,22 @@ enum CardMotion {
                 return
             }
             let range = 0.45 // of gravity, for a full lean: about 27°
-            let settle = 0.008 // per reading, about 4 seconds at 30 a second
+            let settle = 0.006 // per reading: about 3 seconds at 60 a second
+            let smooth = 0.3 // per reading, to take out hand tremor
             var rest: (x: Double, y: Double)?
-            manager.deviceMotionUpdateInterval = 1.0 / 30
+            var eased = CGPoint.zero
+            manager.deviceMotionUpdateInterval = 1.0 / 60
             manager.startDeviceMotionUpdates(to: .main) { motion, _ in
                 guard let gravity = motion?.gravity else { return }
                 var held = rest ?? (gravity.x, gravity.y)
-                let lean = CGPoint(x: max(-1, min(1, (gravity.x - held.x) / range)),
-                                   y: max(-1, min(1, (gravity.y - held.y) / range)))
+                let leanX = max(-1, min(1, (gravity.x - held.x) / range))
+                let leanY = max(-1, min(1, (gravity.y - held.y) / range))
+                eased.x += (leanX - eased.x) * smooth
+                eased.y += (leanY - eased.y) * smooth
                 held.x += (gravity.x - held.x) * settle
                 held.y += (gravity.y - held.y) * settle
                 rest = held
-                continuation.yield(lean)
+                continuation.yield(eased)
             }
             continuation.onTermination = { _ in manager.stopDeviceMotionUpdates() }
         }
@@ -172,14 +226,17 @@ private func brandTint(for brand: String?) -> Color {
 
 private struct CardSurface: View {
     let brand: String?
+    var finish: CardFinish?
 
     var body: some View {
         ZStack {
-            LinearGradient(colors: [Color(hex: 0x232934), Color.vaultInk],
+            LinearGradient(colors: [finish?.top ?? Color(hex: 0x232934), finish?.bottom ?? Color.vaultInk],
                            startPoint: .topLeading, endPoint: .bottomTrailing)
-            RadialGradient(colors: [brandTint(for: brand).opacity(0.55), .clear],
+                .animation(.easeInOut(duration: 0.4), value: finish)
+            RadialGradient(colors: [(finish?.glow ?? brandTint(for: brand)).opacity(0.55), .clear],
                            center: .topTrailing, startRadius: 4, endRadius: 260)
                 .animation(.easeInOut(duration: 0.5), value: brand)
+                .animation(.easeInOut(duration: 0.4), value: finish)
             Grain().opacity(0.07)
         }
         .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
@@ -195,12 +252,12 @@ private struct CardSurface: View {
 private struct CardFront: View {
     let content: CardContent
     let sheen: CGFloat
-    let pointer: CGPoint?
+    let light: CardLight
 
     var body: some View {
         GeometryReader { geo in
             ZStack {
-                CardSurface(brand: content.brand)
+                CardSurface(brand: content.brand, finish: content.finish)
                 VStack(alignment: .leading, spacing: 0) {
                     HStack(alignment: .top) {
                         Chip()
@@ -241,14 +298,11 @@ private struct CardFront: View {
                     }
                 }
                 .padding(geo.size.height * 0.1)
-                // A soft light where the pointer is, as if under a lamp.
-                if let pointer {
-                    RadialGradient(colors: [.white.opacity(0.16), .clear],
-                                   center: UnitPoint(x: pointer.x / geo.size.width, y: pointer.y / geo.size.height),
-                                   startRadius: 2, endRadius: geo.size.width * 0.6)
-                        .blendMode(.plusLighter)
+                if light.strength > 0.001 {
+                    CardShine(light: light, size: geo.size)
                         .allowsHitTesting(false)
                 }
+                #if os(macOS)
                 // The one-time foil sheen.
                 LinearGradient(colors: [.clear, .white.opacity(0.18), .clear],
                                startPoint: .leading, endPoint: .trailing)
@@ -259,6 +313,7 @@ private struct CardFront: View {
                     .offset(x: sheen * geo.size.width)
                     .blendMode(.plusLighter)
                     .allowsHitTesting(false)
+                #endif
             }
             .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
         }
@@ -283,7 +338,7 @@ private struct CardBack: View {
     var body: some View {
         GeometryReader { geo in
             ZStack(alignment: .topLeading) {
-                CardSurface(brand: content.brand)
+                CardSurface(brand: content.brand, finish: content.finish)
                 VStack(alignment: .leading, spacing: 0) {
                     Rectangle()
                         .fill(LinearGradient(colors: [Color(hex: 0x050608), Color(hex: 0x15181E)],
@@ -335,6 +390,85 @@ private struct CardBack: View {
                 }
             }
             .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        }
+    }
+}
+
+// MARK: - Shine
+
+/// Light on a real card, in layers that all add to what's beneath them: a soft
+/// bloom, the bead-blasted surface sparkling inside it, a long feathered streak
+/// of reflection, a faint prism that moves faster than the streak (the way
+/// colors separate on metal), and the card's edge catching the light on the
+/// side it comes from. Every layer has soft ends, so none shows a shape.
+private struct CardShine: View {
+    let light: CardLight
+    let size: CGSize
+
+    var body: some View {
+        let center = UnitPoint(x: light.x, y: light.y)
+        ZStack {
+            // The bloom: bright only at its heart, with a long, gentle falloff.
+            RadialGradient(stops: [
+                .init(color: .white.opacity(0.2), location: 0),
+                .init(color: .white.opacity(0.09), location: 0.22),
+                .init(color: .white.opacity(0.03), location: 0.55),
+                .init(color: .clear, location: 1),
+            ], center: center, startRadius: 0, endRadius: size.width * 0.85)
+                .blendMode(.plusLighter)
+
+            // The surface's grain, catching the light only near the bloom.
+            Grain()
+                .opacity(0.1)
+                .mask(RadialGradient(colors: [.white, .clear], center: center, startRadius: 0, endRadius: size.width * 0.42))
+                .blendMode(.plusLighter)
+
+            streak(colors: [
+                .init(color: .clear, location: 0),
+                .init(color: .white.opacity(0.025), location: 0.3),
+                .init(color: .white.opacity(0.09), location: 0.42),
+                .init(color: .white.opacity(0.22), location: 0.5),
+                .init(color: .white.opacity(0.09), location: 0.58),
+                .init(color: .white.opacity(0.025), location: 0.7),
+                .init(color: .clear, location: 1),
+            ], width: size.width * 1.1, travel: 1.5)
+
+            // The prism, pale and low, just past the streak.
+            streak(colors: [
+                .init(color: .clear, location: 0),
+                .init(color: Color(hex: 0xF9C6D8).opacity(0.10), location: 0.25),
+                .init(color: Color(hex: 0xC9C2FF).opacity(0.13), location: 0.4),
+                .init(color: Color(hex: 0xB8E6FF).opacity(0.13), location: 0.52),
+                .init(color: Color(hex: 0xC4F5DE).opacity(0.10), location: 0.64),
+                .init(color: Color(hex: 0xFFE9B8).opacity(0.08), location: 0.76),
+                .init(color: .clear, location: 1),
+            ], width: size.width * 1.5, travel: 2.1)
+
+            // The edge, brightest on the side the light is on.
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .strokeBorder(
+                    AngularGradient(stops: [
+                        .init(color: .white.opacity(0.75), location: 0),
+                        .init(color: .clear, location: 0.2),
+                        .init(color: .clear, location: 0.8),
+                        .init(color: .white.opacity(0.75), location: 1),
+                    ], center: .center, angle: .radians(atan2(light.y - 0.5, light.x - 0.5))),
+                    lineWidth: 1.2)
+                .blendMode(.plusLighter)
+        }
+        .opacity(light.strength)
+    }
+
+    /// A band across the card at a slant, longer than the card so its ends
+    /// never show, sliding with the light. `.overlay` keeps it out of layout.
+    private func streak(colors: [Gradient.Stop], width: CGFloat, travel: CGFloat) -> some View {
+        Color.clear.overlay {
+            LinearGradient(stops: colors, startPoint: .leading, endPoint: .trailing)
+                .frame(width: width, height: size.width * 2.4)
+                .rotationEffect(.degrees(22))
+                .offset(x: (light.x - 0.5) * size.width * travel,
+                        y: (light.y - 0.5) * size.height * 0.5)
+                .blendMode(.plusLighter)
         }
     }
 }

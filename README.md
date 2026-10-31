@@ -20,7 +20,7 @@ A free, open-source password and secrets manager for macOS, built for developers
 > - **Browser autofill** in Chrome, Brave, Edge, Arc, and Firefox, with saving new logins and cards
 > - **Developer tools:** `stash://` references, `stash run`, `stash inject`, an SSH agent with git commit signing
 > - **AI agents:** an MCP server with Touch ID approval for every use, and an encrypted audit log
-> - **The stash iPhone app:** your cards and bank accounts, with Face ID, copied from your Mac or added on the phone
+> - **The stash iPhone app:** your logins, cards, and bank accounts, with Face ID, copied from your Mac or added on the phone
 >
 > stash hasn't had an outside security review yet, so don't trust it with production secrets. There are no prebuilt downloads yet: you build it from source, which takes a few minutes.
 
@@ -54,7 +54,7 @@ Building needs Rust and the free Xcode Command Line Tools (`xcode-select --insta
 
 ## The iPhone app
 
-Keep your cards and bank accounts on your iPhone, unlocked with Face ID. Only those go to the phone: never your logins, notes, or SSH keys.
+Keep your cards, bank accounts, and logins on your iPhone, unlocked with Face ID. Notes and SSH keys never go to the phone, and logins go only if you add them there or export them.
 
 <p align="center">
   <img src="docs/screenshots/iphone-list.png" alt="The stash iPhone app: a list of cards and bank accounts, showing only the last four digits" width="260">
@@ -68,11 +68,15 @@ stash export --phone ~/Desktop/phone.stashvault   # asks for Touch ID, then a pa
 
 Then AirDrop `phone.stashvault` to your iPhone and open it in stash (or, in Finder, drop it on your iPhone under Files → stash), unlock it with the password you chose, and delete the file from your Desktop. From then on, Face ID opens it.
 
-**No Mac vault to copy?** Tap **Skip** on the first screen, choose a password, and add your cards and bank accounts on the phone. That vault exists only on that iPhone: it isn't in iCloud or any backup, and nothing syncs it to your Mac.
+To bring your logins and their 2FA too, add `--logins` to the export.
+
+**No Mac vault to copy?** Tap **Skip** on the first screen, choose a password, and add your logins, cards, and bank accounts on the phone. That vault exists only on that iPhone: it isn't in iCloud or any backup, and nothing syncs it to your Mac.
 
 - **What it does:** shows your cards (with the same card face as the Mac app) and bank accounts, reveals a number or security code when you tap the eye, and copies values to the clipboard, where they stay on the phone (no Universal Clipboard) and clear after a minute. It locks as soon as you leave the app and hides itself in the app switcher.
 - **A vault from your Mac is read-only:** to change something, change it on your Mac and export again; opening the new file replaces the old one. Syncing is planned.
-- **A vault made on the phone** can have cards and bank accounts added, edited, and deleted there. Opening a file from your Mac replaces it, after asking.
+- **Logins** show their username and website, with the password hidden until you ask, and live 2FA codes. Copy them into the site or app: stash doesn't fill passwords on the iPhone yet.
+- **Card colors:** choose a color for any card. It's saved in the vault on the phone, and doesn't show on the Mac.
+- **A vault made on the phone** can have logins, cards, and bank accounts added, edited, and deleted there. Opening a file from your Mac replaces it, after asking.
 - **Installing:** needs Xcode (free) and an Apple ID: sign in under Xcode → Settings → Accounts, plug in your iPhone, and turn on Developer Mode (Settings → Privacy & Security). With a free Apple ID, Apple lets the app open for 7 days at a time: run `./scripts/ios-install.sh` again to renew it; your cards stay on the phone. A paid developer account ($99/yr) makes it last a year.
 - **Build for the simulator** with `./scripts/ios-build.sh` (needs `brew install xcodegen`).
 
@@ -125,7 +129,7 @@ How unlocking works:
 ## Not planned yet
 
 - Team or family sharing
-- Android, or a full vault on the iPhone (it holds only cards and bank accounts for now)
+- Android, or a full vault on the iPhone (it holds logins, cards, and bank accounts for now)
 - Cloud sync (planned for later as encrypted sync through iCloud Drive or Git; see the Roadmap)
 
 ## Moving from another password manager
@@ -394,7 +398,7 @@ Rust handles everything that is security-critical: the vault, keys, and every de
 | Price | Free | Paid | Free tier / paid | Free | Free |
 | Independent security audit | ❌ not yet | ✅ | ✅ | ✅ | — |
 | Platforms | macOS (CLI also builds on Linux) | All | All | Windows, macOS, Linux | macOS, Linux |
-| Phone | iPhone: cards and bank accounts | ✅ | ✅ | Third-party apps | Third-party apps |
+| Phone | iPhone: logins, cards, and bank accounts | ✅ | ✅ | Third-party apps | Third-party apps |
 | Data stays local | ✅ | ❌ (cloud) | ❌ unless self-hosted | ✅ | ✅ |
 | Touch ID in the CLI | ✅ | ✅ | Partial | App only | ❌ |
 | Secret references + `run` | ✅ | ✅ | Partial (Secrets Manager) | ❌ | ❌ |

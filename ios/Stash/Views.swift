@@ -12,6 +12,9 @@ struct RootView: View {
             case .unlocked: VaultListView()
             }
         }
+        .overlay {
+            if model.unlocking { UnlockCurtain { model.unlocking = false } }
+        }
         .overlay(alignment: .bottom) {
             if let toast = model.toast {
                 Label(toast, systemImage: "checkmark.circle.fill")
@@ -49,7 +52,7 @@ struct WelcomeView: View {
                 VStack(alignment: .leading, spacing: 10) {
                     StashMark(size: 64)
                     Wordmark(size: 34)
-                    Text("Your cards and bank accounts, with Face ID.")
+                    Text("Your logins, cards, and bank accounts, with Face ID.")
                         .font(.plex(17))
                         .foregroundStyle(Color.inkSecondary)
                 }
@@ -84,7 +87,7 @@ struct WelcomeView: View {
                         .foregroundStyle(Color.ink)
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 6)
-                    Text("No Mac or file: make a vault here and add your cards on this iPhone.")
+                    Text("No Mac or file: make a vault here and add everything on this iPhone.")
                         .font(.plex(13))
                         .foregroundStyle(Color.inkSecondary)
                         .multilineTextAlignment(.center)
@@ -106,13 +109,16 @@ struct WelcomeView: View {
             if env["STASH_SIM_SHOW"] == "create" { creating = true }
             if let pw = env["STASH_SIM_CREATE"] {
                 await model.createVault(password: pw)
-                try? model.addPayment(fields: ["kind": "card", "cardholder": "Samus Aran", "number": "4242424242424242",
+                try? model.addItem(fields: ["kind": "login", "username": "samus@example.com", "password": "Sample-Only-Password1",
+                                            "website": "https://github.com", "otp": "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP"],
+                                   folder: "logins", nickname: "", suggested: "github")
+                try? model.addItem(fields: ["kind": "card", "cardholder": "Samus Aran", "number": "4242424242424242",
                                                "expiry": "08/27", "cvv": "123", "billing_zip": "12345"],
                                       folder: "cards", nickname: "", suggested: "visa-4242")
-                try? model.addPayment(fields: ["kind": "card", "cardholder": "Samus Aran", "number": "5555555555554444",
+                try? model.addItem(fields: ["kind": "card", "cardholder": "Samus Aran", "number": "5555555555554444",
                                                "expiry": "11/28", "cvv": "456"],
                                       folder: "cards", nickname: "", suggested: "mastercard-4444")
-                try? model.addPayment(fields: ["kind": "bank", "bank": "Chase", "holder": "Samus Aran", "account_type": "checking",
+                try? model.addItem(fields: ["kind": "bank", "bank": "Chase", "holder": "Samus Aran", "account_type": "checking",
                                                "routing": "021000021", "account_number": "000123456789"],
                                       folder: "banks", nickname: "", suggested: "chase-6789")
             }
@@ -157,7 +163,7 @@ struct LockView: View {
             StashMark(size: 76)
             VStack(spacing: 6) {
                 Wordmark(size: 30)
-                Text("Your cards, one glance away.").font(.plex(15)).foregroundStyle(Color.inkSecondary)
+                Text("Your vault, one glance away.").font(.plex(15)).foregroundStyle(Color.inkSecondary)
             }
             if model.faceIDEnrolled {
                 Button {
@@ -230,23 +236,33 @@ struct VaultListView: View {
     @State private var choosing = false
     @State private var path: [PhoneItem] = []
     @State private var adding: PaymentKind?
+    @State private var addingLogin = false
+    @State private var search = ""
+
+    private func matching(_ items: [PhoneItem]) -> [PhoneItem] {
+        guard !search.isEmpty else { return items }
+        return items.filter {
+            $0.name.localizedCaseInsensitiveContains(search)
+                || ($0.subtitle?.localizedCaseInsensitiveContains(search) ?? false)
+        }
+    }
 
     var body: some View {
         NavigationStack(path: $path) {
             List {
-                if !model.cards.isEmpty {
-                    Section("Cards") { ForEach(model.cards) { row($0) } }
-                }
-                if !model.banks.isEmpty {
-                    Section("Bank Accounts") { ForEach(model.banks) { row($0) } }
-                }
+                section("Cards", matching(model.cards))
+                section("Bank Accounts", matching(model.banks))
+                section("Logins", matching(model.logins))
                 if model.items.isEmpty {
                     Text(model.madeHere
-                         ? "Nothing here yet. Tap + to add a card or bank account."
-                         : "No cards or bank accounts in this vault.")
+                         ? "Nothing here yet. Tap + to add a login, card, or bank account."
+                         : "Nothing in this vault yet.")
                         .foregroundStyle(Color.inkSecondary)
                 }
             }
+            .searchable(text: $search, prompt: "Search")
+            .autocorrectionDisabled()
+            .textInputAutocapitalization(.never)
             .scrollContentBackground(.hidden)
             .background(Color.canvas)
             .navigationTitle("stash")
@@ -262,6 +278,7 @@ struct VaultListView: View {
                 }
                 if env["STASH_SIM_SHOW"] == "add-card" { adding = .card }
                 if env["STASH_SIM_SHOW"] == "add-bank" { adding = .bank }
+                if env["STASH_SIM_SHOW"] == "add-login" { addingLogin = true }
             }
             #endif
             .toolbar {
@@ -281,6 +298,7 @@ struct VaultListView: View {
                 ToolbarItemGroup(placement: .topBarTrailing) {
                     if model.madeHere {
                         Menu {
+                            Button("Add a Login", systemImage: "person.badge.key") { addingLogin = true }
                             Button("Add a Card", systemImage: "creditcard") { adding = .card }
                             Button("Add a Bank Account", systemImage: "building.columns") { adding = .bank }
                         } label: {
@@ -291,6 +309,7 @@ struct VaultListView: View {
                 }
             }
             .sheet(item: $adding) { AddPaymentView(kind: $0).privacyCovered() }
+            .sheet(isPresented: $addingLogin) { LoginFormView().privacyCovered() }
             .fileImporter(isPresented: $choosing, allowedContentTypes: [.stashVault, .data]) { result in
                 if case .success(let url) = result { model.received(url) }
             }
@@ -301,7 +320,7 @@ struct VaultListView: View {
             } message: {
                 Text(model.error ?? "")
             }
-            .confirmationDialog("Remove your cards and bank accounts from this iPhone?",
+            .confirmationDialog("Remove this vault from this iPhone?",
                                 isPresented: $confirmRemove, titleVisibility: .visible) {
                 Button("Remove", role: .destructive) { model.removeVault() }
             } message: {
@@ -309,6 +328,13 @@ struct VaultListView: View {
                      ? "This is the only copy of them, and it can't be undone."
                      : "They stay in your vault on your Mac.")
             }
+        }
+    }
+
+    @ViewBuilder
+    private func section(_ title: String, _ items: [PhoneItem]) -> some View {
+        if !items.isEmpty {
+            Section(title) { ForEach(items) { row($0) } }
         }
     }
 
@@ -343,6 +369,7 @@ struct DetailView: View {
     @State private var shown: [String: String] = [:]
     @State private var confirmDelete = false
     @State private var editing = false
+    @State private var finish: CardFinish?
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
@@ -352,13 +379,27 @@ struct DetailView: View {
                     CardFaceView(face: face,
                                  cardholder: detail.value("cardholder"),
                                  expiry: detail.value("expiry"),
-                                 revealCVV: { model.reveal(item.name, "cvv") })
+                                 revealCVV: { model.reveal(item.name, "cvv") },
+                                 finish: finish)
                         .padding(.vertical, 8)
                         .listRowBackground(Color.clear)
                         .listRowInsets(EdgeInsets())
+                    Section("Card Color") {
+                        CardColorPicker(selection: Binding(get: { finish }, set: { new in
+                            finish = new
+                            model.setCardColor(item.name, new)
+                        }))
+                        .listRowBackground(Color.surface)
+                    }
                 }
                 Section {
-                    ForEach(detail.fields) { field in fieldRow(field) }
+                    ForEach(detail.fields) { field in
+                        if field.kind == .otp {
+                            OTPRow(name: item.name)
+                        } else {
+                            fieldRow(field)
+                        }
+                    }
                 }
                 if detail.hasNotes {
                     Section { fieldRow(FieldInfo(label: "notes", kind: .concealed, value: nil)) }
@@ -386,17 +427,20 @@ struct DetailView: View {
             }
         }
         .sheet(isPresented: $editing) {
-            AddPaymentView(kind: item.kind == .bank ? .bank : .card, editing: item) { saved in
-                shown = [:]
-                // A new nickname is a new item: back to the list to find it.
-                if saved == item.name { detail = model.detail(saved) } else { dismiss() }
+            Group {
+                if item.kind == .login {
+                    LoginFormView(editing: item, onSaved: saved)
+                } else {
+                    AddPaymentView(kind: item.kind == .bank ? .bank : .card, editing: item, onSaved: saved)
+                }
             }
             .privacyCovered()
         }
         #if DEBUG
         .onAppear {
             // Simulator checks only (never in release builds).
-            if ProcessInfo.processInfo.environment["STASH_SIM_SHOW"] == "edit" { editing = true }
+            let env = ProcessInfo.processInfo.environment
+            if env["STASH_SIM_SHOW"] == "edit" { editing = true }
         }
         #endif
         .confirmationDialog("Delete \(item.title)?", isPresented: $confirmDelete, titleVisibility: .visible) {
@@ -406,8 +450,27 @@ struct DetailView: View {
         } message: {
             Text("This is the only copy, and it can't be undone.")
         }
-        .onAppear { detail = model.detail(item.name) }
+        .onAppear {
+            detail = model.detail(item.name)
+            finish = detail?.cardColor.flatMap(CardFinish.init(rawValue:))
+            #if DEBUG
+            if let color = ProcessInfo.processInfo.environment["STASH_SIM_COLOR"] { finish = CardFinish(rawValue: color) }
+            #endif
+        }
         .onDisappear { shown = [:] }
+    }
+
+    private func saved(_ name: String) {
+        shown = [:]
+        // A new nickname is a new item: back to the list to find it.
+        if name == item.name { detail = model.detail(name) } else { dismiss() }
+    }
+
+    /// Where a saved website opens: web addresses only.
+    private func link(_ value: String?) -> URL? {
+        guard let value, !value.isEmpty else { return nil }
+        let url = URL(string: value.contains("://") ? value : "https://\(value)")
+        return ["http", "https"].contains(url?.scheme?.lowercased()) ? url : nil
     }
 
     private func fieldRow(_ field: FieldInfo) -> some View {
@@ -423,6 +486,13 @@ struct DetailView: View {
                     .textSelection(.enabled)
             }
             Spacer()
+            if field.kind == .url, let url = link(field.value) {
+                Link(destination: url) {
+                    Image(systemName: "arrow.up.right.square")
+                }
+                .buttonStyle(.borderless)
+                .accessibilityLabel("Open website")
+            }
             if field.value == nil {
                 Button {
                     toggle(field.label)
@@ -453,6 +523,7 @@ struct DetailView: View {
         case "iban": "IBAN"
         case "swift": "SWIFT"
         case "billing zip": "Billing ZIP"
+        case "routing number": "Routing Number"
         default: label.capitalized
         }
     }
@@ -468,5 +539,57 @@ struct DetailView: View {
             try? await Task.sleep(for: .seconds(30))
             shown[label] = nil
         }
+    }
+}
+
+/// A login's 2FA code, kept current, with the time it has left.
+struct OTPRow: View {
+    @EnvironmentObject var model: PhoneModel
+    let name: String
+
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 1)) { _ in
+            let otp = model.otp(name)
+            HStack(spacing: 10) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("2FA Code")
+                        .font(.plex(12.5, weight: .medium))
+                        .foregroundStyle(Color.inkSecondary)
+                    Text(otp.map { grouped($0.code) } ?? "——— ———")
+                        .font(.mono(20, weight: .semibold))
+                        .foregroundStyle(Color.ink)
+                        .contentTransition(.numericText())
+                }
+                Spacer()
+                if let otp {
+                    ZStack {
+                        Circle().stroke(Color.line, lineWidth: 2.5)
+                        Circle()
+                            .trim(from: 0, to: CGFloat(otp.remaining) / CGFloat(max(otp.period, 1)))
+                            .stroke(otp.remaining <= 5 ? Color.danger : Color.inkSecondary,
+                                    style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
+                            .rotationEffect(.degrees(-90))
+                        Text("\(otp.remaining)")
+                            .font(.mono(10.5, weight: .medium))
+                            .foregroundStyle(Color.inkSecondary)
+                    }
+                    .frame(width: 28, height: 28)
+                    .accessibilityLabel("\(otp.remaining) seconds left")
+                }
+                Button {
+                    if let code = model.otp(name)?.code { model.copy(code, label: "2FA code") }
+                } label: {
+                    Image(systemName: "doc.on.doc")
+                }
+                .buttonStyle(.borderless)
+                .accessibilityLabel("Copy 2FA code")
+            }
+        }
+        .listRowBackground(Color.surface)
+    }
+
+    private func grouped(_ code: String) -> String {
+        let middle = code.count / 2
+        return "\(code.prefix(middle)) \(code.suffix(code.count - middle))"
     }
 }

@@ -22,6 +22,8 @@ final class PhoneModel: ObservableObject {
     /// A checked vault file is waiting to replace the current one (asks first).
     @Published var pendingImport = false
     @Published var faceIDEnrolled = FaceIDKeys.enrolled
+    /// The unlock animation is playing over the vault.
+    @Published var unlocking = false
     /// This vault was made here, so it's the only copy and can be changed
     /// here. One from the Mac stays read-only: changes belong on the Mac.
     @Published var madeHere = UserDefaults.standard.bool(forKey: madeHereKey) {
@@ -48,6 +50,7 @@ final class PhoneModel: ObservableObject {
 
     var cards: [PhoneItem] { items.filter { $0.kind == .card } }
     var banks: [PhoneItem] { items.filter { $0.kind == .bank } }
+    var logins: [PhoneItem] { items.filter { $0.kind == .login } }
 
     // MARK: Getting the vault
 
@@ -212,7 +215,7 @@ final class PhoneModel: ObservableObject {
 
     func unlockWithFaceID() async {
         do {
-            let keys = try await FaceIDKeys.unlock(reason: "Unlock your cards and bank accounts")
+            let keys = try await FaceIDKeys.unlock(reason: "Unlock your vault")
             await open { try VaultCore.open(path: Self.vaultURL, keys: keys) }
         } catch is CancellationError {
         } catch {
@@ -234,6 +237,7 @@ final class PhoneModel: ObservableObject {
             }
             core = opened
             items = try opened.list()
+            unlocking = true
             screen = .unlocked
             error = nil
         } catch {
@@ -246,6 +250,7 @@ final class PhoneModel: ObservableObject {
         core?.close()
         core = nil
         items = []
+        unlocking = false
         if screen == .unlocked { screen = .locked }
     }
 
@@ -299,12 +304,12 @@ final class PhoneModel: ObservableObject {
         }
     }
 
-    /// Add a card or bank account to a vault made here. The name comes from
-    /// the nickname or `suggested`, made unique. Throws why it was refused.
-    func addPayment(fields: [String: String], folder: String, nickname: String, suggested: String) throws {
+    /// Add a login, card, or bank account to a vault made here. The name comes
+    /// from the nickname or `suggested`, made unique. Throws why it was refused.
+    func addItem(fields: [String: String], folder: String, nickname: String, suggested: String) throws {
         guard madeHere, let core else { throw VaultError(message: "This vault can only be changed on your Mac.") }
         let name = unusedName(folder: folder, nickname: nickname, suggested: suggested)
-        try core.addPayment(name: name, fields: fields)
+        try core.addItem(name: name, fields: fields)
         items = try core.list()
         flash("Added \(name.split(separator: "/").last ?? "")")
     }
@@ -321,7 +326,8 @@ final class PhoneModel: ObservableObject {
         return name
     }
 
-    /// Every value of an item, to fill in its edit form.
+    /// Every value of an item, to fill in its edit form. Not its 2FA secret,
+    /// which stays put unless replaced.
     func editableValues(_ name: String) -> [String: String] {
         guard madeHere, let core, let detail = try? core.item(name) else { return [:] }
         var values: [String: String] = [:]
@@ -331,24 +337,35 @@ final class PhoneModel: ObservableObject {
         return values
     }
 
-    /// Save changes to a card or bank account in a vault made here, and
-    /// return its name, which changes if the nickname did. The renamed copy
+    /// Save changes to an item in a vault made here, and return its name, which changes if the nickname did. The renamed copy
     /// is saved before the old one goes, so a failure can't lose it.
-    func updatePayment(_ item: PhoneItem, fields: [String: String], folder: String, nickname: String) throws -> String {
+    func updateItem(_ item: PhoneItem, fields: [String: String], folder: String, nickname: String) throws -> String {
         guard madeHere, let core else { throw VaultError(message: "This vault can only be changed on your Mac.") }
         let slug = Self.slug(nickname)
         var name = item.name
         if slug.isEmpty || slug == Self.slug(item.title) {
-            try core.updatePayment(name: name, fields: fields)
+            try core.updateItem(name: name, fields: fields)
         } else {
             name = unusedName(folder: folder, nickname: nickname, suggested: slug)
-            try core.addPayment(name: name, fields: fields)
+            try core.addItem(name: name, fields: fields)
             try core.remove(item.name)
         }
         items = try core.list()
         flash("Saved \(name.split(separator: "/").last ?? "")")
         return name
     }
+
+    /// A card's color only changes how it looks, so any vault allows it.
+    func setCardColor(_ name: String, _ finish: CardFinish?) {
+        do {
+            try core?.setCardColor(name, color: finish?.rawValue ?? "")
+        } catch {
+            self.error = error.localizedDescription
+        }
+    }
+
+    /// A login's current 2FA code.
+    func otp(_ name: String) -> PhoneOTP? { try? core?.otp(name) }
 
     /// Delete an item from a vault made here.
     func removeItem(_ name: String) -> Bool {

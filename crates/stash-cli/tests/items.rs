@@ -744,4 +744,17 @@ fn exports_a_payments_only_vault_for_the_phone() {
         .assert()
         .failure()
         .stderr(predicate::str::contains("--force"));
+
+    // Logins come along only when asked for.
+    stash(&dir)
+        .args(["export", "--phone"])
+        .arg(&phone)
+        .args(["--force", "--logins"])
+        .env("STASH_NEW_PASSWORD", "phone-password")
+        .assert()
+        .success()
+        .stderr(predicate::str::contains(", and 1 login"));
+    let listed = open_phone().arg("ls").assert().success();
+    let listed = String::from_utf8(listed.get_output().stdout.clone()).unwrap();
+    assert!(listed.contains("cards/visa") && listed.contains("github"));
 }

@@ -74,6 +74,7 @@ struct CardFaceView: View {
     let cardholder: String?
     let expiry: String?
     let revealCVV: () async -> String?
+    var finish: CardFinish?
 
     @ViewState private var flipped = PremiumCard.startFlipped
     @ViewState private var cvv: String?
@@ -88,7 +89,8 @@ struct CardFaceView: View {
                     : "•••• •••• •••• \(face.last4)",
                 cardholder: cardholder,
                 expiry: expiry,
-                cvv: cvv),
+                cvv: cvv,
+                finish: finish),
             flipped: flipped)
             .frame(maxWidth: .infinity)
             .contentShape(Rectangle())
