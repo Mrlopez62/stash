@@ -155,9 +155,9 @@ final class VaultCore: @unchecked Sendable {
         return try decode(json, error)
     }
 
-    static func generatePassword() throws -> String {
+    static func generatePassword(length: Int, symbols: Bool) throws -> String {
         var error: UnsafeMutablePointer<CChar>?
-        guard let value = stash_generate_password(&error) else { throw take(error) }
+        guard let value = stash_generate_password(length, symbols, &error) else { throw take(error) }
         defer { stash_string_free(value) }
         return String(cString: value)
     }

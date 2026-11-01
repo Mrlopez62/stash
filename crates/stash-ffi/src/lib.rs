@@ -359,10 +359,20 @@ pub unsafe extern "C" fn stash_otp(
     }
 }
 
-/// A new random password. Free it with [`stash_string_free`], which wipes it.
+/// A new random password of letters and digits, and symbols if asked for (some
+/// sites refuse them). Free it with [`stash_string_free`], which wipes it.
 #[unsafe(no_mangle)]
-pub extern "C" fn stash_generate_password(error: *mut *mut c_char) -> *mut c_char {
-    match generate::password(generate::Rules::default()) {
+pub extern "C" fn stash_generate_password(
+    length: usize,
+    symbols: bool,
+    error: *mut *mut c_char,
+) -> *mut c_char {
+    let rules = generate::Rules {
+        length,
+        symbols,
+        ..generate::Rules::default()
+    };
+    match generate::password(rules) {
         Ok(password) => to_c(password.to_string()),
         Err(e) => {
             set_error(error, e.to_string());
@@ -811,8 +821,13 @@ mod tests {
                 .contains(r#""card_color":null"#)
         );
 
-        let generated = take(stash_generate_password(ptr::null_mut()));
+        let generated = take(stash_generate_password(24, true, ptr::null_mut()));
         assert_eq!(generated.chars().count(), 24);
+        let plain = take(stash_generate_password(16, false, ptr::null_mut()));
+        assert_eq!(plain.chars().count(), 16);
+        assert!(plain.chars().all(|c| c.is_ascii_alphanumeric()));
+        assert!(stash_generate_password(1, true, &mut error).is_null());
+        take(error);
 
         let bank_name = CString::new("banks/chase-6789").unwrap();
         let bank = CString::new(

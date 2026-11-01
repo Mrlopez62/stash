@@ -22,6 +22,8 @@ final class PhoneModel: ObservableObject {
     /// A checked vault file is waiting to replace the current one (asks first).
     @Published var pendingImport = false
     @Published var faceIDEnrolled = FaceIDKeys.enrolled
+    /// After a password unlock: ask whether to use Face ID from now on.
+    @Published var askAboutFaceID = false
     /// The unlock animation is playing over the vault.
     @Published var unlocking = false
     /// This vault was made here, so it's the only copy and can be changed
@@ -121,7 +123,7 @@ final class PhoneModel: ObservableObject {
             faceIDEnrolled = false
             await open { try VaultCore.open(path: Self.vaultURL, keys: keys) }
             if screen == .unlocked {
-                enrollFaceID()
+                offerFaceIDSetup()
             } else {
                 screen = .locked
             }
@@ -198,19 +200,18 @@ final class PhoneModel: ObservableObject {
     func unlock(password: String) async {
         guard !password.isEmpty else { return }
         await open { try VaultCore.open(path: Self.vaultURL, password: password) }
-        // First unlock with the password: Face ID from now on, unless it was
-        // turned off.
-        if screen == .unlocked { enrollFaceID() }
+        if screen == .unlocked { offerFaceIDSetup() }
     }
 
-    private func enrollFaceID() {
-        guard FaceIDKeys.available, !FaceIDKeys.enrolled, !FaceIDKeys.turnedOff, let keys = core?.copyKeys() else { return }
-        do {
-            try FaceIDKeys.enroll(keys)
-            faceIDEnrolled = true
-        } catch {
-            self.error = "Face ID couldn't be set up: \(error.localizedDescription)"
-        }
+    /// Face ID opens every card and password here, so it's your choice: ask,
+    /// once. Saying no sticks until you turn it on in Settings.
+    private func offerFaceIDSetup() {
+        askAboutFaceID = FaceIDKeys.available && !FaceIDKeys.enrolled && !FaceIDKeys.turnedOff
+    }
+
+    func answerFaceIDQuestion(useIt: Bool) {
+        askAboutFaceID = false
+        setFaceID(useIt)
     }
 
     func unlockWithFaceID() async {
@@ -251,6 +252,7 @@ final class PhoneModel: ObservableObject {
         core = nil
         items = []
         unlocking = false
+        askAboutFaceID = false
         if screen == .unlocked { screen = .locked }
     }
 

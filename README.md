@@ -66,7 +66,7 @@ stash export --phone ~/Desktop/phone.stashvault   # asks for Touch ID, then a pa
 ./scripts/ios-install.sh                          # build and install the app on your plugged-in iPhone
 ```
 
-Then AirDrop `phone.stashvault` to your iPhone and open it in stash (or, in Finder, drop it on your iPhone under Files → stash), unlock it with the password you chose, and delete the file from your Desktop. From then on, Face ID opens it.
+Then AirDrop `phone.stashvault` to your iPhone and open it in stash (or, in Finder, drop it on your iPhone under Files → stash), unlock it with the password you chose, and delete the file from your Desktop. stash then asks whether to use Face ID from now on, and you can change that in Settings.
 
 To bring your logins and their 2FA too, add `--logins` to the export.
 

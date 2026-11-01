@@ -142,9 +142,12 @@ struct StashMarkKeyhole: Shape {
 /// Motion, a quick fade instead.
 struct UnlockCurtain: View {
     let finished: () -> Void
-    private let size: CGFloat = 92
+    static let markSize: CGFloat = 92
+    private let size = markSize
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.scenePhase) private var phase
+    @State private var started = false
     @State private var scale: CGFloat = 0.94
     @State private var keyIn = false
     @State private var turn: Double = 0
@@ -183,7 +186,13 @@ struct UnlockCurtain: View {
         .allowsHitTesting(false)
         .accessibilityHidden(true)
         .sensoryFeedback(.impact(weight: .light, intensity: 0.7), trigger: clicked)
-        .task { await play() }
+        // Not until the app is active: as the Face ID prompt closes it isn't
+        // yet, and the privacy cover would hide the whole animation.
+        .task(id: phase) {
+            guard phase == .active, !started else { return }
+            started = true
+            await play()
+        }
     }
 
     private func wait(_ seconds: Double) async {

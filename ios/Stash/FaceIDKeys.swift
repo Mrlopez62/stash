@@ -26,8 +26,8 @@ enum FaceIDKeys {
 
     static var enrolled: Bool { FileManager.default.fileExists(atPath: file.path) }
 
-    /// Face ID is off until you turn it back on yourself: you turned it off,
-    /// or the faces on this iPhone changed. A password unlock never undoes it.
+    /// Face ID is off until you turn it back on yourself: you said no, turned
+    /// it off, or the faces on this iPhone changed. Nothing else undoes it.
     static var turnedOff: Bool {
         get { UserDefaults.standard.bool(forKey: "faceIDTurnedOff") }
         set { UserDefaults.standard.set(newValue, forKey: "faceIDTurnedOff") }
@@ -86,7 +86,7 @@ enum FaceIDKeys {
             // stays off until you choose to trust the faces here now.
             forget()
             turnedOff = true
-            throw VaultError(message: "The faces on this iPhone changed, so Face ID is off for stash. Unlock with the password. If the change was yours, turn it back on from the ⋯ menu.")
+            throw VaultError(message: "The faces on this iPhone changed, so Face ID is off for stash. Unlock with the password. If the change was yours, turn it back on in Settings.")
         }
         let key = wrappingKey(shared, ephemeral: ephemeralPub, recipient: seKey.publicKey.x963Representation)
         return try ChaChaPoly.open(ChaChaPoly.SealedBox(combined: sealed), using: key)

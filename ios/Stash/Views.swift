@@ -62,7 +62,7 @@ struct WelcomeView: View {
                         .foregroundStyle(Color.ink)
                     step(1, "On your Mac, run:", code: "stash export --phone ~/Desktop/phone.stashvault")
                     step(2, "AirDrop phone.stashvault to this iPhone and open it in stash. Or, in Finder, drop it on this iPhone under Files → stash.")
-                    step(3, "Unlock it with the password you chose. After that, Face ID.")
+                    step(3, "Unlock it with the password you chose. stash then offers Face ID.")
                     step(4, "Delete the file from your Mac's Desktop.")
                 }
                 .padding(18)
@@ -232,8 +232,7 @@ struct LockView: View {
 
 struct VaultListView: View {
     @EnvironmentObject var model: PhoneModel
-    @State private var confirmRemove = false
-    @State private var choosing = false
+    @State private var showingSettings = false
     @State private var path: [PhoneItem] = []
     @State private var adding: PaymentKind?
     @State private var addingLogin = false
@@ -279,20 +278,15 @@ struct VaultListView: View {
                 if env["STASH_SIM_SHOW"] == "add-card" { adding = .card }
                 if env["STASH_SIM_SHOW"] == "add-bank" { adding = .bank }
                 if env["STASH_SIM_SHOW"] == "add-login" { addingLogin = true }
+                if env["STASH_SIM_SHOW"] == "settings" { showingSettings = true }
+                if env["STASH_SIM_SHOW"] == "ask-face-id" { model.askAboutFaceID = true }
             }
             #endif
             .toolbar {
                 ToolbarItem(placement: .principal) { Wordmark(size: 19) }
                 ToolbarItem(placement: .topBarLeading) {
-                    Menu {
-                        if FaceIDKeys.available {
-                            Toggle("Unlock with Face ID", isOn: Binding(
-                                get: { model.faceIDEnrolled }, set: { model.setFaceID($0) }))
-                        }
-                        Button("Replace with a New File…", systemImage: "arrow.triangle.2.circlepath") { choosing = true }
-                        Button("Remove from This iPhone", systemImage: "trash", role: .destructive) { confirmRemove = true }
-                    } label: {
-                        Image(systemName: "ellipsis.circle")
+                    Button { showingSettings = true } label: {
+                        Label("Settings", systemImage: "gearshape")
                     }
                 }
                 ToolbarItemGroup(placement: .topBarTrailing) {
@@ -310,8 +304,14 @@ struct VaultListView: View {
             }
             .sheet(item: $adding) { AddPaymentView(kind: $0).privacyCovered() }
             .sheet(isPresented: $addingLogin) { LoginFormView().privacyCovered() }
-            .fileImporter(isPresented: $choosing, allowedContentTypes: [.stashVault, .data]) { result in
-                if case .success(let url) = result { model.received(url) }
+            .sheet(isPresented: $showingSettings) { SettingsView().privacyCovered() }
+            .alert("Use Face ID to unlock stash?", isPresented: Binding(
+                get: { model.askAboutFaceID && !model.unlocking }, set: { _ in })
+            ) {
+                Button("Use Face ID") { model.answerFaceIDQuestion(useIt: true) }
+                Button("Not Now", role: .cancel) { model.answerFaceIDQuestion(useIt: false) }
+            } message: {
+                Text("Anyone whose face is set up on this iPhone could open your vault. You can change this any time in Settings.")
             }
             .alert("Something went wrong", isPresented: Binding(
                 get: { model.error != nil }, set: { if !$0 { model.error = nil } })
@@ -319,14 +319,6 @@ struct VaultListView: View {
                 Button("OK", role: .cancel) { model.error = nil }
             } message: {
                 Text(model.error ?? "")
-            }
-            .confirmationDialog("Remove this vault from this iPhone?",
-                                isPresented: $confirmRemove, titleVisibility: .visible) {
-                Button("Remove", role: .destructive) { model.removeVault() }
-            } message: {
-                Text(model.madeHere
-                     ? "This is the only copy of them, and it can't be undone."
-                     : "They stay in your vault on your Mac.")
             }
         }
     }

@@ -39,7 +39,7 @@ struct CreateVaultView: View {
                     if let problem {
                         Text(problem).foregroundStyle(Color.danger)
                     } else {
-                        Text("You'll type it if Face ID isn't available. Nobody can reset it for you.")
+                        Text("You'll need it whenever Face ID is off. Nobody can reset it for you.")
                     }
                 }
                 .listRowBackground(Color.surface)
@@ -422,6 +422,10 @@ struct LoginFormView: View {
     @State private var username = ""
     @State private var password = ""
     @State private var showPassword = false
+    /// The generator's settings, shown once you've used it.
+    @State private var generated = false
+    @State private var length = 24
+    @State private var symbols = true
     @State private var setupKey = ""
     /// It has 2FA already. The secret isn't read back: it stays or goes.
     @State private var hasOTP = false
@@ -460,8 +464,18 @@ struct LoginFormView: View {
                         .accessibilityLabel(showPassword ? "Hide password" : "Show password")
                     }
                     Button(action: generate) {
-                        Label("Generate a Strong Password", systemImage: "wand.and.stars")
+                        Label(generated ? "Generate Another" : "Generate a Strong Password", systemImage: "wand.and.stars")
                             .foregroundStyle(Color.ink)
+                    }
+                    if generated {
+                        Stepper("Length: \(length)", value: $length, in: 8...64)
+                            .onChange(of: length) { generate() }
+                        Toggle("Symbols", isOn: $symbols)
+                            .onChange(of: symbols) { generate() }
+                    }
+                } footer: {
+                    if generated {
+                        Text("Letters and numbers\(symbols ? ", plus symbols like ! ? = ( ) ; : and -" : ""). If a site refuses it, try fewer characters or turn off symbols.")
                     }
                 }
                 .listRowBackground(Color.surface)
@@ -502,6 +516,12 @@ struct LoginFormView: View {
             } message: {
                 Text(error ?? "")
             }
+            #if DEBUG
+            .onAppear {
+                // Simulator checks only (never in release builds).
+                if ProcessInfo.processInfo.environment["STASH_SIM_GENERATE"] != nil { generate() }
+            }
+            #endif
             .navigationTitle(editing == nil ? "New Login" : "Edit Login")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -541,8 +561,9 @@ struct LoginFormView: View {
 
     private func generate() {
         do {
-            password = try VaultCore.generatePassword()
+            password = try VaultCore.generatePassword(length: length, symbols: symbols)
             showPassword = true
+            generated = true
         } catch {
             self.error = error.localizedDescription
         }
@@ -564,6 +585,72 @@ struct LoginFormView: View {
             dismiss()
         } catch {
             self.error = error.localizedDescription
+        }
+    }
+}
+
+// MARK: - Settings
+
+struct SettingsView: View {
+    @EnvironmentObject var model: PhoneModel
+    @Environment(\.dismiss) private var dismiss
+    @State private var choosing = false
+    @State private var confirmRemove = false
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    if FaceIDKeys.available {
+                        Toggle("Unlock with Face ID", isOn: Binding(
+                            get: { model.faceIDEnrolled }, set: { model.setFaceID($0) }))
+                            .tint(.keyholeAmber)
+                    } else {
+                        LabeledContent("Unlock with Face ID", value: "Not available")
+                    }
+                } footer: {
+                    Text(model.faceIDEnrolled
+                         ? "stash asks for Face ID when you open it. Your password still works."
+                         : "stash asks for your vault password every time you open it.")
+                }
+                .listRowBackground(Color.surface)
+
+                Section("This Vault") {
+                    Button {
+                        choosing = true
+                    } label: {
+                        Label("Replace with a New File…", systemImage: "arrow.triangle.2.circlepath")
+                            .foregroundStyle(Color.ink)
+                    }
+                    Button("Remove from This iPhone", systemImage: "trash", role: .destructive) { confirmRemove = true }
+                }
+                .listRowBackground(Color.surface)
+            }
+            .font(.plex(16))
+            .scrollContentBackground(.hidden)
+            .background(Color.canvas)
+            .navigationTitle("Settings")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }.tint(.inkSecondary)
+                }
+            }
+            .fileImporter(isPresented: $choosing, allowedContentTypes: [.stashVault, .data]) { result in
+                if case .success(let url) = result {
+                    // Replacing asks first, and that question needs this sheet gone.
+                    dismiss()
+                    model.received(url)
+                }
+            }
+            .confirmationDialog("Remove this vault from this iPhone?",
+                                isPresented: $confirmRemove, titleVisibility: .visible) {
+                Button("Remove", role: .destructive) { model.removeVault() }
+            } message: {
+                Text(model.madeHere
+                     ? "This is the only copy of them, and it can't be undone."
+                     : "They stay in your vault on your Mac.")
+            }
         }
     }
 }
