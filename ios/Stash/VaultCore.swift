@@ -131,13 +131,19 @@ final class VaultCore: @unchecked Sendable {
         if !ok { throw Self.take(error) }
     }
 
-    /// Replace an existing item's details. See `stash_update_item` for what's
-    /// kept when `fields` leaves it out.
-    func updateItem(name: String, fields: [String: String]) throws {
+    /// Replace an existing item's details, and rename it if `newName` is set.
+    /// See `stash_update_item` for what's kept when `fields` leaves it out.
+    func updateItem(name: String, newName: String? = nil, fields: [String: String]) throws {
         let data = try JSONSerialization.data(withJSONObject: fields)
         var error: UnsafeMutablePointer<CChar>?
         let ok = name.withCString { n in
-            String(decoding: data, as: UTF8.self).withCString { stash_update_item(handle, n, $0, &error) }
+            String(decoding: data, as: UTF8.self).withCString { json in
+                if let newName {
+                    newName.withCString { stash_update_item(handle, n, $0, json, &error) }
+                } else {
+                    stash_update_item(handle, n, nil, json, &error)
+                }
+            }
         }
         if !ok { throw Self.take(error) }
     }

@@ -38,8 +38,10 @@
 
 use std::fs::{self, OpenOptions};
 use std::io::ErrorKind;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
+use rusqlite::config::DbConfig;
 use rusqlite::{Connection, OpenFlags, OptionalExtension, TransactionBehavior, params};
 use secrecy::SecretSlice;
 use sha2::{Digest, Sha256};
@@ -372,11 +374,15 @@ impl Vault {
     /// password. For rejecting other files before they replace a vault.
     pub fn check_file(path: &Path) -> Result<()> {
         let not_a_vault = || Error::NotAVault(path.to_owned());
+        if !has_sqlite_header(path) {
+            return Err(not_a_vault());
+        }
         let conn = Connection::open_with_flags(
             path,
             OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
         )
         .map_err(|_| not_a_vault())?;
+        harden(&conn).map_err(|_| not_a_vault())?;
         let version: i64 = meta(&conn, "format_version").map_err(|_| not_a_vault())?;
         let _: Vec<u8> = meta(&conn, "wrapped_key").map_err(|_| not_a_vault())?;
         if version != FORMAT_VERSION {
@@ -1270,9 +1276,27 @@ fn connect(path: &Path) -> Result<Connection> {
     )?;
     // Wait briefly for another stash process instead of failing at once.
     conn.busy_timeout(std::time::Duration::from_secs(5))?;
+    harden(&conn)?;
     // Overwrite deleted rows with zeros instead of leaving them in free pages.
     conn.execute_batch("PRAGMA secure_delete = ON;")?;
     Ok(conn)
+}
+
+/// A vault file can come from anywhere (AirDrop, a backup), and it's read
+/// before anything has authenticated it: its schema gets no say in what runs.
+fn harden(conn: &Connection) -> Result<()> {
+    conn.set_db_config(DbConfig::SQLITE_DBCONFIG_DEFENSIVE, true)?;
+    conn.set_db_config(DbConfig::SQLITE_DBCONFIG_TRUSTED_SCHEMA, false)?;
+    Ok(())
+}
+
+/// Whether a file starts like a SQLite database, checked before SQLite parses it.
+fn has_sqlite_header(path: &Path) -> bool {
+    let mut header = [0u8; 16];
+    fs::File::open(path)
+        .and_then(|mut f| f.read_exact(&mut header))
+        .is_ok()
+        && &header == b"SQLite format 3\0"
 }
 
 /// Open an existing vault file and check its format version.

@@ -223,15 +223,19 @@ pub unsafe extern "C" fn stash_add_item(
 /// Replace an item's details, keeping when it was created and its notes. It
 /// must already exist and stay the same kind. A login sent without an "otp"
 /// key keeps its 2FA (the apps never read that secret back), and a card
-/// without a color keeps its color. False sets `*error`.
+/// without a color keeps its color. A non-null `new_name` also renames it,
+/// keeping all of that; the new copy is saved before the old one goes, so a
+/// failure can't lose it. False sets `*error`.
 ///
 /// # Safety
 /// `vault` came from a `stash_open_*` or `stash_create` call and holds no
-/// other reference; `name` and `json` are NUL-terminated.
+/// other reference; `name` and `json` are NUL-terminated, and `new_name` is
+/// too unless it's null.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn stash_update_item(
     vault: *mut StashVault,
     name: *const c_char,
+    new_name: *const c_char,
     json: *const c_char,
     error: *mut *mut c_char,
 ) -> bool {
@@ -262,7 +266,17 @@ pub unsafe extern "C" fn stash_update_item(
         {
             item.set(CARD_COLOR, color.kind, color.value.clone());
         }
-        v.vault.put(name, &item, true).map_err(|e| e.to_string())
+        // SAFETY: the caller guarantees it's null or NUL-terminated.
+        match unsafe { from_c(new_name) } {
+            Some(new_name) => {
+                v.vault
+                    .put(new_name, &item, false)
+                    .map_err(|e| e.to_string())?;
+                v.vault.remove(name).map_err(|e| e.to_string())
+            }
+            None if new_name.is_null() => v.vault.put(name, &item, true).map_err(|e| e.to_string()),
+            None => Err("invalid arguments".to_owned()),
+        }
     })();
     match result {
         Ok(()) => true,
@@ -752,16 +766,28 @@ mod tests {
             r#"{"kind":"card","cardholder":"Samus Aran","number":"5555555555554444","expiry":"09/29","cvv":"456"}"#,
         )
         .unwrap();
-        assert!(unsafe { stash_update_item(v, name.as_ptr(), edited.as_ptr(), &mut error) });
+        assert!(unsafe {
+            stash_update_item(v, name.as_ptr(), ptr::null(), edited.as_ptr(), &mut error)
+        });
         assert_eq!(
             take(unsafe { stash_reveal(v, name.as_ptr(), field.as_ptr(), ptr::null_mut()) }),
             "5555555555554444"
         );
         let missing = CString::new("cards/missing").unwrap();
-        assert!(!unsafe { stash_update_item(v, missing.as_ptr(), edited.as_ptr(), &mut error) });
+        assert!(!unsafe {
+            stash_update_item(
+                v,
+                missing.as_ptr(),
+                ptr::null(),
+                edited.as_ptr(),
+                &mut error,
+            )
+        });
         take(error);
         let as_bank = CString::new(r#"{"kind":"bank","bank":"Chase","routing":"021000021","account_number":"000123456789"}"#).unwrap();
-        assert!(!unsafe { stash_update_item(v, name.as_ptr(), as_bank.as_ptr(), &mut error) });
+        assert!(!unsafe {
+            stash_update_item(v, name.as_ptr(), ptr::null(), as_bank.as_ptr(), &mut error)
+        });
         assert!(take(error).contains("can't become"));
 
         // A mistyped card is refused, as on the Mac.
@@ -798,12 +824,65 @@ mod tests {
 
         // Editing without "otp" keeps the 2FA; an empty one removes it.
         let kept = CString::new(r#"{"kind":"login","username":"samus","password":"new"}"#).unwrap();
-        assert!(unsafe { stash_update_item(v, login_name.as_ptr(), kept.as_ptr(), &mut error) });
+        assert!(unsafe {
+            stash_update_item(
+                v,
+                login_name.as_ptr(),
+                ptr::null(),
+                kept.as_ptr(),
+                &mut error,
+            )
+        });
         let code = unsafe { stash_otp(v, login_name.as_ptr(), ptr::null_mut()) };
         assert!(!code.is_null());
         take(code);
+        // Renaming keeps the 2FA too, and never replaces another item.
+        let renamed = CString::new("logins/gh").unwrap();
+        assert!(unsafe {
+            stash_update_item(
+                v,
+                login_name.as_ptr(),
+                renamed.as_ptr(),
+                kept.as_ptr(),
+                &mut error,
+            )
+        });
+        let code = unsafe { stash_otp(v, renamed.as_ptr(), ptr::null_mut()) };
+        assert!(!code.is_null(), "the 2FA moved with the login");
+        take(code);
+        assert!(unsafe { stash_otp(v, login_name.as_ptr(), &mut error) }.is_null());
+        take(error);
+        assert!(!unsafe {
+            stash_update_item(
+                v,
+                renamed.as_ptr(),
+                name.as_ptr(),
+                kept.as_ptr(),
+                &mut error,
+            )
+        });
+        take(error);
+        take(unsafe { stash_otp(v, renamed.as_ptr(), ptr::null_mut()) });
+        assert!(unsafe {
+            stash_update_item(
+                v,
+                renamed.as_ptr(),
+                login_name.as_ptr(),
+                kept.as_ptr(),
+                &mut error,
+            )
+        });
+
         let cleared = CString::new(r#"{"kind":"login","password":"new","otp":""}"#).unwrap();
-        assert!(unsafe { stash_update_item(v, login_name.as_ptr(), cleared.as_ptr(), &mut error) });
+        assert!(unsafe {
+            stash_update_item(
+                v,
+                login_name.as_ptr(),
+                ptr::null(),
+                cleared.as_ptr(),
+                &mut error,
+            )
+        });
         assert!(unsafe { stash_otp(v, login_name.as_ptr(), &mut error) }.is_null());
         take(error);
 
@@ -839,7 +918,9 @@ mod tests {
         // Card colors: known ones only, kept across edits, not shown as a field.
         let plum = CString::new("plum").unwrap();
         assert!(unsafe { stash_set_card_color(v, name.as_ptr(), plum.as_ptr(), &mut error) });
-        assert!(unsafe { stash_update_item(v, name.as_ptr(), edited.as_ptr(), &mut error) });
+        assert!(unsafe {
+            stash_update_item(v, name.as_ptr(), ptr::null(), edited.as_ptr(), &mut error)
+        });
         let shown = take(unsafe { stash_item(v, name.as_ptr(), ptr::null_mut()) });
         let shown: Value = serde_json::from_str(&shown).unwrap();
         assert_eq!(shown["card_color"], "plum");

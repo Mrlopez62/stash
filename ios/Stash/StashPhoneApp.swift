@@ -37,8 +37,35 @@ struct PrivacyCovered: ViewModifier {
     }
 }
 
+/// For everything shown over the vault, which can outlive the screen it came
+/// from when the app is in the background. Locking takes the content, and any
+/// values typed or fetched into it, away at once, and the sheet closes itself.
+struct SheetGuarded: ViewModifier {
+    @EnvironmentObject private var model: PhoneModel
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.scenePhase) private var phase
+
+    func body(content: Content) -> some View {
+        Group {
+            if model.screen == .locked {
+                PrivacyCover()
+            } else {
+                content.modifier(PrivacyCovered())
+            }
+        }
+        .onChange(of: model.screen) { _, new in
+            if new == .locked { dismiss() }
+        }
+        // A dismissal asked for in the background may not have happened yet.
+        .onChange(of: phase) { _, new in
+            if new == .active, model.screen == .locked { dismiss() }
+        }
+    }
+}
+
 extension View {
     func privacyCovered() -> some View { modifier(PrivacyCovered()) }
+    func sheetGuarded() -> some View { modifier(SheetGuarded()) }
 }
 
 struct PrivacyCover: View {

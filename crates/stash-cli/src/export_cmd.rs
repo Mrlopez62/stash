@@ -11,7 +11,11 @@
 use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
-use stash_core::{KdfParams, Kind, Vault};
+use stash_core::item::{
+    ACCOUNT_HOLDER, ACCOUNT_NUMBER, ACCOUNT_TYPE, BANK_NAME, BILLING_ZIP, CARD_NUMBER, CARDHOLDER,
+    CVV, EXPIRY, IBAN, ONE_TIME_PASSWORD, PASSWORD, PIN, ROUTING_NUMBER, SWIFT, USERNAME, WEBSITE,
+};
+use stash_core::{Item, KdfParams, Kind, Vault};
 use zeroize::Zeroizing;
 
 use crate::{MIN_PASSWORD_LEN, Unlocked};
@@ -24,6 +28,31 @@ pub struct Options {
     pub force: bool,
     /// Bring logins along too.
     pub logins: bool,
+}
+
+/// Only the standard fields go to the phone. Notes and custom fields can hold
+/// anything (recovery codes, security answers), and a login's saved previous
+/// password is of no use there.
+fn for_phone(item: &Item) -> Item {
+    let keep: &[&str] = match item.kind {
+        Kind::Login => &[USERNAME, PASSWORD, WEBSITE, ONE_TIME_PASSWORD],
+        Kind::Card => &[CARDHOLDER, CARD_NUMBER, EXPIRY, CVV, PIN, BILLING_ZIP],
+        Kind::Bank => &[
+            BANK_NAME,
+            ACCOUNT_HOLDER,
+            ACCOUNT_TYPE,
+            ROUTING_NUMBER,
+            ACCOUNT_NUMBER,
+            IBAN,
+            SWIFT,
+            PIN,
+        ],
+        _ => &[],
+    };
+    let mut copy = item.clone();
+    copy.notes.clear();
+    copy.fields.retain(|f| keep.contains(&f.label.as_str()));
+    copy
 }
 
 pub fn export_phone(
@@ -49,9 +78,17 @@ pub fn export_phone(
     } else {
         "cards and bank accounts"
     };
+    // Otherwise something that can't type your master password could choose the
+    // password on a file holding everything, needing only your one approval.
+    if std::env::var_os("STASH_NEW_PASSWORD").is_some()
+        && std::env::var_os("STASH_PASSWORD").is_none()
+    {
+        bail!("STASH_NEW_PASSWORD only works together with STASH_PASSWORD");
+    }
+
     let purpose = format!(
         "copy your {what} to {}",
-        crate::text::clean(&opts.file.display().to_string(), 400)
+        crate::text::clean(&opts.file.display().to_string(), 200)
     );
     let mut unlocked = unlock(&purpose)?;
     // Every card at once, into a new file: a session isn't enough.
@@ -66,7 +103,7 @@ pub fn export_phone(
         if matches!(summary.kind, Kind::Card | Kind::Bank)
             || (opts.logins && summary.kind == Kind::Login)
         {
-            items.push((summary.name.clone(), vault.item(&summary.name)?));
+            items.push((summary.name.clone(), for_phone(&vault.item(&summary.name)?)));
         }
     }
     if items.is_empty() {
@@ -132,4 +169,23 @@ fn phone_password() -> Result<Zeroizing<String>> {
         bail!("the password must be at least {MIN_PASSWORD_LEN} characters");
     }
     Ok(password)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use stash_core::FieldKind;
+
+    #[test]
+    fn only_standard_fields_go_to_the_phone() {
+        let mut login = Item::login(Some("samus"), "secret", Some("https://example.com"));
+        login.notes = "recovery codes".to_owned();
+        login.set("previous password", FieldKind::Concealed, "old");
+        login.set("security answer", FieldKind::Concealed, "ridley");
+        login.set(ONE_TIME_PASSWORD, FieldKind::Otp, "JBSWY3DPEHPK3PXP");
+        let phone = for_phone(&login);
+        assert!(phone.notes.is_empty());
+        let labels: Vec<&str> = phone.fields.iter().map(|f| f.label.as_str()).collect();
+        assert_eq!(labels, [USERNAME, PASSWORD, WEBSITE, ONE_TIME_PASSWORD]);
+    }
 }

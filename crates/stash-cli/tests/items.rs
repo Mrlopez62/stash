@@ -745,6 +745,19 @@ fn exports_a_payments_only_vault_for_the_phone() {
         .failure()
         .stderr(predicate::str::contains("--force"));
 
+    // Something that can't type the master password can't choose the file's.
+    stash(&dir)
+        .args(["export", "--phone"])
+        .arg(dir.path().join("agent.stashvault"))
+        .env_remove("STASH_PASSWORD")
+        .env("STASH_NEW_PASSWORD", "agent-chosen")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "only works together with STASH_PASSWORD",
+        ));
+    assert!(!dir.path().join("agent.stashvault").exists());
+
     // Logins come along only when asked for.
     stash(&dir)
         .args(["export", "--phone"])

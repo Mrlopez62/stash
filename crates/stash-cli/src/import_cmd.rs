@@ -94,7 +94,7 @@ pub fn import(
     // The path goes in an approval prompt, so it can't be allowed to disguise itself.
     let purpose = format!(
         "import {summary} from {}",
-        crate::text::clean(&opts.file.display().to_string(), 400)
+        crate::text::clean(&opts.file.display().to_string(), 200)
     );
     let mut unlocked = unlock(&purpose)?;
     // Many items at once, from a file: a session isn't enough.

@@ -544,7 +544,7 @@ struct LoginFormView: View {
                     scanned(code)
                     scanning = false
                 }
-                .privacyCovered()
+                .sheetGuarded()
             }
             .sensoryFeedback(.success, trigger: scannedKey) { _, new in new }
             .navigationTitle(editing == nil ? "New Login" : "Edit Login")

@@ -86,8 +86,10 @@ final class PhoneModel: ObservableObject {
         }
         // The app has its own copy now: don't leave another lying around, or
         // ask about this file again next time.
+        // Only there: a file picked from anywhere else stays the user's.
         let path = url.resolvingSymlinksInPath().path
-        if path.hasPrefix(Self.inbox.resolvingSymlinksInPath().path) || path.contains("/Inbox/") {
+        let ours = [Self.inbox, URL.temporaryDirectory].map { $0.resolvingSymlinksInPath().path + "/" }
+        if ours.contains(where: path.hasPrefix) {
             try? fm.removeItem(at: url)
         }
     }
@@ -356,8 +358,7 @@ final class PhoneModel: ObservableObject {
             try core.updateItem(name: name, fields: fields)
         } else {
             name = unusedName(folder: folder, nickname: nickname, suggested: slug)
-            try core.addItem(name: name, fields: fields)
-            try core.remove(item.name)
+            try core.updateItem(name: item.name, newName: name, fields: fields)
         }
         items = try core.list()
         flash("Saved \(name.split(separator: "/").last ?? "")")

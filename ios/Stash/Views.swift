@@ -112,7 +112,7 @@ struct WelcomeView: View {
             .padding(24)
         }
         .background(Color.canvas.ignoresSafeArea())
-        .sheet(isPresented: $creating) { CreateVaultView().privacyCovered() }
+        .sheet(isPresented: $creating) { CreateVaultView().sheetGuarded() }
         #if DEBUG
         .task {
             // Simulator checks only (never in release builds).
@@ -164,6 +164,9 @@ struct WelcomeView: View {
 // MARK: - Lock
 
 struct LockView: View {
+    #if DEBUG
+    @MainActor private static var simUnlocked = false
+    #endif
     @EnvironmentObject var model: PhoneModel
     @State private var password = ""
     @FocusState private var focused: Bool
@@ -227,7 +230,9 @@ struct LockView: View {
         .task {
             #if DEBUG
             // Simulator screenshots only (never in release builds).
-            if let pw = ProcessInfo.processInfo.environment["STASH_SIM_PASSWORD"] {
+            if !Self.simUnlocked, let pw = ProcessInfo.processInfo.environment["STASH_SIM_PASSWORD"] {
+                // Once: a later lock has to stay locked for that to be checkable.
+                Self.simUnlocked = true
                 await model.unlock(password: pw)
                 return
             }
@@ -325,9 +330,9 @@ struct VaultListView: View {
                     Button { model.lock() } label: { Label("Lock", systemImage: "lock.fill") }
                 }
             }
-            .sheet(item: $adding) { AddPaymentView(kind: $0).privacyCovered() }
-            .sheet(isPresented: $addingLogin) { LoginFormView().privacyCovered() }
-            .sheet(isPresented: $showingSettings) { SettingsView().privacyCovered() }
+            .sheet(item: $adding) { AddPaymentView(kind: $0).sheetGuarded() }
+            .sheet(isPresented: $addingLogin) { LoginFormView().sheetGuarded() }
+            .sheet(isPresented: $showingSettings) { SettingsView().sheetGuarded() }
             // An alert, not a dialog: a dialog would point at some other row.
             .alert("Delete \(deleting?.title ?? "this")?", isPresented: Binding(
                 get: { deleting != nil }, set: { if !$0 { deleting = nil } }), presenting: deleting) { item in
@@ -469,7 +474,7 @@ struct DetailView: View {
                     AddPaymentView(kind: item.kind == .bank ? .bank : .card, editing: item, onSaved: saved)
                 }
             }
-            .privacyCovered()
+            .sheetGuarded()
         }
         #if DEBUG
         .onAppear {
@@ -515,10 +520,16 @@ struct DetailView: View {
                 Text(displayLabel(field.label))
                     .font(.plex(12.5, weight: .medium))
                     .foregroundStyle(Color.inkSecondary)
-                Text(value ?? "••••••••••••")
+                // Hidden fields can't be selected: the system's Copy would skip
+                // the copy button's stay-on-this-phone and 60-second rules.
+                let shownValue = Text(value ?? "••••••••••••")
                     .font(.mono(16))
                     .foregroundStyle(Color.ink)
-                    .textSelection(.enabled)
+                if field.value != nil {
+                    shownValue.textSelection(.enabled)
+                } else {
+                    shownValue
+                }
             }
             Spacer()
             if field.kind == .url, let url = link(field.value) {

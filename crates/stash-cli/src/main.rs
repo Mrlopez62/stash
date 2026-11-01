@@ -218,7 +218,7 @@ enum Command {
         /// Replace the file if it exists
         #[arg(long)]
         force: bool,
-        /// Bring your logins too, with their 2FA secrets
+        /// Bring your logins too, with their 2FA secrets (never notes or custom fields)
         #[arg(long)]
         logins: bool,
     },
