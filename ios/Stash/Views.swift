@@ -3,6 +3,8 @@ import UniformTypeIdentifiers
 
 struct RootView: View {
     @EnvironmentObject var model: PhoneModel
+    /// The unlock animation has started to show the vault.
+    @State private var revealing = false
 
     var body: some View {
         Group {
@@ -12,8 +14,17 @@ struct RootView: View {
             case .unlocked: VaultListView()
             }
         }
+        // The vault starts slightly large, and settles as it's revealed.
+        .scaleEffect(model.unlocking && !revealing ? 1.04 : 1)
         .overlay {
-            if model.unlocking { UnlockCurtain { model.unlocking = false } }
+            if model.unlocking {
+                UnlockCurtain(start: model.unlockFromLockMark ? model.lockMarkCenter : nil) {
+                    withAnimation(.spring(response: 0.62, dampingFraction: 0.9)) { revealing = true }
+                } finished: {
+                    model.unlocking = false
+                    revealing = false
+                }
+            }
         }
         .overlay(alignment: .bottom) {
             if let toast = model.toast {
@@ -160,7 +171,12 @@ struct LockView: View {
     var body: some View {
         VStack(spacing: 22) {
             Spacer()
-            StashMark(size: 76)
+            StashMark(size: UnlockCurtain.lockMarkSize)
+                .background(GeometryReader { geo in
+                    Color.clear
+                        .onAppear { model.lockMarkCenter = center(of: geo) }
+                        .onChange(of: geo.frame(in: .global)) { model.lockMarkCenter = center(of: geo) }
+                })
             VStack(spacing: 6) {
                 Wordmark(size: 30)
                 Text("Your vault, one glance away.").font(.plex(15)).foregroundStyle(Color.inkSecondary)
@@ -221,6 +237,11 @@ struct LockView: View {
         }
     }
 
+    private func center(of geo: GeometryProxy) -> CGPoint {
+        let frame = geo.frame(in: .global)
+        return CGPoint(x: frame.midX, y: frame.midY)
+    }
+
     private func submit() {
         let pw = password
         password = ""
@@ -233,6 +254,7 @@ struct LockView: View {
 struct VaultListView: View {
     @EnvironmentObject var model: PhoneModel
     @State private var showingSettings = false
+    @State private var deleting: PhoneItem?
     @State private var path: [PhoneItem] = []
     @State private var adding: PaymentKind?
     @State private var addingLogin = false
@@ -279,6 +301,7 @@ struct VaultListView: View {
                 if env["STASH_SIM_SHOW"] == "add-bank" { adding = .bank }
                 if env["STASH_SIM_SHOW"] == "add-login" { addingLogin = true }
                 if env["STASH_SIM_SHOW"] == "settings" { showingSettings = true }
+                if env["STASH_SIM_SHOW"] == "delete" { deleting = model.items.first }
                 if env["STASH_SIM_SHOW"] == "ask-face-id" { model.askAboutFaceID = true }
             }
             #endif
@@ -305,6 +328,14 @@ struct VaultListView: View {
             .sheet(item: $adding) { AddPaymentView(kind: $0).privacyCovered() }
             .sheet(isPresented: $addingLogin) { LoginFormView().privacyCovered() }
             .sheet(isPresented: $showingSettings) { SettingsView().privacyCovered() }
+            // An alert, not a dialog: a dialog would point at some other row.
+            .alert("Delete \(deleting?.title ?? "this")?", isPresented: Binding(
+                get: { deleting != nil }, set: { if !$0 { deleting = nil } }), presenting: deleting) { item in
+                Button("Delete", role: .destructive) { _ = model.removeItem(item.name) }
+                Button("Cancel", role: .cancel) {}
+            } message: { _ in
+                Text("This is the only copy, and it can't be undone.")
+            }
             .alert("Use Face ID to unlock stash?", isPresented: Binding(
                 get: { model.askAboutFaceID && !model.unlocking }, set: { _ in })
             ) {
@@ -348,6 +379,18 @@ struct VaultListView: View {
             .padding(.vertical, 2)
         }
         .listRowBackground(Color.surface)
+        .swipeActions(edge: .leading, allowsFullSwipe: true) {
+            // Only where the vault can be changed. It asks first, so this has
+            // no destructive role: that would animate the row away right now.
+            if model.madeHere {
+                Button {
+                    deleting = item
+                } label: {
+                    Label("Delete", systemImage: "trash")
+                }
+                .tint(.red)
+            }
+        }
     }
 }
 

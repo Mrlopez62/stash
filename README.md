@@ -76,7 +76,7 @@ To bring your logins and their 2FA too, add `--logins` to the export.
 - **A vault from your Mac is read-only:** to change something, change it on your Mac and export again; opening the new file replaces the old one. Syncing is planned.
 - **Logins** show their username and website, with the password hidden until you ask, and live 2FA codes. Set up 2FA by scanning a site's QR code or pasting its key. Copy them into the site or app: stash doesn't fill passwords on the iPhone yet.
 - **Card colors:** choose a color for any card. It's saved in the vault on the phone, and doesn't show on the Mac.
-- **A vault made on the phone** can have logins, cards, and bank accounts added, edited, and deleted there. Opening a file from your Mac replaces it, after asking.
+- **A vault made on the phone** can have logins, cards, and bank accounts added, edited, and deleted there (swipe right on one to delete it). Opening a file from your Mac replaces it, after asking.
 - **Installing:** needs Xcode (free) and an Apple ID: sign in under Xcode → Settings → Accounts, plug in your iPhone, and turn on Developer Mode (Settings → Privacy & Security). With a free Apple ID, Apple lets the app open for 7 days at a time: run `./scripts/ios-install.sh` again to renew it; your cards stay on the phone. A paid developer account ($99/yr) makes it last a year.
 - **Build for the simulator** with `./scripts/ios-build.sh` (needs `brew install xcodegen`).
 

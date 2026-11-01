@@ -24,6 +24,10 @@ final class PhoneModel: ObservableObject {
     @Published var faceIDEnrolled = FaceIDKeys.enrolled
     /// After a password unlock: ask whether to use Face ID from now on.
     @Published var askAboutFaceID = false
+    /// Where the lock screen's mark is, for the unlock animation to carry on from.
+    var lockMarkCenter: CGPoint?
+    /// The unlock animation starts from there: a password was typed on that screen.
+    var unlockFromLockMark = false
     /// The unlock animation is playing over the vault.
     @Published var unlocking = false
     /// This vault was made here, so it's the only copy and can be changed
@@ -121,6 +125,7 @@ final class PhoneModel: ObservableObject {
             // Any saved keys are from an older vault (they outlive the app).
             FaceIDKeys.forget()
             faceIDEnrolled = false
+            unlockFromLockMark = false
             await open { try VaultCore.open(path: Self.vaultURL, keys: keys) }
             if screen == .unlocked {
                 offerFaceIDSetup()
@@ -199,6 +204,7 @@ final class PhoneModel: ObservableObject {
 
     func unlock(password: String) async {
         guard !password.isEmpty else { return }
+        unlockFromLockMark = true
         await open { try VaultCore.open(path: Self.vaultURL, password: password) }
         if screen == .unlocked { offerFaceIDSetup() }
     }
@@ -216,6 +222,7 @@ final class PhoneModel: ObservableObject {
 
     func unlockWithFaceID() async {
         do {
+            unlockFromLockMark = false
             let keys = try await FaceIDKeys.unlock(reason: "Unlock your vault")
             await open { try VaultCore.open(path: Self.vaultURL, keys: keys) }
         } catch is CancellationError {

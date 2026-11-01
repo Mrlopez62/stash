@@ -13,7 +13,7 @@ All notable changes to stash. The format follows [Keep a Changelog](https://keep
 - **Scan 2FA QR codes.** When adding or editing a login on the iPhone, scan the QR code a site shows to set up its 2FA codes, or paste the key.
 - **Card colors.** Choose graphite, midnight, forest, plum, oxblood, copper, or titanium for any card on the iPhone.
 - **iPhone settings.** A Settings screen holds Face ID, replacing the vault, and removing it. stash asks before turning Face ID on, and the password generator lets you choose the length and turn off symbols for sites that refuse them.
-- **An unlock animation.** The stash mark's prompt slides into the keyhole, the keyhole turns, and the vault appears. A quick fade with Reduce Motion.
+- **An unlock animation.** In one motion, the stash mark's prompt slides into the keyhole as it turns, and light opens outward from the keyhole to reveal the vault. A quick fade with Reduce Motion.
 - **Real network logos.** Visa and Mastercard cards show their logos on the card and under the card number as you type it, on the Mac and iPhone. Card numbers group into fours as you type on the iPhone.
 - **`stash export --phone FILE.stashvault`** writes a separate encrypted vault with only your cards and bank accounts, under a password you choose for the phone (Touch ID or the master password first). Open it on the iPhone through AirDrop, the Files app, or Finder.
 - **`crates/stash-ffi`**, a small C interface to the vault, so the iPhone app uses the same Rust code and vault format as the Mac. `scripts/ios-build.sh` builds the app for the simulator, `scripts/ios-install.sh` installs it on your iPhone with your own Apple ID, and CI builds it.

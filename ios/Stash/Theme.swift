@@ -136,56 +136,91 @@ struct StashMarkKeyhole: Shape {
     }
 }
 
-/// What plays when stash opens: the prompt slides into the keyhole like a key,
-/// the keyhole turns like a lock with a soft click, and the mark lifts away to
-/// reveal your vault. About a second, and it never blocks touches. With Reduce
-/// Motion, a quick fade instead.
+/// What plays when stash opens, as one continuous motion: the mark glides in
+/// from where it was, its prompt slides into the keyhole like a key as the
+/// keyhole turns with a soft click, and light opens outward from the keyhole
+/// to reveal your vault, which settles into place. About a second, and it
+/// never blocks touches. With Reduce Motion, a quick fade instead.
 struct UnlockCurtain: View {
+    /// Where the mark was on screen, to carry on from. Nil starts it centered,
+    /// where the privacy cover shows it as Face ID finishes.
+    let start: CGPoint?
+    /// The vault is starting to show.
+    let revealing: () -> Void
     let finished: () -> Void
+
     static let markSize: CGFloat = 92
+    /// The lock screen's mark.
+    static let lockMarkSize: CGFloat = 76
     private let size = markSize
+    /// The center of the keyhole's head, from the mark's center.
+    private var keyhole: CGSize {
+        CGSize(width: size * (StashMarkKeyhole.anchor.x - 0.5), height: size * (StashMarkKeyhole.anchor.y - 0.5))
+    }
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.scenePhase) private var phase
     @State private var started = false
-    @State private var scale: CGFloat = 0.94
+    @State private var arrived = false
     @State private var keyIn = false
     @State private var turn: Double = 0
     @State private var glow: Double = 0
-    @State private var lift = false
+    @State private var open: CGFloat = 0
+    @State private var markGone = false
+    @State private var fadedOut = false
     @State private var clicked = false
 
     var body: some View {
-        ZStack {
-            Color.canvas.ignoresSafeArea()
-                .opacity(lift ? 0 : 1)
+        GeometryReader { geo in
+            let center = CGPoint(x: geo.size.width / 2, y: geo.size.height / 2)
+            let light = CGPoint(x: center.x + keyhole.width, y: center.y + keyhole.height)
+            // Far enough to clear every corner, even with the soft edge.
+            let reach = hypot(geo.size.width, geo.size.height) * 2.4
+            let from = start.map { CGSize(width: $0.x - center.x, height: $0.y - center.y) } ?? .zero
             ZStack {
+                Color.canvas
+                    .mask {
+                        ZStack {
+                            Color.black
+                            Circle()
+                                .fill(RadialGradient(stops: [
+                                    .init(color: .black, location: 0),
+                                    .init(color: .black, location: 0.72),
+                                    .init(color: .clear, location: 1),
+                                ], center: .center, startRadius: 0, endRadius: reach / 2))
+                                .frame(width: reach, height: reach)
+                                .scaleEffect(open)
+                                .position(light)
+                                .blendMode(.destinationOut)
+                        }
+                        .compositingGroup()
+                    }
+                    .opacity(fadedOut ? 0 : 1)
+
+                // The light through the keyhole.
                 Circle()
-                    .fill(RadialGradient(colors: [Color.keyholeAmber.opacity(0.42), .clear],
-                                         center: .center, startRadius: 0, endRadius: size * 1.25))
-                    .frame(width: size * 2.5, height: size * 2.5)
+                    .fill(RadialGradient(stops: [
+                        .init(color: Color.keyholeAmber.opacity(0.5), location: 0),
+                        .init(color: Color.keyholeAmber.opacity(0.16), location: 0.35),
+                        .init(color: .clear, location: 1),
+                    ], center: .center, startRadius: 0, endRadius: size * 1.5))
+                    .frame(width: size * 3, height: size * 3)
+                    .position(light)
                     .opacity(glow)
-                RoundedRectangle(cornerRadius: size * 14.5 / 64, style: .continuous)
-                    .fill(Color.vaultInk)
-                    .overlay(RoundedRectangle(cornerRadius: size * 14.5 / 64, style: .continuous)
-                        .strokeBorder(Color(hex: 0x2A303B), lineWidth: size * 1.5 / 64))
-                    .frame(width: size, height: size)
-                StashMarkPrompt()
-                    .stroke(Color.plaintext, style: StrokeStyle(lineWidth: size * 6.5 / 64, lineCap: .round, lineJoin: .round))
-                    .frame(width: size, height: size)
-                    .offset(x: keyIn ? size * 12 / 64 : 0)
-                    .opacity(keyIn ? 0 : 1)
-                StashMarkKeyhole()
-                    .fill(Color.keyholeAmber)
-                    .frame(width: size, height: size)
-                    .rotationEffect(.degrees(turn), anchor: StashMarkKeyhole.anchor)
+                    .blendMode(.plusLighter)
+                    .offset(arrived ? .zero : from)
+
+                mark
+                    .scaleEffect(markGone ? 1.16 : (arrived || start == nil ? 1 : Self.lockMarkSize / Self.markSize))
+                    .opacity(markGone ? 0 : 1)
+                    .position(center)
+                    .offset(arrived ? .zero : from)
             }
-            .scaleEffect(lift ? 1.28 : scale)
-            .opacity(lift ? 0 : 1)
         }
+        .ignoresSafeArea()
         .allowsHitTesting(false)
         .accessibilityHidden(true)
-        .sensoryFeedback(.impact(weight: .light, intensity: 0.7), trigger: clicked)
+        .sensoryFeedback(.impact(flexibility: .soft, intensity: 0.75), trigger: clicked)
         // Not until the app is active: as the Face ID prompt closes it isn't
         // yet, and the privacy cover would hide the whole animation.
         .task(id: phase) {
@@ -195,29 +230,56 @@ struct UnlockCurtain: View {
         }
     }
 
+    private var mark: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: size * 14.5 / 64, style: .continuous)
+                .fill(Color.vaultInk)
+                .overlay(RoundedRectangle(cornerRadius: size * 14.5 / 64, style: .continuous)
+                    .strokeBorder(Color(hex: 0x2A303B), lineWidth: size * 1.5 / 64))
+                .frame(width: size, height: size)
+            StashMarkPrompt()
+                .stroke(Color.plaintext, style: StrokeStyle(lineWidth: size * 6.5 / 64, lineCap: .round, lineJoin: .round))
+                .frame(width: size, height: size)
+                .offset(x: keyIn ? size * 13 / 64 : 0)
+                .opacity(keyIn ? 0 : 1)
+            StashMarkKeyhole()
+                .fill(Color.keyholeAmber)
+                .frame(width: size, height: size)
+                .rotationEffect(.degrees(turn), anchor: StashMarkKeyhole.anchor)
+        }
+    }
+
     private func wait(_ seconds: Double) async {
         try? await Task.sleep(for: .seconds(seconds))
     }
 
     private func play() async {
         if reduceMotion {
-            scale = 1
+            arrived = true
             await wait(0.2)
-            withAnimation(.easeOut(duration: 0.25)) { lift = true }
+            revealing()
+            withAnimation(.easeOut(duration: 0.25)) {
+                markGone = true
+                fadedOut = true
+            }
             await wait(0.25)
             finished()
             return
         }
-        withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) { scale = 1 }
-        await wait(0.08)
+        // Each step starts before the last one ends, so nothing waits its turn.
+        withAnimation(.spring(response: 0.42, dampingFraction: 0.86)) { arrived = true }
         withAnimation(.easeIn(duration: 0.2)) { keyIn = true }
         await wait(0.2)
+        withAnimation(.spring(response: 0.44, dampingFraction: 0.74)) { turn = 90 }
+        withAnimation(.easeOut(duration: 0.3)) { glow = 1 }
+        await wait(0.08)
         clicked = true
-        withAnimation(.spring(response: 0.36, dampingFraction: 0.66)) { turn = 90 }
-        withAnimation(.easeOut(duration: 0.28)) { glow = 1 }
-        await wait(0.44)
-        withAnimation(.easeInOut(duration: 0.36)) { lift = true }
-        await wait(0.36)
+        await wait(0.18)
+        revealing()
+        withAnimation(.timingCurve(0.65, 0, 0.2, 1, duration: 0.56)) { open = 1 }
+        withAnimation(.easeIn(duration: 0.22)) { markGone = true }
+        withAnimation(.easeOut(duration: 0.4)) { glow = 0 }
+        await wait(0.56)
         finished()
     }
 }

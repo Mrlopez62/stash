@@ -43,10 +43,12 @@ extension View {
 
 struct PrivacyCover: View {
     var body: some View {
+        // The size and place the unlock animation starts from, so one flows
+        // into the other.
         ZStack {
-            Color.canvas.ignoresSafeArea()
-            // The size the unlock animation starts from, so one flows into the other.
+            Color.canvas
             StashMark(size: UnlockCurtain.markSize)
         }
+        .ignoresSafeArea()
     }
 }
