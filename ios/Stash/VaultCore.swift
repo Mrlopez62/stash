@@ -155,6 +155,13 @@ final class VaultCore: @unchecked Sendable {
         return try decode(json, error)
     }
 
+    /// Throws unless this is a usable 2FA key or `otpauth://` link.
+    static func checkOTP(_ value: String) throws {
+        var error: UnsafeMutablePointer<CChar>?
+        let ok = value.withCString { stash_check_otp($0, &error) }
+        if !ok { throw take(error) }
+    }
+
     static func generatePassword(length: Int, symbols: Bool) throws -> String {
         var error: UnsafeMutablePointer<CChar>?
         guard let value = stash_generate_password(length, symbols, &error) else { throw take(error) }

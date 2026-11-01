@@ -10,6 +10,7 @@ All notable changes to stash. The format follows [Keep a Changelog](https://keep
 - **Logins on the iPhone.** Add, edit, and delete them in a vault made on the phone, with a password generator, 2FA codes, and search. `stash export --phone --logins` brings them from your Mac; without that flag, an export still holds only cards and bank accounts.
 - **Cards that catch the light.** On the iPhone, a card at rest has no shine. Move the phone and light slides across it: a soft bloom, a long streak with a faint prism, and the edge catching the light. Held still, it fades out. Off with Reduce Motion. Motion readings stay in the app and aren't stored.
 - **Expiry dates are checked as you type.** An impossible month, or a year more than 20 years away, is refused by the vault everywhere and flagged in the Mac and iPhone forms. An expired card gets a warning but can still be saved. Valid numbers and dates show a green check.
+- **Scan 2FA QR codes.** When adding or editing a login on the iPhone, scan the QR code a site shows to set up its 2FA codes, or paste the key.
 - **Card colors.** Choose graphite, midnight, forest, plum, oxblood, copper, or titanium for any card on the iPhone.
 - **iPhone settings.** A Settings screen holds Face ID, replacing the vault, and removing it. stash asks before turning Face ID on, and the password generator lets you choose the length and turn off symbols for sites that refuse them.
 - **An unlock animation.** The stash mark's prompt slides into the keyhole, the keyhole turns, and the vault appears. A quick fade with Reduce Motion.

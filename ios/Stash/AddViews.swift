@@ -430,6 +430,8 @@ struct LoginFormView: View {
     /// It has 2FA already. The secret isn't read back: it stays or goes.
     @State private var hasOTP = false
     @State private var removeOTP = false
+    @State private var scanning = false
+    @State private var scannedKey = false
     @State private var nickname = ""
     @State private var error: String?
 
@@ -484,14 +486,26 @@ struct LoginFormView: View {
                     if hasOTP && !removeOTP {
                         LabeledContent("2FA", value: "On")
                         Button("Remove 2FA", role: .destructive) { removeOTP = true }
+                    } else if scannedKey {
+                        CheckLine(ok: true, text: "QR code scanned. Save to turn on 2FA.")
+                        Button("Clear", role: .destructive) {
+                            setupKey = ""
+                            scannedKey = false
+                        }
                     } else {
-                        SecureField("Setup key (optional)", text: $setupKey)
+                        Button {
+                            scanning = true
+                        } label: {
+                            Label("Scan QR Code", systemImage: "qrcode.viewfinder")
+                                .foregroundStyle(Color.ink)
+                        }
+                        SecureField("Or paste the setup key", text: $setupKey)
                     }
                 } header: {
                     Text("Two-Factor Code")
                 } footer: {
-                    if !hasOTP || removeOTP {
-                        Text("The key or otpauth:// link a site gives you when you turn on 2FA. stash then shows the codes.")
+                    if (!hasOTP || removeOTP) && !scannedKey {
+                        Text("Optional. Turn on 2FA with an authenticator app on the site, then scan the QR code it shows. stash then shows the codes.")
                     }
                 }
                 .listRowBackground(Color.surface)
@@ -519,9 +533,20 @@ struct LoginFormView: View {
             #if DEBUG
             .onAppear {
                 // Simulator checks only (never in release builds).
-                if ProcessInfo.processInfo.environment["STASH_SIM_GENERATE"] != nil { generate() }
+                let env = ProcessInfo.processInfo.environment
+                if env["STASH_SIM_GENERATE"] != nil { generate() }
+                if env["STASH_SIM_SCAN"] != nil { scanning = true }
+                if let code = env["STASH_SIM_QR"] { scanned(code) }
             }
             #endif
+            .fullScreenCover(isPresented: $scanning) {
+                QRScannerView { code in
+                    scanned(code)
+                    scanning = false
+                }
+                .privacyCovered()
+            }
+            .sensoryFeedback(.success, trigger: scannedKey) { _, new in new }
             .navigationTitle(editing == nil ? "New Login" : "Edit Login")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -557,6 +582,16 @@ struct LoginFormView: View {
         username = saved["username"] ?? ""
         password = saved["password"] ?? ""
         hasOTP = model.detail(editing.name)?.hasOTP ?? false
+    }
+
+    /// Keep a checked code. Its label can name the site and account, so fill
+    /// those in if they're still empty, as suggestions you can change.
+    private func scanned(_ code: String) {
+        setupKey = code
+        scannedKey = true
+        let label = QRScannerView.label(in: code)
+        if nickname.isEmpty, let issuer = label.issuer { nickname = PhoneModel.slug(issuer) }
+        if username.isEmpty, let account = label.account { username = account }
     }
 
     private func generate() {

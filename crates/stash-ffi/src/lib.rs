@@ -359,6 +359,26 @@ pub unsafe extern "C" fn stash_otp(
     }
 }
 
+/// Whether this is a usable 2FA key or `otpauth://` link, as a save would
+/// judge it. False sets `*error`.
+///
+/// # Safety
+/// `value` is NUL-terminated.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn stash_check_otp(value: *const c_char, error: *mut *mut c_char) -> bool {
+    let Some(value) = (unsafe { from_c(value) }) else {
+        set_error(error, "invalid arguments");
+        return false;
+    };
+    match Totp::parse_new(value) {
+        Ok(_) => true,
+        Err(e) => {
+            set_error(error, e.to_string());
+            false
+        }
+    }
+}
+
 /// A new random password of letters and digits, and symbols if asked for (some
 /// sites refuse them). Free it with [`stash_string_free`], which wipes it.
 #[unsafe(no_mangle)]
@@ -786,6 +806,29 @@ mod tests {
         assert!(unsafe { stash_update_item(v, login_name.as_ptr(), cleared.as_ptr(), &mut error) });
         assert!(unsafe { stash_otp(v, login_name.as_ptr(), &mut error) }.is_null());
         take(error);
+
+        // What a QR code holds: checked before it's accepted, then saved like a key.
+        let scanned = CString::new(
+            "otpauth://totp/GitHub:samus%40example.com?secret=JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP&issuer=GitHub",
+        )
+        .unwrap();
+        assert!(unsafe { stash_check_otp(scanned.as_ptr(), &mut error) });
+        for bad in [
+            "https://example.com",
+            "otpauth://hotp/x?secret=JBSWY3DPEHPK3PXP&counter=1",
+            "short",
+        ] {
+            let bad = CString::new(bad).unwrap();
+            assert!(!unsafe { stash_check_otp(bad.as_ptr(), &mut error) });
+            take(error);
+        }
+        let from_qr = json!({"kind": "login", "password": "x", "otp": scanned.to_str().unwrap()});
+        let from_qr = CString::new(from_qr.to_string()).unwrap();
+        let qr_name = CString::new("logins/from-qr").unwrap();
+        assert!(unsafe { stash_add_item(v, qr_name.as_ptr(), from_qr.as_ptr(), &mut error) });
+        let code = take(unsafe { stash_otp(v, qr_name.as_ptr(), ptr::null_mut()) });
+        assert!(code.contains("\"code\""));
+        assert!(unsafe { stash_remove(v, qr_name.as_ptr(), &mut error) });
 
         // A mistyped 2FA secret is refused.
         let bad_otp = CString::new(r#"{"kind":"login","password":"x","otp":"short"}"#).unwrap();
