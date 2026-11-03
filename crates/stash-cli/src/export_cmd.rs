@@ -15,7 +15,7 @@ use stash_core::item::{
     ACCOUNT_HOLDER, ACCOUNT_NUMBER, ACCOUNT_TYPE, BANK_NAME, BILLING_ZIP, CARD_NUMBER, CARDHOLDER,
     CVV, EXPIRY, IBAN, ONE_TIME_PASSWORD, PASSWORD, PIN, ROUTING_NUMBER, SWIFT, USERNAME, WEBSITE,
 };
-use stash_core::{Item, KdfParams, Kind, Vault};
+use stash_core::{FieldKind, Item, KdfParams, Kind, Vault};
 use zeroize::Zeroizing;
 
 use crate::{MIN_PASSWORD_LEN, Unlocked};
@@ -32,7 +32,9 @@ pub struct Options {
 
 /// Only the standard fields go to the phone. Notes and custom fields can hold
 /// anything (recovery codes, security answers), and a login's saved previous
-/// password is of no use there.
+/// password is of no use there. Labels match the way `Item::labeled` matches
+/// them ("Password", "one_time password"), and a login keeps its 2FA whatever
+/// it's called, so nothing standard is lost to how it was written.
 fn for_phone(item: &Item) -> Item {
     let keep: &[&str] = match item.kind {
         Kind::Login => &[USERNAME, PASSWORD, WEBSITE, ONE_TIME_PASSWORD],
@@ -49,10 +51,23 @@ fn for_phone(item: &Item) -> Item {
         ],
         _ => &[],
     };
+    let keep: Vec<String> = keep.iter().map(|l| label_key(l)).collect();
     let mut copy = item.clone();
     copy.notes.clear();
-    copy.fields.retain(|f| keep.contains(&f.label.as_str()));
+    copy.fields.retain(|f| {
+        (item.kind == Kind::Login && f.kind == FieldKind::Otp)
+            || keep.contains(&label_key(&f.label))
+    });
     copy
+}
+
+/// What a label is, for matching: case, spaces, dashes, and underscores aside.
+fn label_key(label: &str) -> String {
+    label
+        .chars()
+        .filter(|c| !matches!(c, ' ' | '-' | '_'))
+        .flat_map(char::to_lowercase)
+        .collect()
 }
 
 pub fn export_phone(
@@ -99,11 +114,17 @@ pub fn export_phone(
     crate::ensure_sensitive(&mut vault, &purpose)?;
 
     let mut items = Vec::new();
+    let mut left_out = 0;
     for summary in vault.summaries()? {
         if matches!(summary.kind, Kind::Card | Kind::Bank)
             || (opts.logins && summary.kind == Kind::Login)
         {
-            items.push((summary.name.clone(), for_phone(&vault.item(&summary.name)?)));
+            let item = vault.item(&summary.name)?;
+            let copy = for_phone(&item);
+            if copy.fields.len() < item.fields.len() || !item.notes.is_empty() {
+                left_out += 1;
+            }
+            items.push((summary.name.clone(), copy));
         }
     }
     if items.is_empty() {
@@ -141,6 +162,12 @@ pub fn export_phone(
             (true, n) => format!(", and {n} logins"),
         },
     );
+    if left_out > 0 {
+        eprintln!(
+            "Notes and custom fields stay on your Mac: {left_out} item{} had some.",
+            if left_out == 1 { "" } else { "s" }
+        );
+    }
     eprintln!(
         "AirDrop it to your iPhone (or drag it onto the iPhone in Finder → Files → stash), open it in stash, and delete this copy."
     );
@@ -174,7 +201,6 @@ fn phone_password() -> Result<Zeroizing<String>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use stash_core::FieldKind;
 
     #[test]
     fn only_standard_fields_go_to_the_phone() {
@@ -187,5 +213,17 @@ mod tests {
         assert!(phone.notes.is_empty());
         let labels: Vec<&str> = phone.fields.iter().map(|f| f.label.as_str()).collect();
         assert_eq!(labels, [USERNAME, PASSWORD, WEBSITE, ONE_TIME_PASSWORD]);
+    }
+
+    #[test]
+    fn labels_written_differently_still_go() {
+        let mut login = Item::login(None, "", None);
+        login.fields.clear();
+        login.set("Password", FieldKind::Concealed, "secret");
+        login.set("User_Name", FieldKind::Text, "samus");
+        login.set("Authenticator", FieldKind::Otp, "JBSWY3DPEHPK3PXP");
+        let phone = for_phone(&login);
+        let labels: Vec<&str> = phone.fields.iter().map(|f| f.label.as_str()).collect();
+        assert_eq!(labels, ["Password", "User_Name", "Authenticator"]);
     }
 }

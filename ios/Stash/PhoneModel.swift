@@ -326,7 +326,7 @@ final class PhoneModel: ObservableObject {
     }
 
     private func unusedName(folder: String, nickname: String, suggested: String) -> String {
-        let slug = Self.slug(nickname).isEmpty ? Self.slug(suggested) : Self.slug(nickname)
+        let slug = ItemText.slug(nickname).isEmpty ? ItemText.slug(suggested) : ItemText.slug(nickname)
         let base = "\(folder)/\(slug)"
         var name = base
         var n = 2
@@ -352,15 +352,17 @@ final class PhoneModel: ObservableObject {
     /// is saved before the old one goes, so a failure can't lose it.
     func updateItem(_ item: PhoneItem, fields: [String: String], folder: String, nickname: String) throws -> String {
         guard madeHere, let core else { throw VaultError(message: "This vault can only be changed on your Mac.") }
-        let slug = Self.slug(nickname)
+        let slug = ItemText.slug(nickname)
         var name = item.name
-        if slug.isEmpty || slug == Self.slug(item.title) {
+        // Whatever happens, show what the vault now holds: a rename that saved
+        // the new copy but couldn't remove the old one leaves both.
+        defer { if let listed = try? core.list() { items = listed } }
+        if slug.isEmpty || slug == ItemText.slug(item.title) {
             try core.updateItem(name: name, fields: fields)
         } else {
             name = unusedName(folder: folder, nickname: nickname, suggested: slug)
             try core.updateItem(name: item.name, newName: name, fields: fields)
         }
-        items = try core.list()
         flash("Saved \(name.split(separator: "/").last ?? "")")
         return name
     }
@@ -388,12 +390,6 @@ final class PhoneModel: ObservableObject {
             self.error = error.localizedDescription
             return false
         }
-    }
-
-    /// "Chase Checking!" → "chase-checking": what item names allow.
-    nonisolated static func slug(_ text: String) -> String {
-        let mapped = text.lowercased().map { $0.isASCII && ($0.isLetter || $0.isNumber) ? $0 : "-" }
-        return String(mapped).split(separator: "-").joined(separator: "-").prefix(60).description
     }
 
     /// Copy a value: kept on this iPhone (no Universal Clipboard) and

@@ -21,7 +21,7 @@ struct QRScannerView: View {
     private static var currentAccess: Access {
         #if DEBUG
         // Simulator checks only (never in release builds): it has no camera.
-        if ProcessInfo.processInfo.environment["STASH_SIM_SCAN"] == "viewfinder" { return .allowed }
+        if SimHooks.scan == "viewfinder" { return .allowed }
         #endif
         guard AVCaptureDevice.default(for: .video) != nil else { return .noCamera }
         switch AVCaptureDevice.authorizationStatus(for: .video) {
@@ -115,16 +115,6 @@ struct QRScannerView: View {
             refused = code
             problem = "That QR code isn't a 2FA setup code."
         }
-    }
-
-    /// The site and account a code names: `otpauth://totp/GitHub:me@x.com?issuer=GitHub`.
-    static func label(in code: String) -> (issuer: String?, account: String?) {
-        guard code.hasPrefix("otpauth://"), let url = URLComponents(string: code) else { return (nil, nil) }
-        let path = url.path.drop { $0 == "/" }
-        let parts = path.split(separator: ":", maxSplits: 1).map { $0.trimmingCharacters(in: .whitespaces) }
-        let named = url.queryItems?.first { $0.name == "issuer" }?.value
-        let issuer = named ?? (parts.count == 2 ? parts[0] : nil)
-        return (issuer.flatMap { $0.isEmpty ? nil : $0 }, parts.last.flatMap { $0.isEmpty ? nil : $0 })
     }
 }
 

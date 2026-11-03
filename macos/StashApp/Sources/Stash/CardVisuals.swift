@@ -164,7 +164,13 @@ struct PremiumCard: View {
 
 #if os(iOS)
 /// How far the phone has leaned from the way you're holding it.
+@MainActor
 enum CardMotion {
+    /// Apple asks for one per app. The newest reader gets the readings, and
+    /// only it can stop them.
+    private static let manager = CMMotionManager()
+    private static var reader = 0
+
     /// Each lean is -1...1 on both axes: +x is the right edge going down, +y
     /// the top edge going away. Whatever angle you settle at soon becomes the
     /// new rest, so a phone held still reads as no lean. Ends (and the sensor
@@ -179,7 +185,6 @@ enum CardMotion {
                 return
             }
             #endif
-            let manager = CMMotionManager()
             guard manager.isDeviceMotionAvailable else {
                 continuation.finish()
                 return
@@ -189,7 +194,10 @@ enum CardMotion {
             let smooth = 0.3 // per reading, to take out hand tremor
             var rest: (x: Double, y: Double)?
             var eased = CGPoint.zero
+            reader += 1
+            let me = reader
             manager.deviceMotionUpdateInterval = 1.0 / 60
+            manager.stopDeviceMotionUpdates()
             manager.startDeviceMotionUpdates(to: .main) { motion, _ in
                 guard let gravity = motion?.gravity else { return }
                 var held = rest ?? (gravity.x, gravity.y)
@@ -202,7 +210,11 @@ enum CardMotion {
                 rest = held
                 continuation.yield(eased)
             }
-            continuation.onTermination = { _ in manager.stopDeviceMotionUpdates() }
+            continuation.onTermination = { _ in
+                Task { @MainActor in
+                    if reader == me { manager.stopDeviceMotionUpdates() }
+                }
+            }
         }
     }
 }
@@ -523,18 +535,35 @@ private struct Stripes: Shape {
     }
 }
 
-/// Fine static grain, like printed card stock. Seeded, so it never shimmers.
+/// Fine static grain, like printed card stock. Seeded, so it never shimmers,
+/// and drawn once into a tile that's repeated, so a moving shine above it
+/// never makes it redraw.
 private struct Grain: View {
+    private static let side = 128
+    private static let tile: CGImage? = {
+        let side = Grain.side
+        guard let context = CGContext(data: nil, width: side, height: side, bitsPerComponent: 8, bytesPerRow: 0,
+                                      space: CGColorSpaceCreateDeviceRGB(),
+                                      bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
+        var seed: UInt64 = 0x5EED
+        func next() -> CGFloat {
+            seed = seed &* 6_364_136_223_846_793_005 &+ 1_442_695_040_888_963_407
+            return CGFloat(seed >> 33) / CGFloat(1 << 31)
+        }
+        // One dot per 28 square points, as before.
+        for _ in 0..<(side * side / 28) {
+            let rect = CGRect(x: floor(next() * CGFloat(side)), y: floor(next() * CGFloat(side)), width: 1, height: 1)
+            context.setFillColor(next() > 0.5 ? CGColor(gray: 1, alpha: 1) : CGColor(gray: 0, alpha: 1))
+            context.fill(rect)
+        }
+        return context.makeImage()
+    }()
+
     var body: some View {
-        Canvas { context, size in
-            var seed: UInt64 = 0x5EED
-            func next() -> CGFloat {
-                seed = seed &* 6_364_136_223_846_793_005 &+ 1_442_695_040_888_963_407
-                return CGFloat(seed >> 33) / CGFloat(1 << 31)
-            }
-            for _ in 0..<Int(size.width * size.height / 28) {
-                let rect = CGRect(x: next() * size.width, y: next() * size.height, width: 1, height: 1)
-                context.fill(Path(rect), with: .color(next() > 0.5 ? .white : .black))
+        Group {
+            if let tile = Self.tile {
+                Image(decorative: tile, scale: 1)
+                    .resizable(resizingMode: .tile)
             }
         }
         .allowsHitTesting(false)

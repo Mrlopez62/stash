@@ -116,9 +116,8 @@ struct WelcomeView: View {
         #if DEBUG
         .task {
             // Simulator checks only (never in release builds).
-            let env = ProcessInfo.processInfo.environment
-            if env["STASH_SIM_SHOW"] == "create" { creating = true }
-            if let pw = env["STASH_SIM_CREATE"] {
+            if SimHooks.shows("create") { creating = true }
+            if let pw = SimHooks.createPassword {
                 await model.createVault(password: pw)
                 try? model.addItem(fields: ["kind": "login", "username": "samus@example.com", "password": "Sample-Only-Password1",
                                             "website": "https://github.com", "otp": "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP"],
@@ -230,7 +229,7 @@ struct LockView: View {
         .task {
             #if DEBUG
             // Simulator screenshots only (never in release builds).
-            if !Self.simUnlocked, let pw = ProcessInfo.processInfo.environment["STASH_SIM_PASSWORD"] {
+            if !Self.simUnlocked, let pw = SimHooks.password {
                 // Once: a later lock has to stay locked for that to be checkable.
                 Self.simUnlocked = true
                 await model.unlock(password: pw)
@@ -261,8 +260,7 @@ struct VaultListView: View {
     @State private var showingSettings = false
     @State private var deleting: PhoneItem?
     @State private var path: [PhoneItem] = []
-    @State private var adding: PaymentKind?
-    @State private var addingLogin = false
+    @State private var adding: AddKind?
     @State private var search = ""
 
     private func matching(_ items: [PhoneItem]) -> [PhoneItem] {
@@ -297,17 +295,16 @@ struct VaultListView: View {
             #if DEBUG
             .onAppear {
                 // Simulator screenshots only (never in release builds).
-                let env = ProcessInfo.processInfo.environment
-                if let name = env["STASH_SIM_OPEN"],
+                if let name = SimHooks.open,
                    let item = model.items.first(where: { $0.name == name }) {
                     path = [item]
                 }
-                if env["STASH_SIM_SHOW"] == "add-card" { adding = .card }
-                if env["STASH_SIM_SHOW"] == "add-bank" { adding = .bank }
-                if env["STASH_SIM_SHOW"] == "add-login" { addingLogin = true }
-                if env["STASH_SIM_SHOW"] == "settings" { showingSettings = true }
-                if env["STASH_SIM_SHOW"] == "delete" { deleting = model.items.first }
-                if env["STASH_SIM_SHOW"] == "ask-face-id" { model.askAboutFaceID = true }
+                if SimHooks.shows("add-card") { adding = .card }
+                if SimHooks.shows("add-bank") { adding = .bank }
+                if SimHooks.shows("add-login") { adding = .login }
+                if SimHooks.shows("settings") { showingSettings = true }
+                if SimHooks.shows("delete") { deleting = model.items.first }
+                if SimHooks.shows("ask-face-id") { model.askAboutFaceID = true }
             }
             #endif
             .toolbar {
@@ -320,7 +317,7 @@ struct VaultListView: View {
                 ToolbarItemGroup(placement: .topBarTrailing) {
                     if model.madeHere {
                         Menu {
-                            Button("Add a Login", systemImage: "person.badge.key") { addingLogin = true }
+                            Button("Add a Login", systemImage: "person.badge.key") { adding = .login }
                             Button("Add a Card", systemImage: "creditcard") { adding = .card }
                             Button("Add a Bank Account", systemImage: "building.columns") { adding = .bank }
                         } label: {
@@ -330,8 +327,16 @@ struct VaultListView: View {
                     Button { model.lock() } label: { Label("Lock", systemImage: "lock.fill") }
                 }
             }
-            .sheet(item: $adding) { AddPaymentView(kind: $0).sheetGuarded() }
-            .sheet(isPresented: $addingLogin) { LoginFormView().sheetGuarded() }
+            .sheet(item: $adding) { kind in
+                Group {
+                    switch kind {
+                    case .login: LoginFormView()
+                    case .card: AddPaymentView(kind: .card)
+                    case .bank: AddPaymentView(kind: .bank)
+                    }
+                }
+                .sheetGuarded()
+            }
             .sheet(isPresented: $showingSettings) { SettingsView().sheetGuarded() }
             // An alert, not a dialog: a dialog would point at some other row.
             .alert("Delete \(deleting?.title ?? "this")?", isPresented: Binding(
@@ -396,246 +401,5 @@ struct VaultListView: View {
                 .tint(.red)
             }
         }
-    }
-}
-
-// MARK: - Detail
-
-struct DetailView: View {
-    @EnvironmentObject var model: PhoneModel
-    let item: PhoneItem
-    @State private var detail: PhoneDetail?
-    /// Revealed values, by label; hidden again after 30 seconds.
-    @State private var shown: [String: String] = [:]
-    @State private var confirmDelete = false
-    @State private var editing = false
-    @State private var finish: CardFinish?
-    @Environment(\.dismiss) private var dismiss
-
-    var body: some View {
-        List {
-            if let detail {
-                if let face = detail.card {
-                    CardFaceView(face: face,
-                                 cardholder: detail.value("cardholder"),
-                                 expiry: detail.value("expiry"),
-                                 revealCVV: { model.reveal(item.name, "cvv") },
-                                 finish: finish)
-                        .padding(.vertical, 8)
-                        .listRowBackground(Color.clear)
-                        .listRowInsets(EdgeInsets())
-                    Section("Card Color") {
-                        CardColorPicker(selection: Binding(get: { finish }, set: { new in
-                            finish = new
-                            model.setCardColor(item.name, new)
-                        }))
-                        .listRowBackground(Color.surface)
-                    }
-                }
-                Section {
-                    ForEach(detail.fields) { field in
-                        if field.kind == .otp {
-                            OTPRow(name: item.name)
-                        } else {
-                            fieldRow(field)
-                        }
-                    }
-                }
-                if detail.hasNotes {
-                    Section { fieldRow(FieldInfo(label: "notes", kind: .concealed, value: nil)) }
-                }
-                if model.madeHere {
-                    Section {
-                        Button("Delete", role: .destructive) { confirmDelete = true }
-                            .listRowBackground(Color.surface)
-                    }
-                }
-            }
-        }
-        .scrollContentBackground(.hidden)
-        .background(Color.canvas)
-        .navigationTitle(item.title)
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            ToolbarItem(placement: .principal) {
-                Text(item.title).font(.mono(15, weight: .semibold)).foregroundStyle(Color.ink)
-            }
-            if model.madeHere {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button("Edit") { editing = true }
-                }
-            }
-        }
-        .sheet(isPresented: $editing) {
-            Group {
-                if item.kind == .login {
-                    LoginFormView(editing: item, onSaved: saved)
-                } else {
-                    AddPaymentView(kind: item.kind == .bank ? .bank : .card, editing: item, onSaved: saved)
-                }
-            }
-            .sheetGuarded()
-        }
-        #if DEBUG
-        .onAppear {
-            // Simulator checks only (never in release builds).
-            let env = ProcessInfo.processInfo.environment
-            if env["STASH_SIM_SHOW"] == "edit" { editing = true }
-        }
-        #endif
-        .confirmationDialog("Delete \(item.title)?", isPresented: $confirmDelete, titleVisibility: .visible) {
-            Button("Delete", role: .destructive) {
-                if model.removeItem(item.name) { dismiss() }
-            }
-        } message: {
-            Text("This is the only copy, and it can't be undone.")
-        }
-        .onAppear {
-            detail = model.detail(item.name)
-            finish = detail?.cardColor.flatMap(CardFinish.init(rawValue:))
-            #if DEBUG
-            if let color = ProcessInfo.processInfo.environment["STASH_SIM_COLOR"] { finish = CardFinish(rawValue: color) }
-            #endif
-        }
-        .onDisappear { shown = [:] }
-    }
-
-    private func saved(_ name: String) {
-        shown = [:]
-        // A new nickname is a new item: back to the list to find it.
-        if name == item.name { detail = model.detail(name) } else { dismiss() }
-    }
-
-    /// Where a saved website opens: web addresses only.
-    private func link(_ value: String?) -> URL? {
-        guard let value, !value.isEmpty else { return nil }
-        let url = URL(string: value.contains("://") ? value : "https://\(value)")
-        return ["http", "https"].contains(url?.scheme?.lowercased()) ? url : nil
-    }
-
-    private func fieldRow(_ field: FieldInfo) -> some View {
-        let value = field.value ?? shown[field.label]
-        return HStack(alignment: .center, spacing: 10) {
-            VStack(alignment: .leading, spacing: 3) {
-                Text(displayLabel(field.label))
-                    .font(.plex(12.5, weight: .medium))
-                    .foregroundStyle(Color.inkSecondary)
-                // Hidden fields can't be selected: the system's Copy would skip
-                // the copy button's stay-on-this-phone and 60-second rules.
-                let shownValue = Text(value ?? "••••••••••••")
-                    .font(.mono(16))
-                    .foregroundStyle(Color.ink)
-                if field.value != nil {
-                    shownValue.textSelection(.enabled)
-                } else {
-                    shownValue
-                }
-            }
-            Spacer()
-            if field.kind == .url, let url = link(field.value) {
-                Link(destination: url) {
-                    Image(systemName: "arrow.up.right.square")
-                }
-                .buttonStyle(.borderless)
-                .accessibilityLabel("Open website")
-            }
-            if field.value == nil {
-                Button {
-                    toggle(field.label)
-                } label: {
-                    Image(systemName: shown[field.label] == nil ? "eye" : "eye.slash")
-                }
-                .buttonStyle(.borderless)
-                .accessibilityLabel(shown[field.label] == nil ? "Show \(field.label)" : "Hide \(field.label)")
-            }
-            Button {
-                if let v = field.value ?? model.reveal(item.name, field.label) {
-                    model.copy(v, label: field.label)
-                }
-            } label: {
-                Image(systemName: "doc.on.doc")
-            }
-            .buttonStyle(.borderless)
-            .accessibilityLabel("Copy \(field.label)")
-        }
-        .listRowBackground(Color.surface)
-    }
-
-    private func displayLabel(_ label: String) -> String {
-        switch label {
-        case "number": "Card Number"
-        case "cvv": "Security Code"
-        case "pin": "PIN"
-        case "iban": "IBAN"
-        case "swift": "SWIFT"
-        case "billing zip": "Billing ZIP"
-        case "routing number": "Routing Number"
-        default: label.capitalized
-        }
-    }
-
-    private func toggle(_ label: String) {
-        if shown[label] != nil {
-            shown[label] = nil
-            return
-        }
-        guard let value = model.reveal(item.name, label) else { return }
-        shown[label] = value
-        Task { @MainActor in
-            try? await Task.sleep(for: .seconds(30))
-            shown[label] = nil
-        }
-    }
-}
-
-/// A login's 2FA code, kept current, with the time it has left.
-struct OTPRow: View {
-    @EnvironmentObject var model: PhoneModel
-    let name: String
-
-    var body: some View {
-        TimelineView(.periodic(from: .now, by: 1)) { _ in
-            let otp = model.otp(name)
-            HStack(spacing: 10) {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("2FA Code")
-                        .font(.plex(12.5, weight: .medium))
-                        .foregroundStyle(Color.inkSecondary)
-                    Text(otp.map { grouped($0.code) } ?? "——— ———")
-                        .font(.mono(20, weight: .semibold))
-                        .foregroundStyle(Color.ink)
-                        .contentTransition(.numericText())
-                }
-                Spacer()
-                if let otp {
-                    ZStack {
-                        Circle().stroke(Color.line, lineWidth: 2.5)
-                        Circle()
-                            .trim(from: 0, to: CGFloat(otp.remaining) / CGFloat(max(otp.period, 1)))
-                            .stroke(otp.remaining <= 5 ? Color.danger : Color.inkSecondary,
-                                    style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
-                            .rotationEffect(.degrees(-90))
-                        Text("\(otp.remaining)")
-                            .font(.mono(10.5, weight: .medium))
-                            .foregroundStyle(Color.inkSecondary)
-                    }
-                    .frame(width: 28, height: 28)
-                    .accessibilityLabel("\(otp.remaining) seconds left")
-                }
-                Button {
-                    if let code = model.otp(name)?.code { model.copy(code, label: "2FA code") }
-                } label: {
-                    Image(systemName: "doc.on.doc")
-                }
-                .buttonStyle(.borderless)
-                .accessibilityLabel("Copy 2FA code")
-            }
-        }
-        .listRowBackground(Color.surface)
-    }
-
-    private func grouped(_ code: String) -> String {
-        let middle = code.count / 2
-        return "\(code.prefix(middle)) \(code.suffix(code.count - middle))"
     }
 }

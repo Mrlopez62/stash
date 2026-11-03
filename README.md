@@ -386,7 +386,7 @@ Rust handles everything that is security-critical: the vault, keys, and every de
 | v0.16.1 ✅ | New Item asks what you're saving first; locking stays locked |
 | v0.17 ✅ | A new item always shows up: if the list you're on wouldn't show it, the app switches to its category |
 | v0.18 ✅ | Import from Chrome, Safari, Firefox, 1Password, Bitwarden, and other password managers (`stash import`, File → Import in the app) |
-| v0.19 ✅ | **The stash iPhone app:** your cards and bank accounts on your iPhone, with Face ID (`stash export --phone`) |
+| v0.19 ✅ | **The stash iPhone app:** your logins, cards, and bank accounts on your iPhone, with Face ID, 2FA codes, and QR setup (`stash export --phone`, or make a vault on the phone) |
 | v0.20 | Safari (needs a signed release); syncing the phone with the Mac |
 | v0.x | A configurable Quick Access shortcut, launch at login, a signed and notarized download |
 | Later | Encrypted sync (iCloud Drive or Git), Linux support |
