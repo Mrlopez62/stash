@@ -57,8 +57,8 @@ Building needs Rust and the free Xcode Command Line Tools (`xcode-select --insta
 Keep your cards, bank accounts, and logins on your iPhone, unlocked with Face ID. Notes and SSH keys never go to the phone, and logins go only if you add them there or export them.
 
 <p align="center">
-  <img src="docs/screenshots/iphone-list.png" alt="The stash iPhone app: a list of cards and bank accounts, showing only the last four digits" width="260">
-  <img src="docs/screenshots/iphone-card.png" alt="A card in the stash iPhone app, with its number and security code hidden" width="260">
+  <img src="docs/screenshots/iphone-list.png" alt="The stash iPhone app: cards, bank accounts, and logins, showing only the last four digits and usernames" width="260">
+  <img src="docs/screenshots/iphone-card.png" alt="A Visa card in the stash iPhone app, with its number and security code hidden, and a choice of card colors" width="260">
 </p>
 
 ```sh
@@ -68,11 +68,11 @@ stash export --phone ~/Desktop/phone.stashvault   # asks for Touch ID, then a pa
 
 Then AirDrop `phone.stashvault` to your iPhone and open it in stash (or, in Finder, drop it on your iPhone under Files → stash), unlock it with the password you chose, and delete the file from your Desktop. stash then asks whether to use Face ID from now on, and you can change that in Settings.
 
-To bring your logins and their 2FA too, add `--logins` to the export.
+To bring your logins and their 2FA too, add `--logins` to the export. Exports copy only standard fields: never notes or custom fields.
 
 **No Mac vault to copy?** Tap **Skip** on the first screen, choose a password, and add your logins, cards, and bank accounts on the phone. That vault exists only on that iPhone: it isn't in iCloud or any backup, and nothing syncs it to your Mac.
 
-- **What it does:** shows your cards (with the same card face as the Mac app) and bank accounts, reveals a number or security code when you tap the eye, and copies values to the clipboard, where they stay on the phone (no Universal Clipboard) and clear after a minute. It locks as soon as you leave the app and hides itself in the app switcher.
+- **What it does:** shows your cards (with the same card face as the Mac app) and bank accounts, reveals a number or security code when you tap the eye, and copies values to the clipboard, where they stay on the phone (no Universal Clipboard) and clear after a minute. It locks as soon as you leave the app and hides itself in the app switcher. Settings (the gear) holds Face ID and replacing or removing the vault.
 - **A vault from your Mac is read-only:** to change something, change it on your Mac and export again; opening the new file replaces the old one. Syncing is planned.
 - **Logins** show their username and website, with the password hidden until you ask, and live 2FA codes. Set up 2FA by scanning a site's QR code or pasting its key. Copy them into the site or app: stash doesn't fill passwords on the iPhone yet.
 - **Card colors:** choose a color for any card. It's saved in the vault on the phone, and doesn't show on the Mac.
@@ -215,7 +215,7 @@ stash get cards/visa#cvv        # also #expiry, #name, #zip
 stash ls --long                 # "Visa •••• 4242 · 08/27"
 ```
 
-- **Typos are caught before they're saved.** Card numbers must pass their Luhn checksum and match the brand's length, and expiry must be a real MM/YY. Routing numbers are checked with the ABA checksum and IBANs with mod-97.
+- **Typos are caught before they're saved.** Card numbers must pass their Luhn checksum and match the brand's length, and expiry must be a real MM/YY no more than 20 years away (an expired card gets a warning but can be kept). Routing numbers are checked with the ABA checksum and IBANs with mod-97.
 - **Last four only in lists.** `show`, `ls --long`, and the app show just the last four digits until you reveal. In the app, a card gets a card face.
 - **Off-limits to AI agents by default.** `stash mcp` won't list or use cards and bank accounts unless you start it with `--allow-payments`. Blocked attempts go in the audit log.
 
