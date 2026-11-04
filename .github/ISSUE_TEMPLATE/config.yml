@@ -3,3 +3,6 @@ contact_links:
   - name: Report a security vulnerability
     url: https://github.com/Mrlopez62/stash/security/advisories/new
     about: Please report security issues privately, not as a public issue.
+  - name: Ask a question
+    url: https://github.com/Mrlopez62/stash/discussions
+    about: Questions and ideas go in Discussions.
