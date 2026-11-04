@@ -254,6 +254,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         _ = await m.addSSHKey(name: "ssh/new") { try await $0.sshGenerate(name: "ssh/new", comment: nil) }
         check(m.filter == .kind(.ssh), "an SSH key made in Logins goes to SSH Keys")
 
+        // With the inspector open at the default window size, the table is
+        // 608pt wide: it must still say which account or card each row is.
+        let inspectorOpen = Columns(width: 608)
+        check(inspectorOpen.details && inspectorOpen.updated && !inspectorOpen.site, "the list keeps its details with the inspector open")
+        check(!Columns(width: 442).details, "the narrowest list keeps room for the name")
+        check(Columns(width: 900).site, "a wide list shows every column")
+
         m = await fresh(.kind(.ssh), search: "zzz")
         let sample = try? await MockBackend(locked: false).importPreview(path: "/sample.csv")
         let picked = (sample?.entries ?? []).filter { [0, 2].contains($0.index) }
@@ -262,6 +269,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         check(m.items.contains { $0.name == "cards/chase-sapphire" } && !m.items.contains { $0.name == "router" },
               "and the list has them")
         check(m.filter == .all && m.search.isEmpty, "and shows them, even from SSH Keys with a search")
+
+        // Shared with the iPhone app: what forms say as you type, and names.
+        let july2026 = DateComponents(calendar: .current, year: 2026, month: 7, day: 15).date!
+        func expiry(_ text: String) -> (ok: Bool, text: String, blocks: Bool)? { PaymentHints.expiryStatus(text, now: july2026) }
+        check(expiry("18/89")?.blocks == true && expiry("18/89")?.text.contains("month") == true, "month 18 is refused")
+        check(expiry("08/89")?.blocks == true, "a year 60 years away is refused")
+        check(expiry("08/46")?.blocks == false && expiry("08/46")?.ok == true, "20 years away is fine")
+        check(expiry("06/26")?.blocks == false && expiry("06/26")?.ok == false, "an expired card warns but can be saved")
+        check(expiry("08/26")?.ok == true, "this year, later this month or after, is fine")
+        check(expiry("1") == nil && expiry("08/2") == nil, "no verdict while it's being typed")
+        check(expiry("8/2027")?.ok == true, "a four-digit year works")
+        check(PaymentHints.cardStatus("4242 4242 4242 4242")?.note == "looks right", "a good card number looks right")
+        check(PaymentHints.cardStatus("4242 4242 4242 4241")?.ok == false, "a typo is caught")
+        check(PaymentHints.cardStatus("4242 4242 4242")?.note == nil, "no verdict until the number is complete")
+        check(PaymentHints.cardStatus("3782 822463 10005")?.brand == "American Express"
+              && PaymentHints.cardStatus("3782 822463 10005")?.note == "looks right", "American Express is complete at 15 digits")
+        check(ItemText.slug("Chase Checking!") == "chase-checking" && ItemText.slug("  ") == "", "names are slugs")
+        check(ItemText.slug(String(repeating: "a", count: 90)).count == 60, "names are capped")
+        check(ItemText.site(fromWebsite: "https://www.github.com/login") == "github"
+              && ItemText.site(fromWebsite: "") == nil, "a login's name comes from its site")
+        let label = ItemText.otpLabel("otpauth://totp/GitHub:samus%40example.com?secret=JBSWY3DPEHPK3PXP&issuer=Git%20Hub")
+        check(label.issuer == "Git Hub" && label.account == "samus@example.com", "a 2FA QR code names its site and account")
+        check(ItemText.otpLabel("otpauth://totp/Stash:me?secret=X").issuer == "Stash", "the site can come from the label")
+        check(ItemText.otpLabel("https://example.com").issuer == nil, "anything else names nothing")
+        check(CardNumberDisplay.typed("424242424242424") == "4242 4242 4242 424", "numbers group in fours as typed")
+        check(CardNumberDisplay.typed("378282246310005") == "3782 822463 10005", "and 4-6-5 for American Express")
 
         print(failed == 0 ? "modeltest: ok" : "modeltest: \(failed) failed")
         exit(failed == 0 ? 0 : 1)

@@ -23,7 +23,14 @@ pub fn clean(s: &str, max: usize) -> String {
     let clean: String = s
         .chars()
         .filter(|&c| !is_invisible_format(c))
-        .map(|c| if c.is_control() { ' ' } else { c })
+        // Line and paragraph separators break lines but aren't "control" characters.
+        .map(|c| {
+            if c.is_control() || matches!(c, '\u{2028}' | '\u{2029}') {
+                ' '
+            } else {
+                c
+            }
+        })
         .collect();
     if clean.chars().count() > max {
         let mut cut: String = clean.chars().take(max.saturating_sub(1)).collect();
@@ -37,6 +44,14 @@ pub fn clean(s: &str, max: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn line_separators_cant_fake_a_new_line() {
+        assert_eq!(
+            clean("a.csv\u{2028}requested by zsh\u{2029}", 80),
+            "a.csv requested by zsh "
+        );
+    }
 
     #[test]
     fn strips_what_could_disguise_a_command() {

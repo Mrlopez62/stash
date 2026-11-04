@@ -341,7 +341,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let mut vault = vault(&dir);
         let log = path_for(vault.path());
-        let mut legacy = serde_json::to_vec(&event(1, "aws/key")).unwrap();
+        let mut legacy = serde_json::to_vec(&event(1, "legacy-plain-name")).unwrap();
         legacy.push(b'\n');
         std::fs::write(log.file(), legacy).unwrap();
         record(&log, &event(2, "github/token")).unwrap();
@@ -351,7 +351,12 @@ mod tests {
         assert_eq!((before.events.len(), before.plain), (2, 1));
         let public = crypto::x25519_public(&secret);
         rewrite(&log, None, &public).unwrap();
-        assert!(!std::fs::read_to_string(log.file()).unwrap().contains("aws"));
+        // Long enough that random base64 can't contain it by chance.
+        assert!(
+            !std::fs::read_to_string(log.file())
+                .unwrap()
+                .contains("legacy-plain-name")
+        );
         assert_eq!(read(&log, &secret, 10).unwrap().events, before.events);
 
         // New keys: the history is resealed to them.

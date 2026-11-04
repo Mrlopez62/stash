@@ -20,7 +20,7 @@ What to expect:
 
 ## Supported versions
 
-stash is pre-1.0. Only the latest release and the `main` branch get security fixes.
+stash is pre-1.0. Only the `main` branch and the newest tagged release, if there is one, get security fixes.
 
 ## Scope
 

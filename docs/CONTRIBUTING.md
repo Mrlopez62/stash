@@ -13,6 +13,7 @@ Thanks for helping out! stash is a secrets manager, so we care about correctness
 - `main` is the stable branch. Never commit to it directly.
 - `dev` is where development happens. Branch from `dev` and open your pull request against `dev`.
 - Maintainers move `dev` into `main` with a pull request when it's ready to release.
+- You don't need to sign your commits. Maintainers **squash-merge** contributions into `dev`: `main` requires signed commits, and GitHub signs the squashed commit, so an unsigned commit can't block a release.
 
 ## Setup
 
@@ -51,6 +52,24 @@ swift build --package-path macos/StashApp       # just the app, for quick iterat
   ```sh
   STASH_VAULT=/tmp/selftest.db build/stash.app/Contents/MacOS/Stash --selftest
   ```
+
+- **Check the app's behavior** on sample data, as CI does:
+  ```sh
+  macos/StashApp/.build/release/Stash --modeltest
+  ```
+
+### The iPhone app
+
+The app lives in `ios/` and links the Rust core through `crates/stash-ffi`. It needs full Xcode (not just the Command Line Tools) and XcodeGen (`brew install xcodegen`). The Xcode project is generated from `ios/project.yml` and isn't committed.
+
+```sh
+./scripts/ios-build.sh     # the Rust core and the app, for the simulator
+./scripts/ios-install.sh   # on your own iPhone (see the comments at the top of the script)
+```
+
+It shares `CardVisuals.swift`, `Payments.swift`, `Models.swift`, and `ViewState.swift` with the Mac app, so changes there need to build on both. Face ID can't be tested in the simulator, so changes to `FaceIDKeys.swift` need a check on a real iPhone.
+
+### Trying the CLI
 
 Try the CLI against a throwaway vault so you don't touch your real one:
 
@@ -91,11 +110,15 @@ These apply to everything in `crates/stash-core` and any code that touches secre
 
 ```
 crates/stash-core   vault format, crypto, and operations (library)
-crates/stash-cli    the `stash` command and session agent
+crates/stash-cli    the `stash` command, session agent, MCP server, SSH agent,
+                    browser bridge, and the Mac app's backend
+crates/stash-ffi    C interface to stash-core, for the iPhone app
 swift/stash-touchid Touch ID helper (macOS)
 macos/StashApp      the Mac app (SwiftUI)
-scripts/            install script
-docs/               design and security docs
+ios/                the iPhone app (SwiftUI)
+browser/            the browser extension and its tests
+scripts/            install and build scripts
+docs/               changelog, design, security, and brand docs
 ```
 
 ## License

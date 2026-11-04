@@ -52,10 +52,25 @@ jobs:
       - name: Build the Mac app
         if: runner.os == 'macOS'
         run: swift build -c release --package-path macos/StashApp
+      - name: Build the iPhone app (simulator)
+        if: runner.os == 'macOS'
+        run: |
+          brew install xcodegen
+          ./scripts/ios-build.sh
       - name: Check the Mac app's model
         if: runner.os == 'macOS'
         # Sample data only; perl's alarm stops it if it ever hangs.
         run: perl -e 'alarm 60; exec @ARGV' macos/StashApp/.build/release/Stash --modeltest
+
+  audit:
+    name: Dependency advisories
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+      - run: cargo audit
 
   msrv:
     name: Minimum Rust version

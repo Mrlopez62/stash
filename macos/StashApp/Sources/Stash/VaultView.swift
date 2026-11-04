@@ -293,27 +293,24 @@ struct ItemsPane: View {
 
 /// Column widths, shared by the header and the rows.
 private enum Col {
-    static let kind: CGFloat = 78
     static let user: CGFloat = 180
     static let site: CGFloat = 170
     static let otp: CGFloat = 36
     static let updated: CGFloat = 76
 }
 
-/// Which optional columns fit, keeping at least 260pt for the name. As the
-/// table narrows (e.g. with the inspector open) it drops website first, then
-/// kind (the icon already shows it), then username, then updated.
+/// Which optional columns fit, keeping about 240pt for the name. As the table
+/// narrows (e.g. with the inspector open) it drops website first, then the
+/// date, and keeps the details longest: they say which account or card it is.
 struct Columns: Equatable {
-    var kind = true
-    var user = true
+    var details = true
     var site = true
     var updated = true
 
     init(width: CGFloat) {
-        site = width >= 890
-        user = width >= 620
-        kind = width >= 710 || width < 620
-        updated = width >= 520
+        site = width >= 782
+        updated = width >= 600
+        details = width >= 512
     }
 }
 
@@ -325,8 +322,7 @@ struct ItemTable: View {
         VStack(spacing: 0) {
             HStack(spacing: 12) {
                 Eyebrow(text: "Name").frame(maxWidth: .infinity, alignment: .leading)
-                if columns.kind { Eyebrow(text: "Kind").frame(width: Col.kind, alignment: .leading) }
-                if columns.user { Eyebrow(text: "Username").frame(width: Col.user, alignment: .leading) }
+                if columns.details { Eyebrow(text: "Details").frame(width: Col.user, alignment: .leading) }
                 if columns.site { Eyebrow(text: "Website").frame(width: Col.site, alignment: .leading) }
                 Eyebrow(text: "2FA").frame(width: Col.otp, alignment: .center)
                 if columns.updated { Eyebrow(text: "Updated").frame(width: Col.updated, alignment: .trailing) }
@@ -358,6 +354,8 @@ struct ItemTable: View {
                 }
             }
         }
+        // The last row follows the card's corners.
+        .clipShape(UnevenRoundedRectangle(bottomLeadingRadius: 12, bottomTrailingRadius: 12, style: .continuous))
     }
 }
 
@@ -385,14 +383,14 @@ struct ItemTableRow: View {
                 if hovering && item.kind != .note { RowActions(item: item) }
             }
 
-            if columns.kind { KindBadge(kind: item.kind).frame(width: Col.kind, alignment: .leading) }
-            if columns.user {
+            if columns.details {
                 // Cards and bank accounts show "Visa •••• 4242" here.
-                Text(item.username ?? item.subtitle ?? "—")
+                // Short enough that the last four digits always show.
+                Text((item.username ?? item.subtitle ?? "—").replacingOccurrences(of: "American Express", with: "Amex"))
                     .font(.plex(13))
                     .foregroundStyle(item.username == nil && item.subtitle == nil ? Color.inkTertiary : Color.inkSecondary)
                     .lineLimit(1)
-                    .truncationMode(.middle)
+                    .truncationMode(.tail)
                     .frame(width: Col.user, alignment: .leading)
             }
             if columns.site {
@@ -425,7 +423,9 @@ struct ItemTableRow: View {
         }
         .padding(.horizontal, 16)
         .frame(height: 44)
-        .background(selected ? Color.amberTint : (hovering ? Color.hover : Color.surface))
+        // An explicit rectangle: a bare Color here picks up rounded corners
+        // on recent macOS, which notch the row's edges.
+        .background(Rectangle().fill(selected ? Color.amberTint : (hovering ? Color.hover : Color.surface)))
         .overlay(alignment: .leading) {
             if selected { Rectangle().fill(Color.keyholeAmber).frame(width: 3) }
         }
@@ -476,38 +476,23 @@ struct RowActions: View {
     }
 }
 
-struct KindBadge: View {
-    let kind: ItemKind
-
-    var body: some View {
-        switch kind {
-        case .login: Badge(text: "Login")
-        // Neutral: the amber tile already marks a secret.
-        case .secret: Badge(text: "Secret")
-        case .note: Badge(text: "Note")
-        case .card: Badge(text: "Card")
-        case .bank: Badge(text: "Bank")
-        case .ssh: Badge(text: "SSH")
-        }
-    }
-}
-
 struct ItemIcon: View {
     let kind: ItemKind
     var size: CGFloat = 32
 
     var body: some View {
-        // The kind shows in the glyph, not in a heavy tile.
+        // The same tile for every kind: amber is for the action and the
+        // selection, and a card is no less secret than an API key.
         RoundedRectangle(cornerRadius: size * 0.27, style: .continuous)
-            .fill(kind == .secret ? Color.amberTint : Color.surfaceRaised)
-            .overlay(
-                RoundedRectangle(cornerRadius: size * 0.27, style: .continuous)
-                    .strokeBorder(kind == .secret ? Color.keyholeAmber.opacity(0.35) : Color.line))
+            .fill(Color.surfaceRaised)
+            .overlay(RoundedRectangle(cornerRadius: size * 0.27, style: .continuous).strokeBorder(Color.line))
             .overlay(
                 Image(systemName: kind.symbol)
                     .font(.system(size: size * 0.44, weight: .semibold))
-                    .foregroundStyle(kind == .secret ? Color.amberText : Color.inkSecondary))
+                    .foregroundStyle(Color.inkSecondary))
             .frame(width: size, height: size)
+            .help(kind.title)
+            .accessibilityLabel(kind.title)
     }
 }
 

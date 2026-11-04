@@ -37,7 +37,7 @@ extension Color {
     static let line = Color(light: 0xE4E0D6, dark: 0x2A303B)
     static let ink = Color(light: 0x0E1116, dark: 0xE8EAED)
     static let inkSecondary = Color(light: 0x4A5160, dark: 0xB9C0CC)
-    static let inkTertiary = Color(light: 0x7D8594, dark: 0x8A93A3)
+    static let inkTertiary = Color(light: 0x5F6877, dark: 0x8A93A3)
     static let amberTint = Color(light: 0xFCEFD4, dark: 0x3A2F17)
     static let amberText = Color(light: 0x8A5A00, dark: 0xF5B544)
     static let success = Color(light: 0x1F8A5B, dark: 0x7DD3A8)
@@ -302,23 +302,6 @@ struct SearchField: View {
         .overlay(
             RoundedRectangle(cornerRadius: 8, style: .continuous)
                 .strokeBorder(focused ? Color.keyholeAmber.opacity(0.7) : Color.line, lineWidth: focused ? 1.5 : 1))
-    }
-}
-
-/// A rounded tag ("Login", "2FA").
-struct Badge: View {
-    let text: String
-    var tint: Color = .surfaceRaised
-    var foreground: Color = .inkSecondary
-
-    var body: some View {
-        Text(text)
-            .font(.plex(11, weight: .medium))
-            .padding(.horizontal, 7)
-            .padding(.vertical, 2)
-            .foregroundStyle(foreground)
-            .background(tint, in: Capsule())
-            .overlay(Capsule().strokeBorder(Color.line.opacity(0.7)))
     }
 }
 

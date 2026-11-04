@@ -36,6 +36,8 @@ pub enum Error {
     NotText(String),
     #[error("{0}")]
     InvalidPayment(String),
+    #[error("{0} isn't a stash vault")]
+    NotAVault(PathBuf),
     #[error("can't import this file: {0}")]
     Import(String),
     #[error("{0}")]
