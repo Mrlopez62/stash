@@ -82,7 +82,7 @@ To bring your logins and their 2FA too, add `--logins` to the export. Exports co
 
 ## Getting started
 
-Requires [Rust](https://rustup.rs) 1.88 or newer. On macOS, the Touch ID helper also needs Xcode or the Command Line Tools (`xcode-select --install`).
+Requires [Rust](https://rustup.rs) 1.89 or newer. On macOS, the Touch ID helper also needs Xcode or the Command Line Tools (`xcode-select --install`).
 
 ```sh
 git clone https://github.com/Mrlopez62/stash.git
