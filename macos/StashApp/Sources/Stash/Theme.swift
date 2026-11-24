@@ -194,6 +194,8 @@ struct FieldBox<Content: View, Trailing: View>: View {
     /// a form shares the same right edge.
     @ViewBuilder var trailing: Trailing
     @FocusState private var focused: Bool
+    /// Red border when the form says this field needs fixing.
+    @Environment(\.fieldInvalid) private var invalid
 
     var body: some View {
         HStack(spacing: 8) {
@@ -216,7 +218,21 @@ struct FieldBox<Content: View, Trailing: View>: View {
         .background(Color.surfaceRaised, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .strokeBorder(focused ? Color.keyholeAmber.opacity(0.7) : Color.line, lineWidth: focused ? 1.5 : 1))
+                .strokeBorder(
+                    invalid ? Color.danger : focused ? Color.keyholeAmber.opacity(0.7) : Color.line,
+                    lineWidth: focused || invalid ? 1.5 : 1))
+    }
+}
+
+private struct FieldInvalidKey: EnvironmentKey {
+    static let defaultValue = false
+}
+
+extension EnvironmentValues {
+    /// Whether the input inside should be drawn as needing a fix.
+    var fieldInvalid: Bool {
+        get { self[FieldInvalidKey.self] }
+        set { self[FieldInvalidKey.self] = newValue }
     }
 }
 
