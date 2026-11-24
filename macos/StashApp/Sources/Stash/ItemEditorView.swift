@@ -70,11 +70,15 @@ struct ItemEditorView: View {
     /// The result of the last QR scan, shown under the 2FA field.
     @ViewState private var qrStatus: QRStatus?
     @ViewState private var dropTargeted = false
+    /// Set once Create/Save is pressed with something missing: from then on
+    /// each field with a problem shows it in red, until it's fixed.
+    @ViewState private var showErrors = false
 
     private var isNew: Bool { if case .new = target { true } else { false } }
     private var original: ItemDetail? { if case .edit(let d) = target { d } else { nil } }
 
     var body: some View {
+        ScrollViewReader { proxy in
         VStack(spacing: 0) {
             HStack(spacing: 12) {
                 ItemIcon(kind: kind, size: 34)
@@ -91,11 +95,12 @@ struct ItemEditorView: View {
                 VStack(spacing: 16) {
                     Card(padding: 16, fill: true) {
                         VStack(alignment: .leading, spacing: 14) {
-                            LabeledInput("Name", hint: "Use a slash for folders, like work/aws") {
+                            LabeledInput("Name", hint: "Use a slash for folders, like work/aws", error: error(.name)) {
                                 FieldBox {
                                     TextField("", text: $name, prompt: Text(namePlaceholder).foregroundStyle(Color.inkTertiary))
                                 }
                             }
+                            .id(FormField.name)
                             if kind == .login {
                                 LabeledInput("Username") {
                                     FieldBox(mono: false) {
@@ -123,7 +128,8 @@ struct ItemEditorView: View {
 
                     Card(padding: 16, fill: true) {
                         VStack(alignment: .leading, spacing: 8) {
-                            Text("Notes").font(.plex(11.5, weight: .medium)).foregroundStyle(Color.inkTertiary)
+                            Text("Notes").font(.plex(11.5, weight: .medium))
+                                .foregroundStyle(error(.notes) == nil ? Color.inkTertiary : Color.danger)
                             if hadNotes && !notesLoaded {
                                 Button {
                                     Task {
@@ -141,10 +147,13 @@ struct ItemEditorView: View {
                                     .padding(8)
                                     .frame(minHeight: kind == .note ? 180 : 72)
                                     .background(Color.surfaceRaised, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-                                    .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(Color.line))
+                                    .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                        .strokeBorder(error(.notes) == nil ? Color.line : Color.danger))
                             }
+                            if let message = error(.notes) { FieldError(message) }
                         }
                     }
+                    .id(FormField.notes)
 
                     if kind != .note && kind != .ssh {
                         Card(padding: 16, fill: true) {
@@ -155,6 +164,7 @@ struct ItemEditorView: View {
                                         FieldBox(mono: false) {
                                             TextField("", text: $field.label, prompt: Text("Label").foregroundStyle(Color.inkTertiary))
                                         }
+                                        .environment(\.fieldInvalid, showErrors && field.label.trimmingCharacters(in: .whitespaces).isEmpty)
                                         .frame(width: 150)
                                         FieldBox {
                                             TextField("", text: $field.value, prompt: Text("Value").foregroundStyle(Color.inkTertiary))
@@ -172,6 +182,7 @@ struct ItemEditorView: View {
                                         Text("Hidden, kept as is").font(.plex(12)).foregroundStyle(Color.inkTertiary)
                                     }
                                 }
+                                if let message = error(.customLabels) { FieldError(message) }
                                 Button { custom.append(CustomField()) } label: {
                                     Label("Add field", systemImage: "plus")
                                 }
@@ -181,6 +192,7 @@ struct ItemEditorView: View {
                                     .foregroundStyle(Color.inkTertiary)
                             }
                         }
+                        .id(FormField.customLabels)
                     }
                 }
                 .padding(.horizontal, 24)
@@ -201,6 +213,12 @@ struct ItemEditorView: View {
                             .font(.plex(12))
                             .foregroundStyle(Color.danger)
                             .lineLimit(2)
+                    } else if showErrors, let problem {
+                        Label(issues.count > 1 ? "Fix the \(issues.count) fields marked in red." : problem,
+                              systemImage: "exclamationmark.circle.fill")
+                            .font(.plex(12, weight: .medium))
+                            .foregroundStyle(Color.danger)
+                            .lineLimit(2)
                     } else if let problem {
                         Text(problem).font(.plex(12)).foregroundStyle(Color.inkTertiary)
                     }
@@ -208,6 +226,7 @@ struct ItemEditorView: View {
                     if let onBack {
                         Button {
                             model.error = nil
+                            showErrors = false
                             onBack()
                         } label: {
                             Label("Back", systemImage: "chevron.left")
@@ -217,15 +236,18 @@ struct ItemEditorView: View {
                     Button("Cancel") { dismiss() }
                         .buttonStyle(SecondaryButtonStyle())
                         .keyboardShortcut(.cancelAction)
-                    Button(isNew ? "Create" : "Save") { Task { await save() } }
+                    // Not disabled when something's missing: pressing it shows
+                    // what to fix instead of leaving the user guessing.
+                    Button(isNew ? "Create" : "Save") { attemptSave(proxy) }
                         .buttonStyle(PrimaryButtonStyle())
                         .keyboardShortcut(.defaultAction)
-                        .disabled(problem != nil || model.busy)
+                        .disabled(model.busy)
                 }
                 .padding(.horizontal, 24)
                 .padding(.vertical, 14)
             }
             .background(Color.surface)
+        }
         }
         .frame(width: 540)
         .frame(minHeight: 420, idealHeight: kind == .login ? 760 : 560, maxHeight: 820)
@@ -280,7 +302,7 @@ struct ItemEditorView: View {
                 TextField("", text: $cardholder, prompt: Text("Name on the card").foregroundStyle(Color.inkTertiary))
             }
         }
-        LabeledInput("Card number") {
+        LabeledInput("Card number", error: error(.cardNumber)) {
             VStack(alignment: .leading, spacing: 6) {
                 FieldBox {
                     Group {
@@ -295,15 +317,16 @@ struct ItemEditorView: View {
                         showCardNumber.toggle()
                     }
                 }
-                if let status = PaymentHints.cardStatus(cardNumber) {
+                if error(.cardNumber) == nil, let status = PaymentHints.cardStatus(cardNumber) {
                     CardStatusLine(ok: status.ok, brand: status.brand, text: status.text, note: status.note)
                         .font(.plex(11.5, weight: .medium))
                         .foregroundStyle(Color.inkSecondary)
                 }
             }
         }
+        .id(FormField.cardNumber)
         HStack(alignment: .top, spacing: 12) {
-            LabeledInput("Expires") {
+            LabeledInput("Expires", invalid: error(.expiry) != nil) {
                 FieldBox {
                     TextField("", text: $expiry, prompt: Text("MM/YY").foregroundStyle(Color.inkTertiary))
                         .onChange(of: expiry) { _, new in
@@ -319,7 +342,10 @@ struct ItemEditorView: View {
                 FieldBox { SecureField("", text: $pin, prompt: keepPrompt("pin", "Optional")) }
             }
         }
-        if let status = PaymentHints.expiryStatus(expiry) {
+        .id(FormField.expiry)
+        if let message = error(.expiry) {
+            FieldError(message)
+        } else if let status = PaymentHints.expiryStatus(expiry) {
             CheckLine(ok: status.ok, text: status.text)
                 .font(.plex(11.5, weight: .medium))
         }
@@ -352,12 +378,14 @@ struct ItemEditorView: View {
                 TextField("", text: $holder, prompt: Text("Name on the account").foregroundStyle(Color.inkTertiary))
             }
         }
-        LabeledInput("Routing number", hint: routingHint) {
+        LabeledInput("Routing number", hint: routingHint, error: error(.routing)) {
             FieldBox { TextField("", text: $routing, prompt: Text("9 digits (US)").foregroundStyle(Color.inkTertiary)) }
         }
-        LabeledInput("Account number") {
+        .id(FormField.routing)
+        LabeledInput("Account number", error: error(.accountNumber)) {
             FieldBox { SecureField("", text: $accountNumber, prompt: keepPrompt("account number")) }
         }
+        .id(FormField.accountNumber)
         HStack(alignment: .top, spacing: 12) {
             LabeledInput("IBAN") {
                 FieldBox { SecureField("", text: $iban, prompt: keepPrompt("iban", "Optional, outside the US")) }
@@ -377,7 +405,7 @@ struct ItemEditorView: View {
     }
 
     private var secretInput: some View {
-        LabeledInput(kind == .login ? "Password" : "Value") {
+        LabeledInput(kind == .login ? "Password" : "Value", error: error(.secret)) {
             FieldBox {
                 Group {
                     if showSecret {
@@ -396,6 +424,7 @@ struct ItemEditorView: View {
                 }
             }
         }
+        .id(FormField.secret)
     }
 
     private var otpInput: some View {
@@ -491,35 +520,62 @@ struct ItemEditorView: View {
         return true
     }
 
-    private var problem: String? {
+    /// Everything that stops a save, in the order the fields appear.
+    private var issues: [FormIssue] {
+        var found: [FormIssue] = []
+        func add(_ field: FormField, _ message: String) { found.append(FormIssue(field: field, message: message)) }
+
         let trimmed = name.trimmingCharacters(in: .whitespaces)
-        if trimmed.isEmpty { return "Give it a name." }
-        if trimmed.contains(" ") { return "Names can't contain spaces (try github or work/aws)." }
+        if trimmed.isEmpty { add(.name, "Give it a name.") }
+        else if trimmed.contains(" ") { add(.name, "Names can't contain spaces (try github or work/aws).") }
         if kind == .ssh && isNew && sshImporting {
-            if sshFile == nil { return "Choose the private key file to import." }
-            if sshNeedsPassphrase && sshPassphrase.isEmpty { return "Enter the key file's passphrase." }
+            if sshFile == nil { add(.sshFile, "Choose the private key file to import.") }
+            else if sshNeedsPassphrase && sshPassphrase.isEmpty { add(.sshPassphrase, "Enter the key file's passphrase.") }
         }
-        if isNew && kind != .note && kind != .ssh && secret.isEmpty {
-            return kind == .login ? "Enter or generate a password." : "Enter the secret's value."
+        // Only logins and secrets have a single secret value; cards and bank
+        // accounts are checked field by field below.
+        if isNew && (kind == .login || kind == .secret) && secret.isEmpty {
+            add(.secret, kind == .login ? "Enter or generate a password." : "Enter the secret's value.")
         }
-        if kind == .note && notes.isEmpty && !(hadNotes && !notesLoaded) { return "Write the note." }
+        if kind == .note && notes.isEmpty && !(hadNotes && !notesLoaded) { add(.notes, "Write the note.") }
         if kind == .card {
-            if isNew && cardNumber.isEmpty { return "Enter the card number." }
-            if !cardNumber.isEmpty && !PaymentHints.luhn(cardNumber) { return "Check the card number for a typo." }
+            if isNew && cardNumber.isEmpty { add(.cardNumber, "Enter the card number.") }
+            else if !cardNumber.isEmpty && !PaymentHints.luhn(cardNumber) { add(.cardNumber, "Check the card number for a typo.") }
             if !expiry.isEmpty && expiry.range(of: #"^\d{1,2}/(\d{2}|\d{4})$"#, options: .regularExpression) == nil {
-                return "Use MM/YY for the expiry date."
+                add(.expiry, "Use MM/YY for the expiry date.")
+            } else if let status = PaymentHints.expiryStatus(expiry), status.blocks {
+                add(.expiry, status.text)
             }
-            if let status = PaymentHints.expiryStatus(expiry), status.blocks { return status.text }
         }
         if kind == .bank {
+            if !routing.isEmpty && !PaymentHints.routingOK(routing) { add(.routing, "Check the routing number for a typo.") }
             let hasStored = storedSensitive.contains("account number") || storedSensitive.contains("iban")
-            if accountNumber.isEmpty && iban.isEmpty && !hasStored { return "Enter an account number or an IBAN." }
-            if !routing.isEmpty && !PaymentHints.routingOK(routing) { return "Check the routing number for a typo." }
+            if accountNumber.isEmpty && iban.isEmpty && !hasStored { add(.accountNumber, "Enter an account number or an IBAN.") }
         }
         if custom.contains(where: { $0.label.trimmingCharacters(in: .whitespaces).isEmpty }) {
-            return "Every field needs a label."
+            add(.customLabels, "Every field needs a label.")
         }
-        return nil
+        return found
+    }
+
+    /// The first thing to fix, shown as a quiet hint before Create is pressed.
+    private var problem: String? { issues.first?.message }
+
+    /// The red message under a field, once Create has been pressed.
+    private func error(_ field: FormField) -> String? {
+        guard showErrors else { return nil }
+        return issues.first { $0.field == field }?.message
+    }
+
+    /// Save, or point out what's missing: every field with a problem turns
+    /// red, and the form scrolls to the first one.
+    private func attemptSave(_ proxy: ScrollViewProxy) {
+        if let first = issues.first {
+            showErrors = true
+            withAnimation(.easeInOut(duration: 0.25)) { proxy.scrollTo(first.field, anchor: .center) }
+            return
+        }
+        Task { await save() }
     }
 
     private func load() {
@@ -637,7 +693,7 @@ struct ItemEditorView: View {
             .pickerStyle(.segmented)
             .labelsHidden()
             if sshImporting {
-                LabeledInput("Private key file", hint: "Usually ~/.ssh/id_ed25519. Ed25519 keys in OpenSSH format.") {
+                LabeledInput("Private key file", hint: "Usually ~/.ssh/id_ed25519. Ed25519 keys in OpenSSH format.", error: error(.sshFile)) {
                     HStack(spacing: 10) {
                         Button {
                             chooseSSHFile()
@@ -654,10 +710,12 @@ struct ItemEditorView: View {
                         }
                     }
                 }
+                .id(FormField.sshFile)
                 if sshNeedsPassphrase {
-                    LabeledInput("Passphrase", hint: "Only used to read the file. In stash, the vault protects the key.") {
+                    LabeledInput("Passphrase", hint: "Only used to read the file. In stash, the vault protects the key.", error: error(.sshPassphrase)) {
                         FieldBox { SecureField("", text: $sshPassphrase, prompt: Text("The key file's passphrase").foregroundStyle(Color.inkTertiary)) }
                     }
+                    .id(FormField.sshPassphrase)
                 }
             } else {
                 LabeledInput("Comment", hint: "Shown at the end of the public key, like you@laptop.") {
@@ -787,25 +845,63 @@ struct GeneratorView: View {
     }
 }
 
-/// A label above an input, with an optional hint below.
+/// A label above an input, with an optional hint below. With an error, the
+/// label and the input's border turn red and the error replaces the hint.
 struct LabeledInput<Content: View>: View {
     let label: String
     var hint: String?
+    var error: String?
+    /// Red without a message of its own, for a field whose message is shown
+    /// elsewhere (like the expiry date, under its row).
+    var invalid = false
     @ViewBuilder var content: Content
 
-    init(_ label: String, hint: String? = nil, @ViewBuilder content: () -> Content) {
+    init(_ label: String, hint: String? = nil, error: String? = nil, invalid: Bool = false, @ViewBuilder content: () -> Content) {
         self.label = label
         self.hint = hint
+        self.error = error
+        self.invalid = invalid
         self.content = content()
     }
 
+    private var isInvalid: Bool { invalid || error != nil }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text(label).font(.plex(11.5, weight: .medium)).foregroundStyle(Color.inkTertiary)
+            Text(label).font(.plex(11.5, weight: .medium)).foregroundStyle(isInvalid ? Color.danger : Color.inkTertiary)
             content
-            if let hint {
+                .environment(\.fieldInvalid, isInvalid)
+            if let error {
+                FieldError(error)
+            } else if let hint {
                 Text(hint).font(.plex(11)).foregroundStyle(Color.inkTertiary)
             }
         }
+        .animation(.easeOut(duration: 0.15), value: error)
     }
+}
+
+/// A red line under a field saying what to fix.
+struct FieldError: View {
+    let message: String
+    init(_ message: String) { self.message = message }
+
+    var body: some View {
+        Label(message, systemImage: "exclamationmark.circle.fill")
+            .font(.plex(11.5, weight: .medium))
+            .foregroundStyle(Color.danger)
+            .fixedSize(horizontal: false, vertical: true)
+            .transition(.opacity)
+            .accessibilityLabel("Error: \(message)")
+    }
+}
+
+/// The fields the editor can point at when something stops a save.
+enum FormField: Hashable {
+    case name, secret, notes, cardNumber, expiry, routing, accountNumber, sshFile, sshPassphrase, customLabels
+}
+
+struct FormIssue: Equatable {
+    let field: FormField
+    let message: String
 }
