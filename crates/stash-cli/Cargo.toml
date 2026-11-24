@@ -25,7 +25,7 @@ zeroize = "1.9.1"
 assert_cmd = "2.2.2"
 ed25519-dalek = "3.0.0"
 predicates = "3.1.4"
-rusqlite = { version = "0.40.2", features = ["bundled"] }
+rusqlite = { version = "0.41.1", features = ["bundled"] }
 serde_json = "1.0.154"
 tempfile = "3.27.0"
 

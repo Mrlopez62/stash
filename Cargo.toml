@@ -7,7 +7,7 @@ version = "0.19.0"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/Mrlopez62/stash"
-rust-version = "1.88"
+rust-version = "1.89"
 
 # Argon2 is unbearably slow unoptimized; keep debug builds and tests snappy.
 [profile.dev.package.argon2]
