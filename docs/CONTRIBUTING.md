@@ -17,7 +17,7 @@ Thanks for helping out! stash is a secrets manager, so we care about correctness
 
 ## Setup
 
-You need [Rust](https://rustup.rs) 1.88 or newer.
+You need [Rust](https://rustup.rs) 1.89 or newer.
 
 ```sh
 git clone https://github.com/Mrlopez62/stash.git
