@@ -36,6 +36,74 @@ enum PaymentHints {
         return sum % 10 == 0
     }
 
+    /// How many digits each network's numbers have (payment.rs, Brand::lengths).
+    static func cardLengths(brand: String?) -> [Int] {
+        switch brand {
+        case "Visa": [13, 16, 19]
+        case "Mastercard": [16]
+        case "American Express": [15]
+        case "Discover", "JCB", "UnionPay": [16, 17, 18, 19]
+        case "Diners Club": [14, 15, 16, 17, 18, 19]
+        default: Array(12...19)
+        }
+    }
+
+    /// What's wrong with a typed card number, in the vault's order
+    /// (payment.rs, validate_card_number); nil if it's fine or empty.
+    static func cardNumberProblem(_ number: String) -> String? {
+        guard !number.isEmpty else { return nil }
+        if number.contains(where: { !($0.isASCII && $0.isNumber) && $0 != " " && $0 != "-" }) {
+            return "A card number has only digits (spaces and dashes are fine)."
+        }
+        let d = digits(number)
+        let network = Self.brand(d)
+        let lengths = cardLengths(brand: network)
+        if !lengths.contains(d.count) {
+            let subject = switch network {
+            case nil: "A card number"
+            case "American Express": "An American Express number"
+            case let name?: "A \(name) number"
+            }
+            return "\(subject) has \(describe(lengths)) digits; this one has \(d.count)."
+        }
+        if !luhn(d) { return "Check the card number for a typo." }
+        return nil
+    }
+
+    /// The security code must be 3 or 4 digits (payment.rs, validate_cvv).
+    static func cvvProblem(_ cvv: String, brand: String?) -> String? {
+        guard !cvv.isEmpty else { return nil }
+        if cvv.allSatisfy({ $0.isASCII && $0.isNumber }) && (3...4).contains(cvv.count) { return nil }
+        return brand == "American Express"
+            ? "The security code is the 4 digits on the front of the card."
+            : "The security code is the 3 digits on the back of the card."
+    }
+
+    /// International Bank Account Numbers: country code, check digits,
+    /// mod-97 (payment.rs, validate_iban).
+    static func ibanOK(_ iban: String) -> Bool {
+        let compact = iban.filter { !$0.isWhitespace }.uppercased()
+        guard (15...34).contains(compact.count),
+              compact.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber) }),
+              compact.prefix(2).allSatisfy(\.isLetter)
+        else { return false }
+        let rearranged = compact.dropFirst(4) + compact.prefix(4)
+        var remainder = 0
+        for c in rearranged {
+            guard let value = c.isNumber ? c.wholeNumberValue : Int(c.asciiValue! - 55) else { return false }
+            for digit in String(value) { remainder = (remainder * 10 + digit.wholeNumberValue!) % 97 }
+        }
+        return remainder == 1
+    }
+
+    /// "16", "15 or 16", "16 to 19".
+    private static func describe(_ lengths: [Int]) -> String {
+        guard let first = lengths.first, let last = lengths.last else { return "" }
+        if lengths.count == 1 { return "\(first)" }
+        if lengths == Array(first...last) && lengths.count > 2 { return "\(first) to \(last)" }
+        return lengths.dropLast().map(String.init).joined(separator: ", ") + " or \(last)"
+    }
+
     /// A short status for the number being typed.
     /// What to say under a card number: `text` in full, or `note` beside the
     /// network's logo.

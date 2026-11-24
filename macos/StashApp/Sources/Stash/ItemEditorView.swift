@@ -335,20 +335,24 @@ struct ItemEditorView: View {
                         }
                 }
             }
-            LabeledInput("Security code") {
+            LabeledInput("Security code", invalid: error(.cvv) != nil) {
                 FieldBox { SecureField("", text: $cvv, prompt: keepPrompt("cvv", "CVV")).focused($cvvFocused) }
             }
+            .id(FormField.cvv)
             LabeledInput("PIN") {
                 FieldBox { SecureField("", text: $pin, prompt: keepPrompt("pin", "Optional")) }
             }
         }
         .id(FormField.expiry)
+        // The row's columns are too narrow for a message, so expiry and
+        // security code problems are spelled out under the whole row.
         if let message = error(.expiry) {
             FieldError(message)
         } else if let status = PaymentHints.expiryStatus(expiry) {
             CheckLine(ok: status.ok, text: status.text)
                 .font(.plex(11.5, weight: .medium))
         }
+        if let message = error(.cvv) { FieldError(message) }
         LabeledInput("Billing ZIP or postal code") {
             FieldBox { TextField("", text: $billingZip, prompt: Text("Optional").foregroundStyle(Color.inkTertiary)) }
         }
@@ -387,9 +391,10 @@ struct ItemEditorView: View {
         }
         .id(FormField.accountNumber)
         HStack(alignment: .top, spacing: 12) {
-            LabeledInput("IBAN") {
+            LabeledInput("IBAN", error: error(.iban)) {
                 FieldBox { SecureField("", text: $iban, prompt: keepPrompt("iban", "Optional, outside the US")) }
             }
+            .id(FormField.iban)
             LabeledInput("SWIFT/BIC") {
                 FieldBox { TextField("", text: $swift, prompt: Text("Optional").foregroundStyle(Color.inkTertiary)) }
             }
@@ -540,17 +545,22 @@ struct ItemEditorView: View {
         if kind == .note && notes.isEmpty && !(hadNotes && !notesLoaded) { add(.notes, "Write the note.") }
         if kind == .card {
             if isNew && cardNumber.isEmpty { add(.cardNumber, "Enter the card number.") }
-            else if !cardNumber.isEmpty && !PaymentHints.luhn(cardNumber) { add(.cardNumber, "Check the card number for a typo.") }
+            else if let message = PaymentHints.cardNumberProblem(cardNumber) { add(.cardNumber, message) }
             if !expiry.isEmpty && expiry.range(of: #"^\d{1,2}/(\d{2}|\d{4})$"#, options: .regularExpression) == nil {
                 add(.expiry, "Use MM/YY for the expiry date.")
             } else if let status = PaymentHints.expiryStatus(expiry), status.blocks {
                 add(.expiry, status.text)
             }
+            // Untouched on an edit, the stored number decides the brand.
+            let editingBrand: String? = if case .edit(let d) = target { d.card?.brand } else { nil }
+            let brand = PaymentHints.brand(cardNumber) ?? (cardNumber.isEmpty ? editingBrand : nil)
+            if let message = PaymentHints.cvvProblem(cvv, brand: brand) { add(.cvv, message) }
         }
         if kind == .bank {
             if !routing.isEmpty && !PaymentHints.routingOK(routing) { add(.routing, "Check the routing number for a typo.") }
             let hasStored = storedSensitive.contains("account number") || storedSensitive.contains("iban")
             if accountNumber.isEmpty && iban.isEmpty && !hasStored { add(.accountNumber, "Enter an account number or an IBAN.") }
+            if !iban.isEmpty && !PaymentHints.ibanOK(iban) { add(.iban, "That IBAN doesn't check out; look for a typo.") }
         }
         if custom.contains(where: { $0.label.trimmingCharacters(in: .whitespaces).isEmpty }) {
             add(.customLabels, "Every field needs a label.")
@@ -898,7 +908,7 @@ struct FieldError: View {
 
 /// The fields the editor can point at when something stops a save.
 enum FormField: Hashable {
-    case name, secret, notes, cardNumber, expiry, routing, accountNumber, sshFile, sshPassphrase, customLabels
+    case name, secret, notes, cardNumber, expiry, cvv, routing, accountNumber, iban, sshFile, sshPassphrase, customLabels
 }
 
 struct FormIssue: Equatable {
