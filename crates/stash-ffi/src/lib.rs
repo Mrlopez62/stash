@@ -20,7 +20,9 @@ use std::ptr;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::{Value, json};
-use stash_core::item::{BankDetails, CardDetails, FieldValue, ONE_TIME_PASSWORD};
+use stash_core::item::{
+    BankDetails, CARD_COLOR, CARD_COLORS, CardDetails, FieldValue, ONE_TIME_PASSWORD,
+};
 use stash_core::otp::Totp;
 use stash_core::{FieldKind, Item, KdfParams, Kind, Vault, generate, payment};
 use zeroize::{Zeroize, Zeroizing};
@@ -120,15 +122,6 @@ pub unsafe extern "C" fn stash_create(
         }
     }
 }
-
-/// Finishes a card can have; anything else is refused. No value means the
-/// card's network picks one.
-const CARD_COLORS: &[&str] = &[
-    "graphite", "midnight", "forest", "plum", "oxblood", "copper", "titanium",
-];
-/// The field that holds a card's color. It describes the card's look, so the
-/// apps show it as a choice, not a value.
-const CARD_COLOR: &str = "card color";
 
 /// A login, card, or bank account from JSON (`{"kind": "card", "number", ...}`),
 /// checked the same way as on the Mac.

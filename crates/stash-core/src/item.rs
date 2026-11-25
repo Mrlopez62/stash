@@ -167,6 +167,14 @@ pub const EXPIRY: &str = "expiry";
 pub const CVV: &str = "cvv";
 pub const PIN: &str = "pin";
 pub const BILLING_ZIP: &str = "billing zip";
+/// The field that holds a card's color: how the apps draw it, not a value
+/// to show. Only one of [`CARD_COLORS`] counts; no field means the card's
+/// network picks.
+pub const CARD_COLOR: &str = "card color";
+/// The colors a card can be.
+pub const CARD_COLORS: &[&str] = &[
+    "graphite", "midnight", "forest", "plum", "oxblood", "copper", "titanium",
+];
 pub const BANK_NAME: &str = "bank";
 pub const ACCOUNT_HOLDER: &str = "account holder";
 pub const ACCOUNT_TYPE: &str = "account type";
@@ -612,7 +620,14 @@ impl Item {
             _ => &[],
         };
         for field in &mut copy.fields {
-            if !public.contains(&field.label.as_str()) {
+            // A card's color is how the apps draw it, so it's shown without
+            // the sensitive key, but only as one of the known color names.
+            let color = self.kind == Kind::Card
+                && field.label == CARD_COLOR
+                && CARD_COLORS.contains(&field.value.as_str());
+            if color {
+                field.kind = FieldKind::Text;
+            } else if !public.contains(&field.label.as_str()) {
                 field.value.zeroize();
                 field.value.clear();
                 field.kind = FieldKind::Concealed;
@@ -849,6 +864,32 @@ mod tests {
         assert!(item.validate().is_ok());
         item.fields[0].value = "not a key".into();
         assert!(item.validate().is_err());
+    }
+
+    #[test]
+    fn redaction_keeps_a_cards_color_but_nothing_else_under_that_label() {
+        let mut card = Item::card(&CardDetails {
+            number: "4242424242424242",
+            ..Default::default()
+        })
+        .unwrap();
+        card.set(CARD_COLOR, FieldKind::Text, "plum");
+        let redacted = card.redacted();
+        assert_eq!(redacted.labeled(CARD_COLOR).unwrap().value, "plum");
+        assert_eq!(redacted.labeled(CARD_NUMBER).unwrap().value, "");
+
+        // Anything that isn't a known color is blanked, like any other field.
+        card.set(CARD_COLOR, FieldKind::Text, "pin is 1234");
+        assert_eq!(card.redacted().labeled(CARD_COLOR).unwrap().value, "");
+
+        // And only on cards.
+        let mut bank = Item::bank(&BankDetails {
+            account_number: Some("12345678"),
+            ..Default::default()
+        })
+        .unwrap();
+        bank.set(CARD_COLOR, FieldKind::Text, "plum");
+        assert_eq!(bank.redacted().labeled(CARD_COLOR).unwrap().value, "");
     }
 
     #[test]
