@@ -124,6 +124,8 @@ struct AddPaymentView: View {
     @State private var expiry = ""
     @State private var cvv = ""
     @State private var billingZip = ""
+    /// The card turns over to its back while the security code is typed.
+    @FocusState private var cvvFocused: Bool
     // Bank
     @State private var bank = ""
     @State private var holder = ""
@@ -138,7 +140,7 @@ struct AddPaymentView: View {
     var body: some View {
         NavigationStack {
             Form {
-                if kind == .card, editing == nil {
+                if kind == .card {
                     Section {
                         PremiumCard(
                             content: CardContent(
@@ -146,20 +148,28 @@ struct AddPaymentView: View {
                                 number: CardNumberDisplay.preview(number, reveal: false),
                                 cardholder: cardholder.isEmpty ? nil : cardholder,
                                 expiry: expiry.isEmpty ? nil : expiry,
+                                cvv: cvv.isEmpty ? nil : String(repeating: "•", count: min(cvv.count, 4)),
                                 finish: cardColor),
+                            flipped: cvvFocused,
                             interactive: false, sheenOnAppear: false)
                             .frame(maxWidth: .infinity)
                             .listRowBackground(Color.clear)
                             .listRowInsets(EdgeInsets())
-                    }
-                    Section("Card Color") {
-                        CardColorPicker(selection: $cardColor)
-                            .listRowBackground(Color.surface)
+                            .accessibilityHidden(true)
                     }
                 }
                 switch kind {
                 case .card: cardFields
                 case .bank: bankFields
+                }
+                // Below the card's details, so the card and its security code
+                // fit on screen together above the keyboard. When editing,
+                // the color is set from the card's own screen.
+                if kind == .card, editing == nil {
+                    Section("Card Color") {
+                        CardColorPicker(selection: $cardColor)
+                            .listRowBackground(Color.surface)
+                    }
                 }
                 Section {
                     TextField(suggestedName, text: $nickname)
@@ -179,6 +189,13 @@ struct AddPaymentView: View {
             .onAppear {
                 if let typed = SimHooks.cardNumber { number = typed }
                 if let typed = SimHooks.expiry { expiry = typed }
+                if let color = SimHooks.color { cardColor = CardFinish(rawValue: color) }
+                if SimHooks.focus == "cvv" {
+                    Task { @MainActor in
+                        try? await Task.sleep(for: .seconds(1))
+                        cvvFocused = true
+                    }
+                }
             }
             #endif
             .onAppear(perform: fill)
@@ -216,13 +233,21 @@ struct AddPaymentView: View {
                     }
                 TextField("Name on card", text: $cardholder)
                     .textInputAutocapitalization(.words)
-                TextField("Expiry (MM/YY)", text: $expiry)
-                    .keyboardType(.numberPad)
-                    .font(.mono(16))
-                    .onChange(of: expiry) { _, new in
-                        let formatted = PaymentHints.formatExpiry(new)
-                        if formatted != new { expiry = formatted }
-                    }
+                // One row, as on the card itself and in the Mac app: it keeps
+                // the card in sight while it turns over for the security code.
+                HStack(spacing: 12) {
+                    TextField("Expiry (MM/YY)", text: $expiry)
+                        .keyboardType(.numberPad)
+                        .font(.mono(16))
+                        .onChange(of: expiry) { _, new in
+                            let formatted = PaymentHints.formatExpiry(new)
+                            if formatted != new { expiry = formatted }
+                        }
+                    Divider()
+                    SecureField("Security code", text: $cvv)
+                        .keyboardType(.numberPad)
+                        .focused($cvvFocused)
+                }
             } footer: {
                 VStack(alignment: .leading, spacing: 6) {
                     if let status = PaymentHints.cardStatus(number) {
@@ -239,8 +264,6 @@ struct AddPaymentView: View {
             }
             .listRowBackground(Color.surface)
             Section {
-                SecureField("Security code", text: $cvv)
-                    .keyboardType(.numberPad)
                 SecureField("PIN", text: $pin)
                     .keyboardType(.numberPad)
                 TextField("Billing ZIP", text: $billingZip)
@@ -316,6 +339,8 @@ struct AddPaymentView: View {
             expiry = saved["expiry"] ?? ""
             cvv = saved["cvv"] ?? ""
             billingZip = saved["billing zip"] ?? ""
+            // Only to draw the preview in the card's color; saving leaves it alone.
+            cardColor = model.detail(editing.name)?.cardColor.flatMap(CardFinish.init(rawValue:))
         case .bank:
             bank = saved["bank"] ?? ""
             holder = saved["account holder"] ?? ""

@@ -10,6 +10,11 @@ struct InspectorView: View {
 
     private var title: String { detail.name.split(separator: "/").last.map(String.init) ?? detail.name }
 
+    /// The rows to list: a card's color is shown by the card itself.
+    private var rows: [FieldInfo] {
+        detail.kind == .card ? detail.fields.filter { $0.label != CardFinish.fieldLabel } : detail.fields
+    }
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
@@ -60,7 +65,8 @@ struct InspectorView: View {
                         revealCVV: {
                             guard detail.fields.contains(where: { $0.label == "cvv" }) else { return nil }
                             return await model.reveal("cvv")
-                        })
+                        },
+                        finish: CardFinish.from(detail.fields))
                 } else if detail.kind == .ssh,
                           let fingerprint = detail.fields.first(where: { $0.label == "fingerprint" })?.value {
                     let publicKey = detail.fields.first { $0.label == "public key" }?.value
@@ -79,15 +85,15 @@ struct InspectorView: View {
                         .foregroundStyle(Color.inkSecondary)
                 }
 
-                if !detail.fields.isEmpty || detail.hasNotes {
+                if !rows.isEmpty || detail.hasNotes {
                     Card(fill: true) {
                         VStack(spacing: 0) {
-                            ForEach(Array(detail.fields.enumerated()), id: \.element.id) { index, field in
+                            ForEach(Array(rows.enumerated()), id: \.element.id) { index, field in
                                 if index > 0 { Rectangle().fill(Color.line).frame(height: 1) }
                                 FieldRow(field: field, maskedPreview: maskedPreview(for: field))
                             }
                             if detail.hasNotes {
-                                if !detail.fields.isEmpty { Rectangle().fill(Color.line).frame(height: 1) }
+                                if !rows.isEmpty { Rectangle().fill(Color.line).frame(height: 1) }
                                 NotesRow()
                             }
                         }

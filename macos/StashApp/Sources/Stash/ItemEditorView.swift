@@ -49,6 +49,8 @@ struct ItemEditorView: View {
     @ViewState private var cvv = ""
     @ViewState private var pin = ""
     @ViewState private var billingZip = ""
+    /// The card's color; nil lets its network pick.
+    @ViewState private var cardColor: CardFinish?
     @ViewState private var showCardNumber = false
     @FocusState private var cvvFocused: Bool
     /// Which sensitive payment fields the item already has (kept if untouched).
@@ -285,7 +287,8 @@ struct ItemEditorView: View {
                 number: number,
                 cardholder: cardholder.isEmpty ? nil : cardholder,
                 expiry: expiry.isEmpty ? nil : expiry,
-                cvv: code.isEmpty ? nil : code),
+                cvv: code.isEmpty ? nil : code,
+                finish: cardColor),
             flipped: cvvFocused,
             interactive: false,
             sheenOnAppear: true,
@@ -297,6 +300,9 @@ struct ItemEditorView: View {
 
     @ViewBuilder private var cardInputs: some View {
         cardPreview
+        LabeledInput("Card color") {
+            CardFinishPicker(selection: $cardColor)
+        }
         LabeledInput("Cardholder") {
             FieldBox(mono: false) {
                 TextField("", text: $cardholder, prompt: Text("Name on the card").foregroundStyle(Color.inkTertiary))
@@ -608,6 +614,7 @@ struct ItemEditorView: View {
                 case (.card, "cardholder"): cardholder = f.value ?? ""
                 case (.card, "expiry"): expiry = f.value ?? ""
                 case (.card, "billing zip"): billingZip = f.value ?? ""
+                case (.card, CardFinish.fieldLabel): cardColor = f.value.flatMap(CardFinish.init(rawValue:))
                 case (.card, "number"), (.card, "cvv"), (.card, "pin"),
                      (.bank, "account number"), (.bank, "iban"), (.bank, "pin"):
                     storedSensitive.insert(f.label)
@@ -658,6 +665,8 @@ struct ItemEditorView: View {
             appendSecret("cvv", cvv, to: &fields)
             appendSecret("pin", pin, to: &fields)
             appendText("billing zip", billingZip, to: &fields)
+            // Left out for "Automatic", which removes a saved color.
+            if let cardColor { appendText(CardFinish.fieldLabel, cardColor.rawValue, to: &fields) }
         case .bank:
             appendText("bank", bankName, to: &fields)
             appendText("account holder", holder, to: &fields)
@@ -852,6 +861,39 @@ struct GeneratorView: View {
 
     private func regenerate() async {
         password = await model.generate(length: Int(length), symbols: symbols) ?? ""
+    }
+}
+
+/// The colors a card can be, as swatches: "Automatic" lets the card's
+/// network pick. The same choices as on the iPhone.
+struct CardFinishPicker: View {
+    @Binding var selection: CardFinish?
+
+    var body: some View {
+        HStack(spacing: 10) {
+            swatch(nil, top: Color(hex: 0x3A4250), bottom: .vaultInk, title: "Automatic")
+            // Lit from the glow, so colors this dark can be told apart.
+            ForEach(CardFinish.allCases) { swatch($0, top: $0.glow, bottom: $0.bottom, title: $0.title) }
+        }
+    }
+
+    private func swatch(_ finish: CardFinish?, top: Color, bottom: Color, title: String) -> some View {
+        let selected = selection == finish
+        return Button {
+            selection = finish
+        } label: {
+            Circle()
+                .fill(LinearGradient(colors: [top, bottom], startPoint: .topLeading, endPoint: .bottomTrailing))
+                .overlay(Circle().strokeBorder(Color.white.opacity(0.18), lineWidth: 0.5))
+                .frame(width: 26, height: 26)
+                .padding(3)
+                .overlay(Circle().strokeBorder(selected ? Color.keyholeAmber : .clear, lineWidth: 2))
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .help(title)
+        .accessibilityLabel("\(title) card color")
+        .accessibilityAddTraits(selected ? .isSelected : [])
     }
 }
 

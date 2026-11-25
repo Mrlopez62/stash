@@ -29,6 +29,15 @@ enum CardFinish: String, CaseIterable, Identifiable {
     case graphite, midnight, forest, plum, oxblood, copper, titanium
     var id: Self { self }
 
+    /// The text field a card's color is stored in (crates/stash-ffi,
+    /// CARD_COLOR). It's a choice about the card's look, not a value to show.
+    static let fieldLabel = "card color"
+
+    /// The color saved in a card's fields, if any.
+    static func from(_ fields: [FieldInfo]) -> CardFinish? {
+        fields.first { $0.label == fieldLabel }?.value.flatMap(CardFinish.init(rawValue:))
+    }
+
     var title: String { rawValue.capitalized }
 
     var top: Color {

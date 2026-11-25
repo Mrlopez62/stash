@@ -32,5 +32,7 @@ enum SimHooks {
     static var scannedCode: String? { value("QR") }
     /// Show the open card in this color, without saving it.
     static var color: String? { value("COLOR") }
+    /// Put the cursor in a form field: "cvv" in the card form.
+    static var focus: String? { value("FOCUS") }
 }
 #endif
