@@ -149,3 +149,70 @@ fn the_app_backend_previews_and_imports_exports() {
     drop(stdin);
     assert!(child.wait().unwrap().success());
 }
+
+#[test]
+fn the_app_backend_keeps_a_cards_color() {
+    let dir = TempDir::new().unwrap();
+    let mut child = Command::new(assert_cmd::cargo::cargo_bin("stash"))
+        .env("STASH_AI_AGENTS", "stash-test-agent")
+        .arg("app-server")
+        .env("STASH_VAULT", dir.path().join("vault.db"))
+        .env("STASH_AGENT_SOCK", dir.path().join("agent.sock"))
+        .env("STASH_TOUCHID_HELPER", dir.path().join("no-helper"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+    let mut id = 0;
+    let mut call = |method: &str, params: Value| -> Value {
+        id += 1;
+        let line = json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params });
+        writeln!(stdin, "{line}").unwrap();
+        let mut response = String::new();
+        stdout.read_line(&mut response).unwrap();
+        serde_json::from_str(&response).unwrap()
+    };
+    assert!(call("create_vault", json!({ "password": "correct horse" }))["error"].is_null());
+    let color = |item: &Value| {
+        item["result"]["fields"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|f| f["label"] == "card color")
+            .map(|f| f["value"].clone())
+    };
+
+    // Saved the way the Mac app's card editor does; a card needs the
+    // sensitive key, the master password here.
+    let saved = call(
+        "save",
+        json!({ "name": "cards/visa", "kind": "card", "password": "correct horse", "fields": [
+            { "label": "number", "kind": "concealed", "value": "4242424242424242" },
+            { "label": "card color", "kind": "text", "value": "plum" },
+        ]}),
+    );
+    assert!(saved["error"].is_null(), "{saved}");
+    // The details the app shows (no sensitive key needed) carry the color...
+    let item = call("item", json!({ "name": "cards/visa" }));
+    assert_eq!(color(&item), Some(json!("plum")), "{item}");
+    // ...but still not the number.
+    assert!(!item.to_string().contains("4242424242424242"));
+
+    // Editing keeps the number and changes the color.
+    let edited = call(
+        "save",
+        json!({ "name": "cards/visa", "original_name": "cards/visa", "kind": "card",
+                "password": "correct horse", "fields": [
+            { "label": "number", "kind": "concealed" },
+            { "label": "card color", "kind": "text", "value": "midnight" },
+        ]}),
+    );
+    assert!(edited["error"].is_null(), "{edited}");
+    let item = call("item", json!({ "name": "cards/visa" }));
+    assert_eq!(color(&item), Some(json!("midnight")), "{item}");
+
+    drop(stdin);
+    assert!(child.wait().unwrap().success());
+}
