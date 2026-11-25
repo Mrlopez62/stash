@@ -170,6 +170,7 @@ struct CardFaceView: View {
     @ViewState private var flipped = PremiumCard.startFlipped
     @ViewState private var cvv: String?
     @ViewState private var flipBack: Task<Void, Never>?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         PremiumCard(
@@ -196,11 +197,20 @@ struct CardFaceView: View {
             .accessibilityAction { toggle() }
             .onChange(of: face) { _, _ in reset() }
             .onDisappear { reset() }
+            #if DEBUG && os(iOS)
+            // Simulator checks only (never in release builds): tap the card
+            // after STASH_SIM_FLIP seconds.
+            .task {
+                guard let delay = ProcessInfo.processInfo.environment["STASH_SIM_FLIP"].flatMap(Double.init) else { return }
+                try? await Task.sleep(for: .seconds(delay))
+                toggle()
+            }
+            #endif
     }
 
     private func toggle() {
         if flipped { reset(); return }
-        flipped = true
+        withAnimation(PremiumCard.flip(reduceMotion: reduceMotion)) { flipped = true }
         Task { @MainActor in
             let code = await revealCVV()
             if flipped { cvv = code }
@@ -215,7 +225,7 @@ struct CardFaceView: View {
     private func reset() {
         flipBack?.cancel()
         flipBack = nil
-        flipped = false
+        withAnimation(PremiumCard.flip(reduceMotion: reduceMotion)) { flipped = false }
         cvv = nil
     }
 }

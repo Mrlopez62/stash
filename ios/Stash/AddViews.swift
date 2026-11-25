@@ -126,6 +126,10 @@ struct AddPaymentView: View {
     @State private var billingZip = ""
     /// The card turns over to its back while the security code is typed.
     @FocusState private var cvvFocused: Bool
+    /// Follows `cvvFocused` inside an animation: a focus change alone
+    /// doesn't animate the turn on iOS.
+    @State private var showBack = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     // Bank
     @State private var bank = ""
     @State private var holder = ""
@@ -150,7 +154,7 @@ struct AddPaymentView: View {
                                 expiry: expiry.isEmpty ? nil : expiry,
                                 cvv: cvv.isEmpty ? nil : String(repeating: "•", count: min(cvv.count, 4)),
                                 finish: cardColor),
-                            flipped: cvvFocused,
+                            flipped: showBack,
                             interactive: false, sheenOnAppear: false)
                             .frame(maxWidth: .infinity)
                             .listRowBackground(Color.clear)
@@ -184,6 +188,9 @@ struct AddPaymentView: View {
             .textInputAutocapitalization(.never)
             .scrollContentBackground(.hidden)
             .background(Color.canvas)
+            .onChange(of: cvvFocused) { _, focused in
+                withAnimation(PremiumCard.flip(reduceMotion: reduceMotion)) { showBack = focused }
+            }
             #if DEBUG
             // Simulator checks only (never in release builds).
             .onAppear {
@@ -239,14 +246,14 @@ struct AddPaymentView: View {
                     TextField("Expiry (MM/YY)", text: $expiry)
                         .keyboardType(.numberPad)
                         .font(.mono(16))
-                        .onChange(of: expiry) { _, new in
-                            let formatted = PaymentHints.formatExpiry(new)
-                            if formatted != new { expiry = formatted }
-                        }
                     Divider()
                     SecureField("Security code", text: $cvv)
                         .keyboardType(.numberPad)
                         .focused($cvvFocused)
+                }
+                .onChange(of: expiry, initial: true) { _, new in
+                    let formatted = PaymentHints.formatExpiry(new)
+                    if formatted != new { expiry = formatted }
                 }
             } footer: {
                 VStack(alignment: .leading, spacing: 6) {

@@ -122,7 +122,7 @@ struct PremiumCard: View {
         .rotation3DEffect(.degrees(tilt.width), axis: (0, 1, 0), perspective: 0.6)
         .shadow(color: .black.opacity(0.10), radius: 3, y: 2)
         .shadow(color: .black.opacity(0.22), radius: 18, x: -tilt.width * 0.8, y: 14 + tilt.height * 0.6)
-        .animation(reduceMotion ? .easeInOut(duration: 0.2) : .spring(response: 0.6, dampingFraction: 0.8), value: flipped)
+        .animation(Self.flip(reduceMotion: reduceMotion), value: flipped)
         .onContinuousHover(coordinateSpace: .local) { phase in
             guard interactive && !reduceMotion else { return }
             switch phase {
@@ -166,6 +166,11 @@ struct PremiumCard: View {
         tilt = CGSize(width: -lean.x * 5, height: -lean.y * 4)
     }
     #endif
+
+    /// How the card turns over: a cross-fade with Reduce Motion on.
+    static func flip(reduceMotion: Bool) -> Animation {
+        reduceMotion ? .easeInOut(duration: 0.2) : .spring(response: 0.6, dampingFraction: 0.8)
+    }
 
     /// `--card-back` for snapshots: inspector cards start turned over.
     nonisolated(unsafe) static var startFlipped = false
