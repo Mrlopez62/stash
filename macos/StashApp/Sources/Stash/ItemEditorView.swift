@@ -323,6 +323,11 @@ struct ItemEditorView: View {
                         showCardNumber.toggle()
                     }
                 }
+                // In groups as it's typed, like the card itself: 4242 4242 4242 4242.
+                .onChange(of: cardNumber) { _, new in
+                    let grouped = CardNumberDisplay.typed(new)
+                    if grouped != new { cardNumber = grouped }
+                }
                 if error(.cardNumber) == nil, let status = PaymentHints.cardStatus(cardNumber) {
                     CardStatusLine(ok: status.ok, brand: status.brand, text: status.text, note: status.note)
                         .font(.plex(11.5, weight: .medium))
@@ -335,6 +340,7 @@ struct ItemEditorView: View {
             LabeledInput("Expires", invalid: error(.expiry) != nil) {
                 FieldBox {
                     TextField("", text: $expiry, prompt: Text("MM/YY").foregroundStyle(Color.inkTertiary))
+                        .help("MM/YY or MM/YYYY")
                         .onChange(of: expiry) { _, new in
                             let formatted = PaymentHints.formatExpiry(new)
                             if !new.contains("/") && formatted != new { expiry = formatted }

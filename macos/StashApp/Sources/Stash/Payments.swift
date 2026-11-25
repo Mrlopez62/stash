@@ -131,6 +131,9 @@ enum PaymentHints {
         guard monthText.count >= 2 || (parts.count == 2 && !monthText.isEmpty), let month = Int(monthText) else { return nil }
         guard (1...12).contains(month) else { return (false, "The month must be 01 to 12.", true) }
         guard yearText.count == 2 || yearText.count == 4, let typedYear = Int(yearText) else { return nil }
+        // "20" is most likely the start of a four-digit year (08/2029), not
+        // 2020: no verdict until the rest is typed.
+        if yearText == "20" { return nil }
         let year = yearText.count == 2 ? 2000 + typedYear : typedYear
         let today = Calendar.current.dateComponents([.year, .month], from: now)
         let thisYear = today.year ?? 0
@@ -148,9 +151,13 @@ enum PaymentHints {
         return sum % 10 == 0
     }
 
-    /// "MM/YY" from what's typed: "827" stays as is, "0827" → "08/27".
+    /// "MM/YY" or "MM/YYYY" from what's typed: "0827" → "08/27",
+    /// "082027" → "08/2027", and "8/27" → "08/27".
     static func formatExpiry(_ s: String) -> String {
-        let d = digits(s).prefix(4)
+        var text = s
+        // A one-digit month before a slash: pad it, so "8/27" reads as August.
+        if let slash = s.firstIndex(of: "/"), digits(String(s[..<slash])).count == 1 { text = "0" + s }
+        let d = digits(text).prefix(6)
         return d.count > 2 ? "\(d.prefix(2))/\(d.dropFirst(2))" : String(d)
     }
 }
